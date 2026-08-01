@@ -61,6 +61,8 @@ npm run dev
 
 Acesse `http://localhost:5173`. A API estará em `http://localhost:8000` e o Swagger em `http://localhost:8000/docs`.
 
+No Windows, depois da primeira instalação, também é possível usar `iniciar-windows.bat` na raiz. Ele abre backend e frontend em janelas separadas e acessa `http://127.0.0.1:5173`.
+
 Linux/macOS usam os equivalentes `source .venv/bin/activate` e `.venv/bin/python`.
 
 ## Usuário de demonstração
@@ -142,6 +144,7 @@ AGENTS.md             normas de evolução
 ## Solução de problemas
 
 - **Login não funciona:** confirme se a API está em `:8000` e se a migration/seed executou.
+- **Erro `501 Unsupported method ('POST')` ao entrar:** existe um `python -m http.server 8000` antigo em execução. Feche a janela do protótipo legado e reinicie backend e frontend. O sistema novo não deve ser iniciado pelos scripts dentro de `legacy/`.
 - **WebSocket reconectando:** confirme o proxy de `/api/`, o token e a origem CORS.
 - **Sem medições no histórico:** uma sessão precisa estar em execução; lotes são descarregados a cada dois segundos ou na finalização.
 - **Serial não abre:** confirme porta, driver, permissão do processo e baud rate. O hardware real ainda não foi homologado.
