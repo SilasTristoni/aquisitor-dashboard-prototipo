@@ -1,0 +1,45 @@
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: thermopower
+      POSTGRES_USER: thermopower
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-thermopower-local-only}
+    volumes:
+      - thermopower_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U thermopower -d thermopower"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment:
+      THERMOPOWER_ENVIRONMENT: production
+      THERMOPOWER_DATABASE_URL: postgresql+psycopg://thermopower:${POSTGRES_PASSWORD:-thermopower-local-only}@database:5432/thermopower
+      THERMOPOWER_JWT_SECRET: ${THERMOPOWER_JWT_SECRET:-replace-this-before-any-network-exposure}
+      THERMOPOWER_CORS_ORIGINS: '["http://localhost:8080"]'
+      THERMOPOWER_DEMO_ADMIN_PASSWORD: ${THERMOPOWER_DEMO_ADMIN_PASSWORD:-ThermoPower@123}
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 4s
+      retries: 8
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  thermopower_data:

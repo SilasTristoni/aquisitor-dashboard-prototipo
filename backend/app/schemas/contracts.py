@@ -1,0 +1,105 @@
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+
+class ApiModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: dict[str, Any]
+
+
+class UserCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    email: EmailStr
+    password: str = Field(min_length=10, max_length=128)
+    role: Literal["admin", "operator", "viewer"] = "viewer"
+
+
+class UserRead(ApiModel):
+    id: int
+    name: str
+    email: str
+    role: str
+    active: bool
+    created_at: datetime
+
+
+class DeviceInput(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    manufacturer: str | None = None
+    model: str | None = None
+    serial_number: str | None = None
+    connection_type: Literal["simulator", "serial"] = "simulator"
+    port: str | None = None
+    baud_rate: int = Field(default=115200, ge=300, le=4_000_000)
+    protocol: Literal["simulator", "serial_json", "serial_csv", "mock_failure"] = "simulator"
+    active: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SessionCreate(BaseModel):
+    device_id: int
+    name: str = Field(min_length=2, max_length=160)
+    description: str | None = None
+    notes: str | None = None
+    sample_interval_ms: int = Field(default=1000, ge=100, le=60_000)
+
+
+class ChannelInput(BaseModel):
+    channel: int = Field(ge=1, le=16)
+    name: str = Field(min_length=1, max_length=80)
+    enabled: bool = True
+    sensor_type: str = Field(default="K", max_length=20)
+    unit: Literal["°C"] = "°C"
+    correction_offset: float = Field(default=0, ge=-100, le=100)
+    warning_limit: float | None = Field(default=None, ge=-270, le=1800)
+    critical_limit: float | None = Field(default=None, ge=-270, le=1800)
+    color: str = "#3667E9"
+    description: str | None = None
+    physical_location: str | None = None
+
+    @field_validator("color")
+    @classmethod
+    def validate_color(cls, value: str) -> str:
+        if len(value) != 7 or not value.startswith("#"):
+            raise ValueError("Cor deve usar o formato #RRGGBB")
+        int(value[1:], 16)
+        return value.upper()
+
+
+class AlertRuleInput(BaseModel):
+    device_id: int
+    metric: Literal["power", "temperature", "missing_reading", "acquisition_rate"]
+    channel: int | None = Field(default=None, ge=1, le=16)
+    operator: Literal[">", ">=", "<", "<="] = ">"
+    threshold: float
+    severity: Literal["info", "warning", "critical"] = "warning"
+    enabled: bool = True
+    cooldown_seconds: int = Field(default=60, ge=1, le=86_400)
+
+
+class SimulatorConfigInput(BaseModel):
+    channel_count: int = Field(default=16, ge=1, le=16)
+    interval_ms: int = Field(default=1000, ge=100, le=60_000)
+    base_power_w: float = Field(default=850, ge=0, le=10_000_000)
+    power_variation_w: float = Field(default=180, ge=0)
+    noise: float = Field(default=0.4, ge=0, le=100)
+    initial_temperature_c: float = Field(default=30, ge=-100, le=1000)
+    temperature_trend_c_per_minute: float = Field(default=0, ge=-100, le=100)
+    failed_channel: int | None = Field(default=None, ge=1, le=16)
+    missing_probability: float = Field(default=0, ge=0, le=1)
+    malformed_probability: float = Field(default=0, ge=0, le=1)
+    irregular_frequency: bool = False
+    change_units: bool = True

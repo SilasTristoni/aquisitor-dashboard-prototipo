@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Protótipo de dashboard para monitoramento de potência e temperatura em tempo real." />
+  <title>ThermoPower Monitor</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48" role="img">
+            <path d="M9 31c8-2 8-14 15-14s7 14 15 14" />
+            <path d="M9 36h30" />
+            <circle cx="24" cy="12" r="4" />
+          </svg>
+        </div>
+        <div>
+          <strong>ThermoPower</strong>
+          <span>Monitor</span>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="Navegação principal">
+        <button class="nav-item active" data-section="dashboard">
+          <span>▦</span> Dashboard
+        </button>
+        <button class="nav-item" data-section="channels">
+          <span>◫</span> Canais
+        </button>
+        <button class="nav-item" data-section="events">
+          <span>≡</span> Eventos
+        </button>
+        <button class="nav-item" data-section="settings">
+          <span>⚙</span> Configurações
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="device-mini">
+          <span class="status-dot disconnected" id="sidebarStatusDot"></span>
+          <div>
+            <strong id="sidebarStatusText">Desconectado</strong>
+            <small id="sidebarDeviceText">Nenhum dispositivo</small>
+          </div>
+        </div>
+        <small>Protótipo v1.0</small>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">MONITORAMENTO INDUSTRIAL</p>
+          <h1>Dashboard de aquisição</h1>
+          <p class="subtitle">Potência e temperatura em tempo real</p>
+        </div>
+
+        <div class="topbar-actions">
+          <label class="source-select">
+            <span>Fonte de dados</span>
+            <select id="sourceSelect">
+              <option value="simulation">Simulador</option>
+              <option value="usb">USB / Serial</option>
+            </select>
+          </label>
+          <button class="btn secondary" id="connectBtn">Conectar</button>
+          <button class="btn primary" id="sessionBtn" disabled>Iniciar sessão</button>
+        </div>
+      </header>
+
+      <section class="connection-banner" id="connectionBanner">
+        <div>
+          <span class="status-dot disconnected" id="statusDot"></span>
+          <div>
+            <strong id="connectionTitle">Dispositivo desconectado</strong>
+            <p id="connectionDescription">Selecione uma fonte de dados e conecte para iniciar.</p>
+          </div>
+        </div>
+        <span class="session-time" id="sessionTime">00:00:00</span>
+      </section>
+
+      <section class="section-panel active" id="dashboardSection">
+        <div class="metrics-grid">
+          <article class="metric-card accent">
+            <div class="metric-head">
+              <span>Potência atual</span>
+              <span class="metric-icon">⚡</span>
+            </div>
+            <strong id="powerCurrent">—</strong>
+            <small id="powerRaw">Aguardando leitura</small>
+          </article>
+
+          <article class="metric-card">
+            <div class="metric-head">
+              <span>Potência média</span>
+              <span class="metric-icon">∿</span>
+            </div>
+            <strong id="powerAverage">—</strong>
+            <small>Durante a sessão</small>
+          </article>
+
+          <article class="metric-card">
+            <div class="metric-head">
+              <span>Temperatura média</span>
+              <span class="metric-icon">°C</span>
+            </div>
+            <strong id="temperatureAverage">—</strong>
+            <small id="activeChannelsLabel">8 canais ativos</small>
+          </article>
+
+          <article class="metric-card danger-card">
+            <div class="metric-head">
+              <span>Temperatura máxima</span>
+              <span class="metric-icon">▲</span>
+            </div>
+            <strong id="temperatureMax">—</strong>
+            <small id="temperatureMaxChannel">Sem leituras</small>
+          </article>
+        </div>
+
+        <div class="charts-grid">
+          <article class="panel chart-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="panel-kicker">POTÊNCIA</p>
+                <h2>Evolução ao longo do tempo</h2>
+              </div>
+              <div class="panel-actions">
+                <span class="live-pill"><i></i> Em tempo real</span>
+              </div>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="powerChart" aria-label="Gráfico de potência ao longo do tempo"></canvas>
+              <div class="chart-empty" id="powerChartEmpty">Inicie uma sessão para visualizar os dados.</div>
+            </div>
+          </article>
+
+          <article class="panel chart-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="panel-kicker">TEMPERATURA</p>
+                <h2>Termopares selecionados</h2>
+              </div>
+              <button class="text-btn" data-go-section="channels">Selecionar canais</button>
+            </div>
+            <div class="chart-wrap">
+              <canvas id="temperatureChart" aria-label="Gráfico de temperaturas ao longo do tempo"></canvas>
+              <div class="chart-empty" id="temperatureChartEmpty">Inicie uma sessão para visualizar os dados.</div>
+            </div>
+            <div class="chart-legend" id="temperatureLegend"></div>
+          </article>
+        </div>
+
+        <div class="bottom-grid">
+          <article class="panel">
+            <div class="panel-heading compact">
+              <div>
+                <p class="panel-kicker">CANAIS</p>
+                <h2>Leituras instantâneas</h2>
+              </div>
+              <button class="text-btn" data-go-section="channels">Ver todos</button>
+            </div>
+            <div class="channel-preview" id="channelPreview"></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading compact">
+              <div>
+                <p class="panel-kicker">SESSÃO</p>
+                <h2>Resumo da coleta</h2>
+              </div>
+            </div>
+            <div class="session-summary">
+              <div><span>Amostras</span><strong id="sampleCount">0</strong></div>
+              <div><span>Início</span><strong id="sessionStartedAt">—</strong></div>
+              <div><span>Maior potência</span><strong id="powerMax">—</strong></div>
+              <div><span>Alertas</span><strong id="alertCount">0</strong></div>
+            </div>
+            <div class="summary-actions">
+              <button class="btn secondary full" id="exportBtn" disabled>Exportar CSV</button>
+              <button class="btn ghost full" id="resetBtn">Limpar sessão</button>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section-panel" id="channelsSection">
+        <div class="section-header">
+          <div>
+            <p class="panel-kicker">CONFIGURAÇÃO DE ENTRADAS</p>
+            <h2>Canais de temperatura</h2>
+            <p>Ative apenas os termopares utilizados na medição.</p>
+          </div>
+          <div class="section-actions">
+            <button class="btn secondary" id="enableFirstEightBtn">Ativar 1–8</button>
+            <button class="btn ghost" id="disableAllBtn">Desativar todos</button>
+          </div>
+        </div>
+        <div class="channels-grid" id="channelsGrid"></div>
+      </section>
+
+      <section class="section-panel" id="eventsSection">
+        <div class="section-header">
+          <div>
+            <p class="panel-kicker">RASTREABILIDADE</p>
+            <h2>Eventos da sessão</h2>
+            <p>Conexões, alertas e alterações importantes ficam registrados aqui.</p>
+          </div>
+          <button class="btn ghost" id="clearEventsBtn">Limpar eventos</button>
+        </div>
+        <div class="panel">
+          <div class="event-list" id="eventList"></div>
+        </div>
+      </section>
+
+      <section class="section-panel" id="settingsSection">
+        <div class="section-header">
+          <div>
+            <p class="panel-kicker">PARÂMETROS</p>
+            <h2>Configurações do monitoramento</h2>
+            <p>Valores usados na simulação e nos alertas do protótipo.</p>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <article class="panel settings-card">
+            <h3>Comunicação serial</h3>
+            <label>
+              <span>Baud rate</span>
+              <select id="baudRateInput">
+                <option value="9600">9600</option>
+                <option value="19200">19200</option>
+                <option value="38400">38400</option>
+                <option value="57600">57600</option>
+                <option value="115200">115200</option>
+              </select>
+            </label>
+            <label>
+              <span>Intervalo de atualização</span>
+              <select id="intervalInput">
+                <option value="250">250 ms</option>
+                <option value="500">500 ms</option>
+                <option value="1000" selected>1 segundo</option>
+                <option value="2000">2 segundos</option>
+              </select>
+            </label>
+            <p class="hint">O baud rate correto dependerá do manual do equipamento.</p>
+          </article>
+
+          <article class="panel settings-card">
+            <h3>Limites de alerta</h3>
+            <label>
+              <span>Temperatura máxima (°C)</span>
+              <input id="temperatureLimitInput" type="number" value="80" min="-100" max="1000" />
+            </label>
+            <label>
+              <span>Potência máxima (W)</span>
+              <input id="powerLimitInput" type="number" value="2000" min="0" step="10" />
+            </label>
+            <p class="hint">Ao ultrapassar um limite, o sistema registra um alerta.</p>
+          </article>
+
+          <article class="panel settings-card">
+            <h3>Teste do protótipo</h3>
+            <p>Use estes controles para demonstrar situações reais.</p>
+            <button class="btn secondary full" id="temperatureSpikeBtn">Simular pico de temperatura</button>
+            <button class="btn secondary full" id="powerSpikeBtn">Simular pico de potência</button>
+            <button class="btn ghost full" id="disconnectTestBtn">Simular desconexão</button>
+          </article>
+
+          <article class="panel settings-card">
+            <h3>Formato esperado via USB</h3>
+            <pre class="code-sample">{"power": 850,
+ "powerUnit": "W",
+ "temperatures": [31.2, 31.8, 32.1]}</pre>
+            <p class="hint">Cada leitura deve terminar com uma quebra de linha. O formato será adaptado quando o protocolo real for conhecido.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast-container" id="toastContainer" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
