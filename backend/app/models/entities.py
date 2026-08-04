@@ -316,8 +316,16 @@ class SystemEvent(Base):
 class Report(Base):
     __tablename__ = "reports"
     id: Mapped[int] = mapped_column(primary_key=True)
-    session_id: Mapped[int] = mapped_column(ForeignKey("measurement_sessions.id"))
+    session_id: Mapped[int | None] = mapped_column(ForeignKey("measurement_sessions.id"))
+    scope_type: Mapped[str] = mapped_column(String(16), default="session", index=True)
+    period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    timezone: Mapped[str | None] = mapped_column(String(64))
     type: Mapped[str] = mapped_column(String(12))
+    title: Mapped[str | None] = mapped_column(String(180))
+    filters_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     file_path: Mapped[str | None] = mapped_column(String(500))
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     generated_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    status: Mapped[str] = mapped_column(String(20), default="completed", index=True)
+    error_message: Mapped[str | None] = mapped_column(Text)

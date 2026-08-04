@@ -36,6 +36,6 @@ def test_upgrade_accepts_schema_precreated_by_sqlalchemy(tmp_path):
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            "0002_dual_device_integration"
+            "0003_period_reports"
         )
         assert "session_devices" in inspect(connection).get_table_names()

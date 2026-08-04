@@ -14,12 +14,13 @@ const management = () => import("./pages/ManagementPages");
 const AlertsPage = lazy(() => management().then((module) => ({ default: module.AlertsPage })));
 const ChannelsPage = lazy(() => management().then((module) => ({ default: module.ChannelsPage })));
 const ComparePage = lazy(() => management().then((module) => ({ default: module.ComparePage })));
-const DevicesPage = lazy(() => management().then((module) => ({ default: module.DevicesPage })));
 const DiagnosticsPage = lazy(() => management().then((module) => ({ default: module.DiagnosticsPage })));
 const EventsPage = lazy(() => management().then((module) => ({ default: module.EventsPage })));
 const ExecutivePage = lazy(() => management().then((module) => ({ default: module.ExecutivePage })));
-const ReportsPage = lazy(() => management().then((module) => ({ default: module.ReportsPage })));
 const UsersPage = lazy(() => management().then((module) => ({ default: module.UsersPage })));
+const DevicesDiscoveryPage = lazy(() => import("./pages/DevicesDiscoveryPage"));
+const PeriodReportsPage = lazy(() => import("./pages/PeriodReportsPage"));
+const SetupWizardPage = lazy(() => import("./pages/SetupWizardPage"));
 
 function ProtectedLayout() {
   const { user, loading } = useAuth();
@@ -42,14 +43,15 @@ export default function App() {
       <Route path="sessoes/:id" element={<SessionDetailPage />} />
       <Route path="medicoes" element={<MeasurementsPage />} />
       <Route path="importar" element={<ImportPage />} />
-      <Route path="equipamentos" element={<DevicesPage />} />
+      <Route path="equipamentos" element={<DevicesDiscoveryPage />} />
       <Route path="canais" element={<ChannelsPage />} />
       <Route path="alertas" element={<AlertsPage />} />
       <Route path="eventos" element={<EventsPage />} />
-      <Route path="relatorios" element={<ReportsPage />} />
+      <Route path="relatorios" element={<PeriodReportsPage />} />
       <Route path="comparacao" element={<ComparePage />} />
       <Route path="usuarios" element={<AdminOnly />} />
       <Route path="diagnostico" element={<DiagnosticsPage />} />
+      <Route path="configuracao-inicial" element={<SetupWizardPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Route>
   </Routes></Suspense>;

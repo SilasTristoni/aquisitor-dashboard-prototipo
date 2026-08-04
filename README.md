@@ -16,6 +16,10 @@ Plataforma full-stack para aquisição industrial combinada: até 32 temperatura
 - eventos de conexão, sessão, configuração, login e falhas;
 - estatísticas de média, mínimo, máximo, mediana, desvio padrão, amplitude, percentil 95, frequência e lacunas;
 - relatórios CSV, XLSX e PDF gerados no backend;
+- relatórios por intervalo de data/hora atravessando múltiplas sessões, com estatísticas sobre
+  todos os dados e gráficos Matplotlib reais em PDF/PNG/JPEG;
+- descoberta USB/COM pelo backend, associação por metadados reais e diagnóstico em etapas;
+- assistente de primeiro uso e estratégia de pacote Windows 0.4.0-beta com PyInstaller/Inno;
 - comparação de sessões, visão executiva e diagnóstico do sistema;
 - simulador configurável com oito cenários;
 - adaptadores `SimulatorAdapter`, `SerialJsonAdapter`, `SerialCsvAdapter` e `MockFailureAdapter`;
@@ -64,6 +68,10 @@ npm run dev
 Acesse `http://localhost:5173`. A API estará em `http://localhost:8000` e o Swagger em `http://localhost:8000/docs`.
 
 No Windows, use `iniciar-windows.bat` na raiz. Na primeira execução ele cria o ambiente virtual, instala dependências, aplica migrações, abre backend e frontend e acessa `http://127.0.0.1:5173`. Se falhar, execute `diagnostico-windows.bat` e envie a saída ao suporte.
+
+Para compilar o instalador beta sem exigir Python/Node no computador de destino, consulte
+[Pacote de homologação Windows](docs/WINDOWS_TEST_PACKAGE.md) e execute
+`scripts\build-windows.ps1` em um host Windows com Inno Setup 6.
 
 ### Importação AT4532 + GPM-8213
 
@@ -127,6 +135,8 @@ Variáveis usam o prefixo `THERMOPOWER_`. As principais são:
 - `CORS_ORIGINS`: lista JSON de origens;
 - `DEMO_ADMIN_EMAIL` e `DEMO_ADMIN_PASSWORD`;
 - `MEASUREMENT_BATCH_SIZE` e `WEBSOCKET_QUEUE_SIZE`.
+- `MAX_REPORT_PERIOD_DAYS`, `REPORT_PREVIEW_MAX_POINTS`,
+  `REPORT_ENERGY_MAX_GAP_SECONDS` e `REPORT_OUTPUT_DIRECTORY`.
 
 Veja `.env.example`; nunca versione `.env`.
 

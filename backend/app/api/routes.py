@@ -4,6 +4,7 @@ import shutil
 import time
 from datetime import UTC, datetime
 from typing import Annotated, Literal
+from urllib.parse import quote
 
 from fastapi import (
     APIRouter,
@@ -59,17 +60,26 @@ from app.schemas.contracts import (
     ChannelProfileCreate,
     DeviceInput,
     LoginRequest,
+    PeriodReportRequest,
     SessionCreate,
     SimulatorConfigInput,
     TokenResponse,
+    UsbAssociationRequest,
     UserCreate,
     UserRead,
 )
 from app.services.acquisition import acquisition_service
 from app.services.imports import create_import_session
+from app.services.period_documents import (
+    render_period_chart,
+    render_period_pdf,
+    safe_report_filename,
+)
+from app.services.period_reporting import PeriodReportDataService
 from app.services.reporting import create_chart_image, create_csv, create_pdf, create_xlsx
 from app.services.statistics import executive_statistics, session_statistics
 from app.services.synchronization import synchronized_series
+from app.services.usb_discovery import usb_discovery_service
 from app.services.websocket import websocket_hub
 
 router = APIRouter(prefix="/api/v1")
@@ -181,7 +191,12 @@ def create_user(payload: UserCreate, db: Db, _: User = Depends(require_roles("ad
 
 @router.get("/devices")
 def list_devices(db: Db, _: CurrentUser) -> list[dict]:
-    return [_device_dict(device) for device in db.scalars(select(Device).order_by(Device.name))]
+    return [
+        _device_dict(device)
+        for device in db.scalars(
+            select(Device).where(Device.active.is_(True)).order_by(Device.name)
+        )
+    ]
 
 
 @router.post("/devices", status_code=201)
@@ -217,20 +232,34 @@ def create_device(payload: DeviceInput, db: Db, _: User = Depends(require_roles(
 
 
 @router.get("/device-ports")
-def list_device_ports(_: CurrentUser) -> list[dict]:
-    from serial.tools import list_ports
+def list_device_ports(db: Db, _: CurrentUser) -> list[dict]:
+    return usb_discovery_service.discover(db, _active_device_ports(db))
 
-    return [
-        {
-            "port": item.device,
-            "description": item.description,
-            "manufacturer": item.manufacturer,
-            "serial_number": item.serial_number,
-            "vid": item.vid,
-            "pid": item.pid,
-        }
-        for item in list_ports.comports()
-    ]
+
+def _active_device_ports(db: Session) -> set[str]:
+    device_ids = list(acquisition_service.runtimes)
+    if not device_ids:
+        return set()
+    return {
+        port for port in db.scalars(select(Device.port).where(Device.id.in_(device_ids))) if port
+    }
+
+
+@router.get("/hardware/discovery")
+def discover_hardware(db: Db, _: CurrentUser) -> list[dict]:
+    return usb_discovery_service.discover(db, _active_device_ports(db))
+
+
+@router.post("/hardware/discovery/associate")
+def associate_discovered_hardware(
+    payload: UsbAssociationRequest,
+    db: Db,
+    _: User = Depends(require_roles("admin", "operator")),
+) -> dict:
+    try:
+        return usb_discovery_service.associate(db, payload.port, payload.device_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.put("/devices/{device_id}")
@@ -246,6 +275,25 @@ def update_device(
     db.commit()
     db.refresh(device)
     return _device_dict(device)
+
+
+@router.delete("/devices/{device_id}", status_code=204)
+def delete_device(device_id: int, db: Db, user: User = Depends(require_roles("admin"))) -> Response:
+    device = db.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+    if device_id in acquisition_service.runtimes:
+        raise HTTPException(status_code=409, detail="Desconecte o equipamento antes de remover")
+    device.active = False
+    db.add(
+        SystemEvent(
+            device_id=device.id,
+            category="configuration",
+            message=f"Equipamento arquivado por {user.email}",
+        )
+    )
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/devices/{device_id}/connect")
@@ -277,8 +325,15 @@ async def test_device_connection(
 ) -> dict:
     was_connected = device_id in acquisition_service.runtimes
     started = time.monotonic()
+    stages = [
+        {"key": "open_port", "label": "Abrir porta", "status": "pending"},
+        {"key": "receive_data", "label": "Receber dados", "status": "pending"},
+        {"key": "recognize_format", "label": "Reconhecer formato", "status": "pending"},
+        {"key": "inspect_channels", "label": "Inspecionar canais", "status": "pending"},
+    ]
     try:
         status = await acquisition_service.connect(device_id)
+        stages[0]["status"] = "passed"
         runtime = acquisition_service.runtimes[device_id]
         for _ in range(30):
             if runtime.latest:
@@ -286,16 +341,39 @@ async def test_device_connection(
             await asyncio.sleep(0.1)
         info = await runtime.adapter.get_device_information()
         adapter_status = await runtime.adapter.get_status()
+        received = runtime.latest is not None
+        stages[1]["status"] = "passed" if received else "failed"
+        stages[2]["status"] = "passed" if received else "not_run"
+        stages[3]["status"] = "passed" if received else "not_run"
         return {
             "port_open": adapter_status.connected,
-            "data_received": runtime.latest is not None,
-            "format_recognized": runtime.latest is not None,
+            "data_received": received,
+            "format_recognized": received,
             "approximate_frequency_hz": adapter_status.messages_per_second,
             "detected_channels": len(runtime.latest.temperatures_c) if runtime.latest else 0,
             "errors": adapter_status.read_errors,
             "elapsed_ms": round((time.monotonic() - started) * 1000),
             "information": info.model_dump(mode="json"),
             "status": status,
+            "stages": stages,
+            "physical_validation": "pending",
+        }
+    except (ValueError, RuntimeError, ConnectionError, OSError) as exc:
+        stages[0]["status"] = "failed"
+        stages[0]["message"] = str(exc)
+        for stage in stages[1:]:
+            stage["status"] = "not_run"
+        return {
+            "port_open": False,
+            "data_received": False,
+            "format_recognized": False,
+            "approximate_frequency_hz": 0.0,
+            "detected_channels": 0,
+            "errors": 1,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+            "stages": stages,
+            "physical_validation": "pending",
+            "message": str(exc),
         }
     finally:
         if not was_connected:
@@ -1083,6 +1161,112 @@ def list_events(
 @router.get("/reports", response_model=None)
 def list_reports(db: Db, _: CurrentUser) -> list[Report]:
     return list(db.scalars(select(Report).order_by(Report.generated_at.desc()).limit(100)))
+
+
+def _period_report_record(
+    db: Session, payload: PeriodReportRequest, user_id: int, report_type: str
+) -> Report:
+    report = Report(
+        session_id=None,
+        scope_type="period",
+        period_start=payload.start,
+        period_end=payload.end,
+        timezone=payload.timezone,
+        type=report_type,
+        title=payload.title,
+        filters_json=payload.model_dump(mode="json"),
+        generated_by=user_id,
+        status="generating",
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    return report
+
+
+def _period_content_disposition(title: str, extension: str) -> str:
+    filename = safe_report_filename(title, extension)
+    return f"attachment; filename=\"{filename}\"; filename*=UTF-8''{quote(filename)}"
+
+
+def _finish_period_report(db: Session, report: Report, builder: callable) -> bytes:
+    try:
+        content = builder()
+        report.status = "completed"
+        report.error_message = None
+        db.commit()
+        return content
+    except Exception as exc:
+        report.status = "failed"
+        report.error_message = str(exc)[:2000]
+        db.commit()
+        raise
+
+
+@router.post("/reports/period/preview")
+def preview_period_report(payload: PeriodReportRequest, db: Db, _: CurrentUser) -> dict:
+    try:
+        return PeriodReportDataService(db).preview(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/reports/period/pdf")
+def download_period_pdf(
+    payload: PeriodReportRequest, db: Db, user: CurrentUser
+) -> StreamingResponse:
+    report = _period_report_record(db, payload, user.id, "pdf")
+    try:
+        content = _finish_period_report(
+            db,
+            report,
+            lambda: render_period_pdf(PeriodReportDataService(db).collect(payload), payload),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/pdf",
+        headers={"Content-Disposition": _period_content_disposition(payload.title, "pdf")},
+    )
+
+
+def _period_chart_response(
+    payload: PeriodReportRequest,
+    db: Session,
+    user: User,
+    image_type: Literal["png", "jpeg"],
+) -> StreamingResponse:
+    report = _period_report_record(db, payload, user.id, image_type)
+    try:
+        content = _finish_period_report(
+            db,
+            report,
+            lambda: render_period_chart(
+                PeriodReportDataService(db).collect(payload), payload, image_type
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=f"image/{image_type}",
+        headers={"Content-Disposition": _period_content_disposition(payload.title, image_type)},
+    )
+
+
+@router.post("/reports/period/chart.png")
+def download_period_chart_png(
+    payload: PeriodReportRequest, db: Db, user: CurrentUser
+) -> StreamingResponse:
+    return _period_chart_response(payload, db, user, "png")
+
+
+@router.post("/reports/period/chart.jpeg")
+def download_period_chart_jpeg(
+    payload: PeriodReportRequest, db: Db, user: CurrentUser
+) -> StreamingResponse:
+    return _period_chart_response(payload, db, user, "jpeg")
 
 
 @router.get("/reports/sessions/{session_id}.{report_type}")

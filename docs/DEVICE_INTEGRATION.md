@@ -63,3 +63,15 @@ Também aceita `mW` e `kW`. Esse é um contrato de desenvolvimento, não o proto
 7. Documentar matriz firmware/driver/SO e assinar protocolo homologado.
 
 Até essa validação, a integração serial deve ser apresentada como **preparada, não homologada**. A pasta `reference-input/` recebida estava vazia; os testes automatizados usam apenas fixtures sintéticas geradas em memória.
+
+## Descoberta USB / COM
+
+`UsbDeviceDiscoveryService` enumera os campos reportados pelo sistema operacional e pode abrir
+e fechar a porta imediatamente, sem transmitir bytes, para distinguir disponibilidade de uso
+por outro processo. Aquisições ativas do próprio ThermoPower são marcadas ocupadas sem nova
+abertura. A associação usa, nesta ordem, número de série USB, par VID/PID salvo e nome da porta.
+
+Descrições contendo literalmente AT4532 ou GPM-8213 geram apenas `possible_*` com confiança
+média. Nenhum VID/PID conhecido foi codificado, pois os manuais mencionados no briefing não
+existem no repositório. Porta aberta, nome parecido ou driver instalado não equivalem a
+identificação/homologação do instrumento.

@@ -48,6 +48,13 @@ O backend é a autoridade sobre autenticação, dispositivo, sessão, aquisiçã
 - **Agregação no backend:** endpoints de séries aceitam janela e limite de pontos. Listagens usam paginação por página.
 - **Estatística incremental:** contagem, soma, mínimo e máximo são atualizados durante aquisição; análises mais caras são calculadas sob demanda no backend.
 - **Relatórios gerados no backend:** CSV, XLSX e PDF compartilham filtros e respeitam autorização.
+- **Relatórios por período segmentados:** a consulta lê os fluxos independentes, separa sessões
+  concorrentes e calcula estatísticas/energia antes do downsampling. Matplotlib/Agg gera os
+  gráficos e ReportLab monta o documento multipágina.
+- **Descoberta de hardware no backend:** a SPA não toca portas seriais. O serviço enumera e
+  testa abertura sem comandos, associa por serial/VID+PID/porta e deixa explícita a confiança.
+- **Runtime Windows autocontido:** PyInstaller inclui API, migrations e SPA; o launcher usa
+  `%LOCALAPPDATA%` e o FastAPI serve os arquivos estáticos no modo empacotado.
 
 ## Segurança
 

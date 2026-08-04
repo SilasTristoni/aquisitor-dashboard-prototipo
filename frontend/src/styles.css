@@ -280,6 +280,57 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary) 2.5%, var(--surfa
 .timeline strong { font-size: 9px; }
 
 .report-layout { display: grid; grid-template-columns: 1fr .7fr; gap: 13px; margin-bottom: 13px; }
+.period-layout { grid-template-columns: minmax(480px,.9fr) minmax(520px,1.1fr); align-items:start; }
+.tab-list { display:flex; gap:5px; margin:0 0 13px; padding:4px; width:max-content; max-width:100%; border:1px solid var(--border); border-radius:10px; background:var(--surface); }
+.tab-list button { padding:8px 15px; border:0; border-radius:7px; color:var(--muted); background:transparent; font-size:9px; font-weight:750; cursor:pointer; }
+.tab-list button.active { color:#fff; background:var(--primary); }
+.preset-row,.wizard-actions { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:12px; }
+.field textarea { min-height:68px; resize:vertical; }
+.channel-picker { display:grid; grid-template-columns:repeat(8,1fr); gap:5px; margin-top:6px; }
+.channel-picker label { padding:6px 3px; border:1px solid var(--border); border-radius:6px; color:var(--muted); background:var(--surface-soft); text-align:center; font-size:8px; }
+.channel-picker input,.check-field input { width:auto; min-height:auto; }
+.advanced-options { margin:12px 0; padding:9px 11px; border:1px solid var(--border); border-radius:8px; }
+.advanced-options summary { color:var(--primary); font-size:9px; font-weight:800; cursor:pointer; }
+.advanced-options .form-grid { margin-top:10px; }
+.period-preview .metrics-grid { margin-bottom:12px; }
+.preview-warning { margin:6px 0; padding:8px 10px; border:1px solid color-mix(in srgb,var(--warning) 30%,var(--border)); border-radius:7px; color:var(--warning); background:color-mix(in srgb,var(--warning) 7%,var(--surface)); display:flex; align-items:center; gap:7px; font-size:8px; }
+.preview-warning svg { width:13px; }
+.preview-chart { margin-top:12px; padding:10px; border:1px solid var(--border); border-radius:9px; overflow:hidden; }
+.preview-chart h3 { margin:0 0 8px; font-size:10px; }
+.usb-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:12px; }
+.usb-card { padding:14px; border:1px solid var(--border); border-radius:11px; background:var(--surface-soft); }
+.usb-card h3 { margin:8px 0 2px; font-size:15px; }
+.usb-card > p { color:var(--muted); font-size:8px; }
+.usb-details { margin:10px 0; display:grid; grid-template-columns:1fr 1fr; gap:7px; }
+.usb-details div { min-width:0; }
+.usb-details dt { color:var(--muted); font-size:7px; text-transform:uppercase; }
+.usb-details dd { margin:2px 0 0; overflow-wrap:anywhere; font-size:8px; font-weight:700; }
+.association-note { margin:8px 0; padding:7px; border-radius:7px; background:var(--primary-soft); display:flex; align-items:center; gap:7px; font-size:8px; }
+.association-note svg { width:14px; color:var(--primary); }
+.field.compact { margin-top:8px; }
+.test-steps { display:grid; gap:7px; margin:10px 0; }
+.test-steps > div { min-height:38px; padding:7px 9px; border:1px solid var(--border); border-radius:7px; display:grid; grid-template-columns:70px 1fr; align-items:center; gap:8px; }
+.test-steps small { grid-column:2; color:var(--muted); font-size:7px; }
+.spin { animation:spin 1s linear infinite; }
+.wizard-steps { margin:0 0 13px; padding:0; display:grid; grid-template-columns:repeat(6,1fr); list-style:none; }
+.wizard-steps li { position:relative; color:var(--muted); display:grid; justify-items:center; gap:4px; font-size:8px; }
+.wizard-steps li::before { content:""; position:absolute; z-index:0; top:12px; right:50%; width:100%; border-top:1px solid var(--border); }
+.wizard-steps li:first-child::before { display:none; }
+.wizard-steps span { position:relative; z-index:1; width:25px; height:25px; border:1px solid var(--border); border-radius:50%; background:var(--surface); display:grid; place-items:center; font-size:8px; }
+.wizard-steps svg { width:12px; }
+.wizard-steps .active,.wizard-steps .done { color:var(--primary); font-weight:800; }
+.wizard-steps .active span,.wizard-steps .done span { border-color:var(--primary); color:#fff; background:var(--primary); }
+.wizard-panel { position:relative; min-height:390px; }
+.wizard-copy { max-width:820px; margin:auto; padding:22px; text-align:center; }
+.wizard-copy > svg { width:45px; height:45px; padding:10px; border-radius:12px; color:var(--primary); background:var(--primary-soft); }
+.wizard-copy h2 { margin:14px 0 7px; }
+.wizard-copy p { color:var(--muted); font-size:10px; line-height:1.6; }
+.wizard-copy > .button { margin-top:15px; }
+.wizard-form { max-width:520px; margin:15px auto; text-align:left; }
+.wizard-back { position:absolute; left:15px; bottom:15px; }
+.usb-choice { min-height:100px; padding:11px; border:1px solid var(--border); border-radius:9px; color:var(--text); background:var(--surface-soft); display:grid; gap:5px; text-align:left; cursor:pointer; }
+.usb-choice.selected { border-color:var(--primary); box-shadow:0 0 0 2px var(--primary-soft); }
+.usb-choice span { color:var(--muted); font-size:8px; }
 .report-layout .panel + .panel { margin-top: 0; }
 .check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
 .check-grid label { color: var(--muted); font-size: 9px; }
@@ -378,6 +429,8 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary) 2.5%, var(--surfa
   .device-grid { grid-template-columns:repeat(2,1fr); }
   .channels-grid { grid-template-columns:repeat(2,1fr); }
   .session-select-grid { grid-template-columns:repeat(2,1fr); }
+  .period-layout { grid-template-columns:1fr; }
+  .usb-grid { grid-template-columns:repeat(2,1fr); }
 }
 @media (max-width: 760px) {
   .page-header { align-items:flex-start; flex-direction:column; }
@@ -400,6 +453,8 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary) 2.5%, var(--surfa
   .alert-list time { display:none; }
   .timeline > div { grid-template-columns:90px 80px 1fr; }
   .session-select-grid { grid-template-columns:1fr; }
+  .usb-grid { grid-template-columns:1fr; }
+  .wizard-steps small { display:none; }
   .login-shell { grid-template-columns:1fr; background:#f7f9fd; }
   .login-visual { min-height:280px; padding:28px; }
   .login-copy { margin:45px 0 20px; }
