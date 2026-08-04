@@ -4,7 +4,9 @@
 
 O repositório inicial é uma aplicação estática composta por `index.html`, `styles.css` e `app.js`. O JavaScript concentra UI, simulação, aquisição Web Serial, cálculos, alertas, histórico e exportação. O estado reside exclusivamente na memória do navegador e desaparece ao recarregar a página.
 
-Pontos positivos preservados: identidade azul industrial, dashboard direto, suporte visual a 16 termopares, normalização de mW/W/kW, simulador, eventos, alertas e CSV.
+Pontos positivos preservados: identidade azul industrial, dashboard direto, normalização de unidades, simulador, eventos, alertas e exportações. A camada aditiva suporta 32 termopares e separa as séries térmica e elétrica sem remover o contrato legado.
+
+O fluxo integrado é `adapter/importer → TemperatureReading|ElectricalReading → tabelas independentes → sincronização por vizinho temporal → API/gráfico/exportação`. A associação `session_devices` permite que apenas uma fonte exista sem fabricar valores para a outra.
 
 Problemas que impedem uso comercial:
 

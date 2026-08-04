@@ -310,6 +310,18 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary) 2.5%, var(--surfa
 .health-list svg { color: var(--muted); width: 15px; }
 .health-list span { font-size: 9px; }
 .date-filter { padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); background: var(--surface); font-size: 9px; }
+.import-grid { display:grid; grid-template-columns:1fr 1fr; gap:13px; }
+.import-grid .panel + .panel { margin-top:0; }
+.upload-drop { min-height:150px; border:1px dashed var(--border-strong); border-radius:12px; display:grid; place-items:center; align-content:center; gap:7px; cursor:pointer; background:var(--surface-soft); }
+.upload-drop svg { width:30px; color:var(--primary); }
+.upload-drop strong { font-size:11px; }
+.upload-drop span { color:var(--muted); font-size:8px; }
+.upload-drop input { position:absolute; width:1px; height:1px; opacity:0; }
+.import-actions { min-height:70px; display:flex; align-items:center; gap:14px; }
+.preview-summary { margin-top:12px; padding:11px; border:1px solid var(--border); border-radius:9px; }
+.preview-summary > div { display:flex; gap:6px; }
+.preview-summary small,.preview-summary p { color:var(--muted); font-size:8px; line-height:1.5; }
+.preview-summary .import-error { color:var(--danger); }
 
 .login-shell { min-height: 100vh; display: grid; grid-template-columns: minmax(420px, 1.05fr) minmax(420px, .95fr); background: #fff; }
 .login-visual { position: relative; overflow: hidden; padding: 40px clamp(35px,6vw,85px); color: #fff; background: radial-gradient(circle at 75% 65%, rgba(54,104,237,.35), transparent 28%), linear-gradient(145deg,#0e172c 15%,#152548 72%,#143a52); display: flex; flex-direction: column; }
@@ -373,7 +385,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary) 2.5%, var(--surfa
   .page-actions > .button { flex:1; }
   .compact-field { flex:1; }
   .compact-field select { min-width:0; }
-  .charts-grid,.dashboard-bottom,.report-layout,.diagnostic-grid { grid-template-columns:1fr; }
+  .charts-grid,.dashboard-bottom,.report-layout,.diagnostic-grid,.import-grid { grid-template-columns:1fr; }
   .charts-grid .panel + .panel,.dashboard-bottom .panel + .panel,.report-layout .panel + .panel,.diagnostic-grid .panel + .panel { margin-top:0; }
   .status-strip { flex-direction:column; }
   .status-facts { width:100%; }

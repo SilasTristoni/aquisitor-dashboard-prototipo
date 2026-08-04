@@ -7,8 +7,10 @@ from time import monotonic
 from sqlalchemy import select
 
 from app.adapters import (
+    At4532Adapter,
     DeviceAdapter,
     DeviceReading,
+    Gpm8213Adapter,
     MockFailureAdapter,
     SerialCsvAdapter,
     SerialJsonAdapter,
@@ -21,9 +23,13 @@ from app.models.entities import (
     AlertRule,
     ChannelConfiguration,
     Device,
+    ElectricalSample,
     Measurement,
+    SessionDevice,
     SystemEvent,
+    TemperatureChannelValue,
     TemperatureMeasurement,
+    TemperatureSample,
 )
 from app.schemas.contracts import SimulatorConfigInput
 from app.services.websocket import websocket_hub
@@ -67,6 +73,10 @@ class AcquisitionService:
             return SerialCsvAdapter(device.port, device.baud_rate)
         if device.protocol == "mock_failure":
             return MockFailureAdapter()
+        if device.protocol == "at4532_serial":
+            return At4532Adapter(device.port, device.baud_rate)
+        if device.protocol == "gpm8213_serial":
+            return Gpm8213Adapter(device.port, device.baud_rate)
         raise ValueError(f"Protocolo não suportado: {device.protocol}")
 
     async def connect(self, device_id: int) -> dict:
@@ -220,34 +230,87 @@ class AcquisitionService:
         runtime.buffer.clear()
         session_id = runtime.session_id
         with SessionLocal() as db:
+            role = (
+                db.scalar(
+                    select(SessionDevice.role).where(
+                        SessionDevice.session_id == session_id,
+                        SessionDevice.device_id == device_id,
+                    )
+                )
+                or "combined"
+            )
             channels = {
                 channel.channel: channel
                 for channel in db.scalars(
                     select(ChannelConfiguration).where(ChannelConfiguration.device_id == device_id)
                 )
             }
-            for reading in readings:
-                measurement = Measurement(
-                    session_id=session_id,
-                    timestamp=reading.timestamp,
-                    power_w=reading.power_w,
-                    raw_power=reading.raw_power,
-                    raw_power_unit=reading.raw_power_unit,
-                    quality=reading.quality,
-                )
-                for index, value in enumerate(reading.temperatures_c, 1):
+            for sequence, reading in enumerate(readings, 1):
+                if role in {"combined", "electrical"}:
+                    db.add(
+                        ElectricalSample(
+                            session_id=session_id,
+                            device_id=device_id,
+                            device_timestamp=reading.timestamp,
+                            received_timestamp=reading.timestamp,
+                            active_power_w=reading.power_w,
+                            original_values={"active_power": reading.raw_power},
+                            original_units={"active_power": reading.raw_power_unit},
+                            quality=reading.quality,
+                            source="live",
+                            sequence=sequence,
+                            raw_payload={},
+                        )
+                    )
+                corrected_values: list[tuple[int, float | None]] = []
+                for index, value in enumerate(reading.temperatures_c[:32], 1):
                     config = channels.get(index)
                     corrected = value
                     if value is not None and config:
                         corrected = value + config.correction_offset
-                    measurement.temperatures.append(
+                    corrected_values.append((index, corrected))
+                if role in {"combined", "temperature"} and corrected_values:
+                    temperature_sample = TemperatureSample(
+                        session_id=session_id,
+                        device_id=device_id,
+                        device_timestamp=reading.timestamp,
+                        received_timestamp=reading.timestamp,
+                        quality=reading.quality,
+                        source="live",
+                        sequence=sequence,
+                        raw_payload={},
+                    )
+                    temperature_sample.channels = [
+                        TemperatureChannelValue(
+                            channel=index,
+                            temperature_c=corrected,
+                            original_value=reading.temperatures_c[index - 1],
+                            original_unit="°C",
+                            quality="missing" if value is None else "good",
+                        )
+                        for (index, corrected), value in zip(
+                            corrected_values, reading.temperatures_c, strict=False
+                        )
+                    ]
+                    db.add(temperature_sample)
+                if role == "combined":
+                    measurement = Measurement(
+                        session_id=session_id,
+                        timestamp=reading.timestamp,
+                        power_w=reading.power_w,
+                        raw_power=reading.raw_power,
+                        raw_power_unit=reading.raw_power_unit,
+                        quality=reading.quality,
+                    )
+                    measurement.temperatures = [
                         TemperatureMeasurement(
                             channel=index,
                             temperature_c=corrected,
-                            quality="missing" if value is None else "good",
+                            quality="missing" if corrected is None else "good",
                         )
-                    )
-                db.add(measurement)
+                        for index, corrected in corrected_values
+                    ]
+                    db.add(measurement)
             db.commit()
         runtime.last_flush = monotonic()
 

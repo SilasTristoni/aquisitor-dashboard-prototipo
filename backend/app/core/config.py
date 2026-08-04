@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     measurement_batch_size: int = 25
     websocket_queue_size: int = 100
     login_attempts_per_minute: int = 8
+    max_upload_bytes: int = 25 * 1024 * 1024
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="THERMOPOWER_", extra="ignore")
 

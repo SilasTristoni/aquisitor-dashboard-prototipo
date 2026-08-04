@@ -75,6 +75,8 @@ def test_complete_simulated_measurement_flow(client: TestClient, auth_headers: d
         ("csv", "text/csv"),
         ("xlsx", "application/vnd.openxmlformats-officedocument"),
         ("pdf", "application/pdf"),
+        ("png", "image/png"),
+        ("jpg", "image/jpeg"),
     ]:
         report = client.get(
             f"/api/v1/reports/sessions/{session_id}.{report_type}", headers=auth_headers

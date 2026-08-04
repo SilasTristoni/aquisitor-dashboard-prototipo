@@ -2,7 +2,18 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -66,6 +77,9 @@ class MeasurementSession(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(24), default="running", index=True)
     sample_interval_ms: Mapped[int] = mapped_column(Integer, default=1000)
+    acquisition_mode: Mapped[str] = mapped_column(String(24), default="live")
+    sync_grid_ms: Mapped[int] = mapped_column(Integer, default=1000)
+    sync_tolerance_ms: Mapped[int] = mapped_column(Integer, default=1500)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     device: Mapped[Device] = relationship()
@@ -118,6 +132,141 @@ class ChannelConfiguration(Base):
     color: Mapped[str] = mapped_column(String(10), default="#3667E9")
     description: Mapped[str | None] = mapped_column(Text)
     physical_location: Mapped[str | None] = mapped_column(String(160))
+    display_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class SessionDevice(Base):
+    """Associates independently acquired streams with a measurement session."""
+
+    __tablename__ = "session_devices"
+    __table_args__ = (
+        UniqueConstraint("session_id", "role", name="uq_session_devices_session_role"),
+        UniqueConstraint("session_id", "device_id", "role", name="uq_session_devices_mapping"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("measurement_sessions.id", ondelete="CASCADE"), index=True
+    )
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id"), index=True)
+    role: Mapped[str] = mapped_column(String(24))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    device: Mapped[Device] = relationship()
+
+
+class TemperatureSample(Base):
+    __tablename__ = "temperature_samples"
+    __table_args__ = (
+        Index("ix_temperature_samples_session_time", "session_id", "received_timestamp"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("measurement_sessions.id", ondelete="CASCADE"), index=True
+    )
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id"), index=True)
+    device_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    received_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    ambient_temperature_c: Mapped[float | None] = mapped_column(Float)
+    quality: Mapped[str] = mapped_column(String(24), default="good")
+    source: Mapped[str] = mapped_column(String(24), default="live")
+    source_row: Mapped[int | None] = mapped_column(Integer)
+    sequence: Mapped[int | None] = mapped_column(Integer)
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    channels: Mapped[list["TemperatureChannelValue"]] = relationship(cascade="all, delete-orphan")
+
+
+class TemperatureChannelValue(Base):
+    __tablename__ = "temperature_channel_values"
+    __table_args__ = (
+        UniqueConstraint("sample_id", "channel", name="uq_temperature_sample_channel"),
+        Index("ix_temperature_channel_values_channel", "channel"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sample_id: Mapped[int] = mapped_column(
+        ForeignKey("temperature_samples.id", ondelete="CASCADE"), index=True
+    )
+    channel: Mapped[int] = mapped_column(Integer)
+    temperature_c: Mapped[float | None] = mapped_column(Float)
+    original_value: Mapped[float | None] = mapped_column(Float)
+    original_unit: Mapped[str] = mapped_column(String(12), default="°C")
+    quality: Mapped[str] = mapped_column(String(24), default="good")
+
+
+class ElectricalSample(Base):
+    __tablename__ = "electrical_samples"
+    __table_args__ = (
+        Index("ix_electrical_samples_session_time", "session_id", "received_timestamp"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("measurement_sessions.id", ondelete="CASCADE"), index=True
+    )
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id"), index=True)
+    device_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    received_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    voltage_v: Mapped[float | None] = mapped_column(Float)
+    current_a: Mapped[float | None] = mapped_column(Float)
+    active_power_w: Mapped[float | None] = mapped_column(Float)
+    apparent_power_va: Mapped[float | None] = mapped_column(Float)
+    reactive_power_var: Mapped[float | None] = mapped_column(Float)
+    power_factor: Mapped[float | None] = mapped_column(Float)
+    voltage_frequency_hz: Mapped[float | None] = mapped_column(Float)
+    current_frequency_hz: Mapped[float | None] = mapped_column(Float)
+    original_values: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    original_units: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    quality: Mapped[str] = mapped_column(String(24), default="good")
+    source: Mapped[str] = mapped_column(String(24), default="live")
+    source_row: Mapped[int | None] = mapped_column(Integer)
+    sequence: Mapped[int | None] = mapped_column(Integer)
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SessionChannelConfiguration(Base):
+    __tablename__ = "session_channel_configurations"
+    __table_args__ = (
+        UniqueConstraint("session_id", "channel", name="uq_session_channel_snapshot"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("measurement_sessions.id", ondelete="CASCADE"), index=True
+    )
+    source_configuration_id: Mapped[int | None] = mapped_column(
+        ForeignKey("channel_configurations.id", ondelete="SET NULL")
+    )
+    channel: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(80))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    sensor_type: Mapped[str] = mapped_column(String(20), default="K")
+    unit: Mapped[str] = mapped_column(String(12), default="°C")
+    correction_offset: Mapped[float] = mapped_column(Float, default=0)
+    warning_limit: Mapped[float | None] = mapped_column(Float)
+    critical_limit: Mapped[float | None] = mapped_column(Float)
+    color: Mapped[str] = mapped_column(String(10), default="#3667E9")
+    description: Mapped[str | None] = mapped_column(Text)
+    physical_location: Mapped[str | None] = mapped_column(String(160))
+    display_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ChannelProfile(Base):
+    __tablename__ = "channel_profiles"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    description: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    channels: Mapped[list["ChannelProfileValue"]] = relationship(cascade="all, delete-orphan")
+
+
+class ChannelProfileValue(Base):
+    __tablename__ = "channel_profile_values"
+    __table_args__ = (UniqueConstraint("profile_id", "channel", name="uq_profile_channel"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    profile_id: Mapped[int] = mapped_column(
+        ForeignKey("channel_profiles.id", ondelete="CASCADE"), index=True
+    )
+    channel: Mapped[int] = mapped_column(Integer)
+    settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
 class AlertRule(Base):

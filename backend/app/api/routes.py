@@ -8,10 +8,13 @@ from typing import Annotated, Literal
 from fastapi import (
     APIRouter,
     Depends,
+    File,
+    Form,
     HTTPException,
     Query,
     Request,
     Response,
+    UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -30,21 +33,30 @@ from app.core.security import (
     login_rate_limiter,
     verify_password,
 )
+from app.importers import At4532XlsxImporter, Gpm8213TxtImporter
 from app.models.entities import (
     AlertEvent,
     AlertRule,
     ChannelConfiguration,
+    ChannelProfile,
+    ChannelProfileValue,
     Device,
+    ElectricalSample,
     Measurement,
     MeasurementSession,
     Report,
+    SessionChannelConfiguration,
+    SessionDevice,
     SystemEvent,
+    TemperatureChannelValue,
     TemperatureMeasurement,
+    TemperatureSample,
     User,
 )
 from app.schemas.contracts import (
     AlertRuleInput,
     ChannelInput,
+    ChannelProfileCreate,
     DeviceInput,
     LoginRequest,
     SessionCreate,
@@ -54,14 +66,35 @@ from app.schemas.contracts import (
     UserRead,
 )
 from app.services.acquisition import acquisition_service
-from app.services.reporting import create_csv, create_pdf, create_xlsx
+from app.services.imports import create_import_session
+from app.services.reporting import create_chart_image, create_csv, create_pdf, create_xlsx
 from app.services.statistics import executive_statistics, session_statistics
+from app.services.synchronization import synchronized_series
 from app.services.websocket import websocket_hub
 
 router = APIRouter(prefix="/api/v1")
 settings = get_settings()
 Db = Annotated[Session, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+async def _safe_upload(upload: UploadFile, extension: str) -> bytes:
+    filename = (upload.filename or "").replace("\\", "/").split("/")[-1]
+    if not filename.lower().endswith(extension):
+        raise HTTPException(status_code=415, detail=f"Envie um arquivo {extension.upper()}")
+    payload = await upload.read(settings.max_upload_bytes + 1)
+    if len(payload) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail="Arquivo excede o limite permitido")
+    if not payload:
+        raise HTTPException(status_code=422, detail="Arquivo vazio")
+    return payload
+
+
+def _session_device_ids(db: Session, session: MeasurementSession) -> list[int]:
+    ids = list(
+        db.scalars(select(SessionDevice.device_id).where(SessionDevice.session_id == session.id))
+    )
+    return ids or [session.device_id]
 
 
 def _page(items: list, total: int, page: int, page_size: int) -> dict:
@@ -168,7 +201,7 @@ def create_device(payload: DeviceInput, db: Db, _: User = Depends(require_roles(
     db.add(device)
     db.flush()
     colors = ["#3667E9", "#16A66A", "#F39B22", "#DF5668", "#7857D8", "#1FA7BD"]
-    for channel in range(1, 17):
+    for channel in range(1, 33):
         db.add(
             ChannelConfiguration(
                 device_id=device.id,
@@ -181,6 +214,23 @@ def create_device(payload: DeviceInput, db: Db, _: User = Depends(require_roles(
     db.commit()
     db.refresh(device)
     return _device_dict(device)
+
+
+@router.get("/device-ports")
+def list_device_ports(_: CurrentUser) -> list[dict]:
+    from serial.tools import list_ports
+
+    return [
+        {
+            "port": item.device,
+            "description": item.description,
+            "manufacturer": item.manufacturer,
+            "serial_number": item.serial_number,
+            "vid": item.vid,
+            "pid": item.pid,
+        }
+        for item in list_ports.comports()
+    ]
 
 
 @router.put("/devices/{device_id}")
@@ -258,7 +308,7 @@ def list_channels(device_id: int, db: Db, _: CurrentUser) -> list[ChannelConfigu
         db.scalars(
             select(ChannelConfiguration)
             .where(ChannelConfiguration.device_id == device_id)
-            .order_by(ChannelConfiguration.channel)
+            .order_by(ChannelConfiguration.display_order, ChannelConfiguration.channel)
         )
     )
 
@@ -293,6 +343,75 @@ def update_channel(
     db.commit()
     db.refresh(channel)
     return channel
+
+
+@router.get("/channel-profiles")
+def list_channel_profiles(db: Db, _: CurrentUser) -> list[dict]:
+    profiles = db.scalars(
+        select(ChannelProfile)
+        .options(selectinload(ChannelProfile.channels))
+        .order_by(ChannelProfile.name)
+    ).all()
+    return [
+        {
+            "id": profile.id,
+            "name": profile.name,
+            "description": profile.description,
+            "channels": [value.settings for value in profile.channels],
+        }
+        for profile in profiles
+    ]
+
+
+@router.post("/channel-profiles", status_code=201)
+def create_channel_profile(
+    payload: ChannelProfileCreate,
+    db: Db,
+    user: User = Depends(require_roles("admin", "operator")),
+) -> dict:
+    if db.scalar(select(ChannelProfile).where(ChannelProfile.name == payload.name)):
+        raise HTTPException(status_code=409, detail="Já existe um perfil com este nome")
+    profile = ChannelProfile(name=payload.name, description=payload.description, created_by=user.id)
+    profile.channels = [
+        ChannelProfileValue(channel=channel.channel, settings=channel.model_dump())
+        for channel in payload.channels
+    ]
+    db.add(profile)
+    db.commit()
+    db.refresh(profile)
+    return {"id": profile.id, "name": profile.name}
+
+
+@router.post("/channel-profiles/{profile_id}/apply/{device_id}")
+def apply_channel_profile(
+    profile_id: int,
+    device_id: int,
+    db: Db,
+    _: User = Depends(require_roles("admin", "operator")),
+) -> dict:
+    profile = db.scalar(
+        select(ChannelProfile)
+        .options(selectinload(ChannelProfile.channels))
+        .where(ChannelProfile.id == profile_id)
+    )
+    if not profile or not db.get(Device, device_id):
+        raise HTTPException(status_code=404, detail="Perfil ou equipamento não encontrado")
+    current = {
+        item.channel: item
+        for item in db.scalars(
+            select(ChannelConfiguration).where(ChannelConfiguration.device_id == device_id)
+        )
+    }
+    for value in profile.channels:
+        validated = ChannelInput.model_validate(value.settings)
+        channel = current.get(value.channel)
+        if channel:
+            for key, item in validated.model_dump().items():
+                setattr(channel, key, item)
+        else:
+            db.add(ChannelConfiguration(device_id=device_id, **validated.model_dump()))
+    db.commit()
+    return {"profile_id": profile_id, "device_id": device_id, "updated": len(profile.channels)}
 
 
 @router.get("/sessions")
@@ -341,6 +460,29 @@ def list_sessions(
             .join(Measurement)
             .where(Measurement.session_id == session.id)
         )
+        normalized_max_temp = db.scalar(
+            select(func.max(TemperatureChannelValue.temperature_c))
+            .join(TemperatureSample)
+            .where(TemperatureSample.session_id == session.id)
+        )
+        electrical_aggregates = db.execute(
+            select(
+                func.count(ElectricalSample.id), func.avg(ElectricalSample.active_power_w)
+            ).where(ElectricalSample.session_id == session.id)
+        ).one()
+        temperature_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(TemperatureSample)
+                .where(TemperatureSample.session_id == session.id)
+            )
+            or 0
+        )
+        linked_devices = db.execute(
+            select(SessionDevice.role, Device.name)
+            .join(Device, Device.id == SessionDevice.device_id)
+            .where(SessionDevice.session_id == session.id)
+        ).all()
         alert_count = (
             db.scalar(
                 select(func.count())
@@ -356,14 +498,19 @@ def list_sessions(
                 "description": session.description,
                 "status": session.status,
                 "device_id": session.device_id,
-                "device_name": session.device.name,
+                "device_name": " + ".join(row[1] for row in linked_devices) or session.device.name,
+                "devices": [{"role": row[0], "name": row[1]} for row in linked_devices],
                 "operator": session.user.name,
                 "started_at": session.started_at,
                 "ended_at": session.ended_at,
                 "duration_seconds": _duration_seconds(session.started_at, session.ended_at),
-                "sample_count": aggregates[0],
-                "average_power_w": aggregates[1],
-                "maximum_temperature_c": max_temp,
+                "sample_count": max(aggregates[0], electrical_aggregates[0], temperature_count),
+                "electrical_sample_count": electrical_aggregates[0],
+                "temperature_sample_count": temperature_count,
+                "average_power_w": electrical_aggregates[1] or aggregates[1],
+                "maximum_temperature_c": normalized_max_temp
+                if normalized_max_temp is not None
+                else max_temp,
                 "alert_count": alert_count,
                 "notes": session.notes,
             }
@@ -375,40 +522,100 @@ def list_sessions(
 async def start_session(
     payload: SessionCreate, db: Db, user: User = Depends(require_roles("admin", "operator"))
 ) -> dict:
-    device = db.get(Device, payload.device_id)
-    if not device or not device.active:
-        raise HTTPException(status_code=404, detail="Equipamento não encontrado ou inativo")
-    active = db.scalar(
-        select(MeasurementSession).where(
-            MeasurementSession.device_id == payload.device_id,
-            MeasurementSession.status.in_(["running", "paused"]),
+    roles: list[tuple[str, int]] = []
+    if payload.temperature_device_id:
+        roles.append(("temperature", payload.temperature_device_id))
+    if payload.electrical_device_id:
+        roles.append(("electrical", payload.electrical_device_id))
+    if payload.device_id and not roles:
+        roles.append(("combined", payload.device_id))
+    devices: list[tuple[str, Device]] = []
+    for role, device_id in roles:
+        device = db.get(Device, device_id)
+        if not device or not device.active:
+            raise HTTPException(
+                status_code=404, detail=f"Equipamento {role} não encontrado ou inativo"
+            )
+        active = db.scalar(
+            select(MeasurementSession)
+            .outerjoin(SessionDevice, SessionDevice.session_id == MeasurementSession.id)
+            .where(
+                or_(
+                    MeasurementSession.device_id == device_id, SessionDevice.device_id == device_id
+                ),
+                MeasurementSession.status.in_(["running", "paused"]),
+            )
         )
+        if active:
+            raise HTTPException(
+                status_code=409, detail=f"Já existe uma sessão ativa para {device.name}"
+            )
+        devices.append((role, device))
+    primary_device = devices[0][1]
+    values = payload.model_dump(
+        exclude={"device_id", "temperature_device_id", "electrical_device_id"}
     )
-    if active:
-        raise HTTPException(
-            status_code=409, detail="Já existe uma sessão ativa para este equipamento"
-        )
-    session = MeasurementSession(**payload.model_dump(), user_id=user.id, status="running")
+    session = MeasurementSession(
+        **values, device_id=primary_device.id, user_id=user.id, status="running"
+    )
     db.add(session)
     db.flush()
+    for role, device in devices:
+        db.add(SessionDevice(session_id=session.id, device_id=device.id, role=role))
+    snapshot_device_id = next(
+        (device.id for role, device in devices if role in {"temperature", "combined"}), None
+    )
+    if snapshot_device_id:
+        channels = db.scalars(
+            select(ChannelConfiguration).where(ChannelConfiguration.device_id == snapshot_device_id)
+        )
+        for channel in channels:
+            db.add(
+                SessionChannelConfiguration(
+                    session_id=session.id,
+                    source_configuration_id=channel.id,
+                    channel=channel.channel,
+                    name=channel.name,
+                    enabled=channel.enabled,
+                    sensor_type=channel.sensor_type,
+                    unit=channel.unit,
+                    correction_offset=channel.correction_offset,
+                    warning_limit=channel.warning_limit,
+                    critical_limit=channel.critical_limit,
+                    color=channel.color,
+                    description=channel.description,
+                    physical_location=channel.physical_location,
+                    display_order=channel.display_order or channel.channel,
+                )
+            )
     db.add(
         SystemEvent(
             session_id=session.id,
-            device_id=device.id,
+            device_id=primary_device.id,
             category="session_start",
             message="Sessão iniciada",
         )
     )
     db.commit()
     db.refresh(session)
+    attached_device_ids: list[int] = []
     try:
-        await acquisition_service.attach_session(device.id, session.id)
+        for _, device in devices:
+            await acquisition_service.attach_session(device.id, session.id)
+            attached_device_ids.append(device.id)
     except Exception:
+        for device_id in attached_device_ids:
+            await acquisition_service.detach_session(device_id)
         session.status = "failed"
         session.ended_at = datetime.now(UTC)
         db.commit()
         raise
-    return {"id": session.id, "status": session.status, "started_at": session.started_at}
+    return {
+        "id": session.id,
+        "status": session.status,
+        "started_at": session.started_at,
+        "devices": [{"role": role, "device": _device_dict(device)} for role, device in devices],
+    }
 
 
 @router.get("/sessions/{session_id}")
@@ -420,6 +627,11 @@ def get_session(session_id: int, db: Db, _: CurrentUser) -> dict:
     )
     if not session:
         raise HTTPException(status_code=404, detail="Sessão não encontrada")
+    device_links = db.scalars(
+        select(SessionDevice)
+        .options(selectinload(SessionDevice.device))
+        .where(SessionDevice.session_id == session_id)
+    ).all()
     return {
         "id": session.id,
         "name": session.name,
@@ -429,7 +641,14 @@ def get_session(session_id: int, db: Db, _: CurrentUser) -> dict:
         "started_at": session.started_at,
         "ended_at": session.ended_at,
         "sample_interval_ms": session.sample_interval_ms,
+        "sync_grid_ms": session.sync_grid_ms,
+        "sync_tolerance_ms": session.sync_tolerance_ms,
+        "acquisition_mode": session.acquisition_mode,
         "device": _device_dict(session.device),
+        "devices": [
+            {"role": link.role, "device": _device_dict(link.device)} for link in device_links
+        ]
+        or [{"role": "combined", "device": _device_dict(session.device)}],
         "operator": {"id": session.user.id, "name": session.user.name, "email": session.user.email},
         "statistics": session_statistics(db, session_id),
     }
@@ -450,13 +669,17 @@ async def _transition(session_id: int, target: str, db: Session) -> MeasurementS
             status_code=409, detail=f"Transição {session.status} → {target} não permitida"
         )
     session.status = target
+    device_ids = _session_device_ids(db, session)
     if target == "paused":
-        await acquisition_service.pause_session(session.device_id)
+        for device_id in device_ids:
+            await acquisition_service.pause_session(device_id)
     elif target == "running":
-        await acquisition_service.resume_session(session.device_id, session.id)
+        for device_id in device_ids:
+            await acquisition_service.resume_session(device_id, session.id)
     else:
         session.ended_at = datetime.now(UTC)
-        await acquisition_service.detach_session(session.device_id)
+        for device_id in device_ids:
+            await acquisition_service.detach_session(device_id)
     db.add(
         SystemEvent(
             session_id=session.id,
@@ -515,9 +738,26 @@ def duplicate_session(
         description=source.description,
         notes=source.notes,
         sample_interval_ms=source.sample_interval_ms,
+        acquisition_mode=source.acquisition_mode,
+        sync_grid_ms=source.sync_grid_ms,
+        sync_tolerance_ms=source.sync_tolerance_ms,
         status="draft",
     )
     db.add(session)
+    db.flush()
+    links = db.scalars(select(SessionDevice).where(SessionDevice.session_id == source.id)).all()
+    for link in links:
+        db.add(SessionDevice(session_id=session.id, device_id=link.device_id, role=link.role))
+    snapshots = db.scalars(
+        select(SessionChannelConfiguration).where(
+            SessionChannelConfiguration.session_id == source.id
+        )
+    ).all()
+    for snapshot in snapshots:
+        values = _orm_dict(snapshot)
+        values.pop("id")
+        values["session_id"] = session.id
+        db.add(SessionChannelConfiguration(**values))
     db.commit()
     db.refresh(session)
     return {"id": session.id, "status": session.status, "name": session.name}
@@ -637,6 +877,92 @@ def measurement_series(
         "downsampled": bounds[2] > len(rows),
         "bucket_seconds": bucket_seconds,
     }
+
+
+@router.get("/sessions/{session_id}/synchronized-series")
+def get_synchronized_series(
+    session_id: int,
+    db: Db,
+    _: CurrentUser,
+    grid_ms: int = Query(1000, ge=100, le=60_000),
+    tolerance_ms: int = Query(1500, ge=0, le=3000),
+    channels: list[int] | None = Query(None),
+    max_points: int = Query(5000, ge=10, le=20_000),
+) -> dict:
+    if not db.get(MeasurementSession, session_id):
+        raise HTTPException(status_code=404, detail="Sessão não encontrada")
+    channel_filter = set(channels) if channels else None
+    if channel_filter and any(channel < 1 or channel > 32 for channel in channel_filter):
+        raise HTTPException(status_code=422, detail="Canais devem estar entre 1 e 32")
+    try:
+        return synchronized_series(
+            db, session_id, grid_ms, tolerance_ms, channel_filter, max_points
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/imports/gpm8213/preview")
+async def preview_gpm8213(_: CurrentUser, file: UploadFile = File(...)) -> dict:
+    payload = await _safe_upload(file, ".txt")
+    try:
+        return Gpm8213TxtImporter().parse(payload).preview()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/imports/at4532/preview")
+async def preview_at4532(_: CurrentUser, file: UploadFile = File(...)) -> dict:
+    payload = await _safe_upload(file, ".xlsx")
+    try:
+        return At4532XlsxImporter().parse(payload).preview()
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/imports/session", status_code=201)
+async def confirm_import_session(
+    db: Db,
+    user: User = Depends(require_roles("admin", "operator")),
+    name: str = Form(..., min_length=2, max_length=160),
+    description: str | None = Form(None),
+    temperature_device_id: int | None = Form(None),
+    electrical_device_id: int | None = Form(None),
+    grid_ms: int = Form(1000, ge=100, le=60_000),
+    tolerance_ms: int = Form(1500, ge=0, le=3000),
+    at4532_file: UploadFile | None = File(None),
+    gpm8213_file: UploadFile | None = File(None),
+) -> dict:
+    if not at4532_file and not gpm8213_file:
+        raise HTTPException(status_code=422, detail="Envie ao menos um arquivo")
+    temperatures = []
+    electrical = []
+    summaries = {}
+    try:
+        if at4532_file:
+            parsed = At4532XlsxImporter().parse(await _safe_upload(at4532_file, ".xlsx"))
+            temperatures = parsed.readings
+            summaries["temperature"] = parsed.preview(0)
+        if gpm8213_file:
+            parsed = Gpm8213TxtImporter().parse(await _safe_upload(gpm8213_file, ".txt"))
+            electrical = parsed.readings
+            summaries["electrical"] = parsed.preview(0)
+        session = create_import_session(
+            db=db,
+            user=user,
+            name=name,
+            description=description,
+            temperature_readings=temperatures,
+            electrical_readings=electrical,
+            temperature_device_id=temperature_device_id,
+            electrical_device_id=electrical_device_id,
+            grid_ms=grid_ms,
+            tolerance_ms=tolerance_ms,
+        )
+    except (ValueError, OSError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"session_id": session.id, "status": session.status, "summaries": summaries}
 
 
 @router.get("/statistics/sessions/{session_id}")
@@ -762,7 +1088,7 @@ def list_reports(db: Db, _: CurrentUser) -> list[Report]:
 @router.get("/reports/sessions/{session_id}.{report_type}")
 def download_report(
     session_id: int,
-    report_type: Literal["csv", "xlsx", "pdf"],
+    report_type: Literal["csv", "xlsx", "pdf", "png", "jpg", "jpeg"],
     db: Db,
     user: CurrentUser,
     orientation: Literal["portrait", "landscape"] = "landscape",
@@ -770,12 +1096,17 @@ def download_report(
     builders = {"csv": create_csv, "xlsx": create_xlsx}
     if report_type == "pdf":
         content = create_pdf(db, session_id, user.id, orientation)
+    elif report_type in {"png", "jpg", "jpeg"}:
+        content = create_chart_image(db, session_id, user.id, report_type)
     else:
         content = builders[report_type](db, session_id, user.id)
     media = {
         "csv": "text/csv; charset=utf-8",
         "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "pdf": "application/pdf",
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
     }[report_type]
     return StreamingResponse(
         io.BytesIO(content),

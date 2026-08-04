@@ -133,7 +133,7 @@ class SimulatorAdapter(DeviceAdapter):
         return DeviceInformation(
             adapter="simulator",
             manufacturer="ThermoPower Labs",
-            model="Virtual DAQ 16",
+            model="Virtual DAQ 32",
             firmware_version="sim-2.0",
             capabilities={"channels": self.config.channel_count, "units": ["mW", "W", "kW"]},
         )
