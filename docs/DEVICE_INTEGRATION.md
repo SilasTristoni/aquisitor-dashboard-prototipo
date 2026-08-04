@@ -14,7 +14,11 @@ async def get_status() -> DeviceStatus
 async def get_device_information() -> DeviceInformation
 ```
 
-`DeviceReading` é o contrato canônico: timestamp de recepção, potência original, unidade original, potência normalizada em watts, até 16 temperaturas em °C e indicador de qualidade. O parser rejeita valores não finitos, unidades desconhecidas, potência negativa e canais fora de limites defensivos configuráveis.
+O contrato legado `DeviceReading` continua disponível para simulador e clientes existentes, agora com até 32 canais. Novas integrações usam contratos independentes em `app/domain/readings.py`:
+
+- `TemperatureReading`: timestamp do equipamento, timestamp de recepção, ambiente e até 32 `TemperatureChannelReading`;
+- `ElectricalReading`: tensão, corrente, potências ativa/aparente/reativa, fator de potência e frequências de tensão/corrente;
+- ambos preservam payload, valor/unidade original, valor normalizado e qualidade.
 
 ## Adaptadores iniciais
 
@@ -22,6 +26,8 @@ async def get_device_information() -> DeviceInformation
 - `SerialJsonAdapter`: parser operacional; abertura da porta depende da biblioteca/porta e de homologação com hardware.
 - `SerialCsvAdapter`: estrutura e parser preparados, desabilitados por padrão até o fabricante definir ordem, delimitador e framing.
 - `MockFailureAdapter`: falha em estágios selecionáveis para testes de recuperação.
+- `At4532Adapter` e `Gpm8213Adapter`: limites específicos explícitos; recusam conexão até a homologação do manual, sem comandos SCPI inferidos.
+- `At4532XlsxImporter` e `Gpm8213TxtImporter`: operacionais com detecção de cabeçalho e unidades.
 
 ## JSON provisório
 
@@ -56,4 +62,4 @@ Também aceita `mW` e `kW`. Esse é um contrato de desenvolvimento, não o proto
 6. Medir perda de amostras, jitter, clock drift e comportamento após suspensão do computador.
 7. Documentar matriz firmware/driver/SO e assinar protocolo homologado.
 
-Até essa validação, a integração serial deve ser apresentada como **preparada, não homologada**.
+Até essa validação, a integração serial deve ser apresentada como **preparada, não homologada**. A pasta `reference-input/` recebida estava vazia; os testes automatizados usam apenas fixtures sintéticas geradas em memória.

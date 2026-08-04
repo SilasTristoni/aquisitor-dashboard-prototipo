@@ -23,7 +23,7 @@ class DeviceReading(BaseModel):
     raw_power: float
     raw_power_unit: str
     power_w: float
-    temperatures_c: list[float | None] = Field(max_length=16)
+    temperatures_c: list[float | None] = Field(max_length=32)
     quality: str = "good"
 
     @field_validator("temperatures_c")

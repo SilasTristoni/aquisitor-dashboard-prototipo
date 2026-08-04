@@ -1,6 +1,6 @@
 import {
   Activity, AlertTriangle, BarChart3, Bell, Boxes, ChevronRight, CircleGauge, ClipboardList,
-  Database, FileBarChart, GitCompareArrows, LogOut, Menu, Moon, RadioTower, Settings2, Sun,
+  Database, FileBarChart, FileUp, GitCompareArrows, LogOut, Menu, Moon, RadioTower, Settings2, Sun,
   Thermometer, Users, X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -12,6 +12,7 @@ const navigation = [
   { to: "/executivo", label: "Visão executiva", icon: BarChart3 },
   { to: "/sessoes", label: "Sessões", icon: ClipboardList },
   { to: "/medicoes", label: "Medições", icon: Database },
+  { to: "/importar", label: "Importar arquivos", icon: FileUp },
   { to: "/equipamentos", label: "Equipamentos", icon: RadioTower },
   { to: "/canais", label: "Termopares", icon: Thermometer },
   { to: "/alertas", label: "Alertas", icon: Bell },
@@ -22,7 +23,7 @@ const navigation = [
   { to: "/diagnostico", label: "Diagnóstico", icon: CircleGauge },
 ];
 
-const titles: Record<string, string> = { executivo: "Visão executiva", sessoes: "Sessões", medicoes: "Medições", equipamentos: "Equipamentos", canais: "Termopares", alertas: "Alertas", eventos: "Eventos", relatorios: "Relatórios", comparacao: "Comparação", usuarios: "Usuários", diagnostico: "Diagnóstico" };
+const titles: Record<string, string> = { executivo: "Visão executiva", sessoes: "Sessões", medicoes: "Medições", importar: "Importar arquivos", equipamentos: "Equipamentos", canais: "Termopares", alertas: "Alertas", eventos: "Eventos", relatorios: "Relatórios", comparacao: "Comparação", usuarios: "Usuários", diagnostico: "Diagnóstico" };
 
 export default function Layout() {
   const { user, logout } = useAuth();

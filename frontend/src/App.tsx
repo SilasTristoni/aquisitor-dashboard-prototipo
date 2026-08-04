@@ -6,6 +6,7 @@ import { Spinner } from "./components/ui";
 
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
+const ImportPage = lazy(() => import("./pages/ImportPage"));
 const MeasurementsPage = lazy(() => import("./pages/MeasurementsPage"));
 const SessionDetailPage = lazy(() => import("./pages/SessionDetailPage"));
 const SessionsPage = lazy(() => import("./pages/SessionsPage"));
@@ -40,6 +41,7 @@ export default function App() {
       <Route path="sessoes" element={<SessionsPage />} />
       <Route path="sessoes/:id" element={<SessionDetailPage />} />
       <Route path="medicoes" element={<MeasurementsPage />} />
+      <Route path="importar" element={<ImportPage />} />
       <Route path="equipamentos" element={<DevicesPage />} />
       <Route path="canais" element={<ChannelsPage />} />
       <Route path="alertas" element={<AlertsPage />} />

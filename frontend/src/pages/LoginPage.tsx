@@ -17,7 +17,7 @@ export default function LoginPage() {
   return <main className="login-shell">
     <section className="login-visual">
       <div className="login-brand"><span><Activity /></span><div><strong>ThermoPower</strong><small>MONITOR</small></div></div>
-      <div className="login-copy"><p className="eyebrow light">MONITORAMENTO INDUSTRIAL</p><h1>Precisão que transforma dados em decisões.</h1><p>Aquisição confiável de potência e temperatura, rastreabilidade integral e análise em tempo real.</p><div className="login-benefits"><span><Zap /> Potência normalizada</span><span><Thermometer /> 16 termopares</span><span><ShieldCheck /> Operação auditável</span></div></div>
+      <div className="login-copy"><p className="eyebrow light">MONITORAMENTO INDUSTRIAL</p><h1>Precisão que transforma dados em decisões.</h1><p>Aquisição confiável de potência e temperatura, rastreabilidade integral e análise em tempo real.</p><div className="login-benefits"><span><Zap /> Potência normalizada</span><span><Thermometer /> 32 termopares</span><span><ShieldCheck /> Operação auditável</span></div></div>
       <div className="signal-art" aria-hidden="true"><i /><i /><i /><i /><div className="signal-line" /></div>
       <small className="login-version">ThermoPower Monitor · Versão 2.0</small>
     </section>

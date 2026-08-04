@@ -34,7 +34,7 @@ def seed_database() -> None:
             device = Device(
                 name="Aquisitor simulado",
                 manufacturer="ThermoPower Labs",
-                model="Virtual DAQ 16",
+                model="Virtual DAQ 32",
                 serial_number="SIM-0001",
                 connection_type="simulator",
                 protocol="simulator",
@@ -43,7 +43,7 @@ def seed_database() -> None:
             db.flush()
             names = ["Entrada", "Saída", "Carcaça", "Ambiente", "Resistência", "Dissipador"]
             colors = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#06B6D4"]
-            for channel in range(1, 17):
+            for channel in range(1, 33):
                 db.add(
                     ChannelConfiguration(
                         device_id=device.id,

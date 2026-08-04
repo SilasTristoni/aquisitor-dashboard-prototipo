@@ -107,7 +107,7 @@ class SerialCsvAdapter(SerialJsonAdapter):
         if len(row) < 3:
             raise ValueError("CSV deve conter potência, unidade e ao menos um canal")
         raw_power, unit = float(row[0]), row[1]
-        temperatures = [float(value) if value.strip() else None for value in row[2:18]]
+        temperatures = [float(value) if value.strip() else None for value in row[2:34]]
         return DeviceReading(
             raw_power=raw_power,
             raw_power_unit=unit,

@@ -28,6 +28,9 @@ export type Session = {
   average_power_w?: number;
   maximum_temperature_c?: number;
   alert_count: number;
+  electrical_sample_count?: number;
+  temperature_sample_count?: number;
+  devices?: Array<{ role: string; name: string }>;
 };
 
 export type PageResult<T> = { items: T[]; page: number; page_size: number; total: number; pages: number };
@@ -56,6 +59,7 @@ export type Channel = {
   color: string;
   description?: string;
   physical_location?: string;
+  display_order: number;
 };
 
 export type Alert = {
