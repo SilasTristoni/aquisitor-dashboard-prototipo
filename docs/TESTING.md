@@ -2,7 +2,7 @@
 
 ## Backend
 
-`pytest` cobre unidades, validação, parsers, simulador, falhas, estatística, operadores de alerta, senha/token, autenticação, permissões, paginação, WebSocket e fluxo ponta a ponta com os três formatos de relatório.
+`pytest` cobre unidades, validação, parsers, simulador, falhas, estatística, operadores de alerta, senha/token, autenticação, permissões, paginação, WebSocket e fluxo ponta a ponta com os formatos de relatório. A suíte de período acrescenta fuso/offset, sessões concorrentes, integração de energia sem cruzar sessões, exclusão de lacunas, downsampling com extremos, PDF/PNG/JPEG reais, auditoria e erro sem dados.
 
 ```bash
 cd backend
@@ -14,7 +14,9 @@ No Windows, use `..\.venv\Scripts\python`.
 
 ## Frontend
 
-Vitest e Testing Library cobrem login com sucesso/falha, indicadores do dashboard, canais e eventos filtrados. Pytest cobre também normalização de unidades, detecção de cabeçalho TXT/XLSX, canal T32, qualidade de sobrecarga, preview/confirm, proteção de assinatura e sincronização ponta a ponta.
+Vitest e Testing Library cobrem login com sucesso/falha, indicadores do dashboard, canais,
+eventos filtrados e a central de relatórios por período com suas abas e payload de prévia.
+Pytest cobre também descoberta USB mockada, associação por serial e sugestão conservadora.
 
 Os arquivos usados pelos testes são sintéticos e construídos em memória; nenhum arquivo real de bancada é copiado para o repositório.
 

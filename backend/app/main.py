@@ -1,10 +1,13 @@
 import logging
+import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
 from app.api.routes import router
@@ -103,6 +106,25 @@ app.add_middleware(
 app.include_router(router)
 
 
+def _frontend_directory() -> Path | None:
+    candidates = []
+    if settings.frontend_dist:
+        candidates.append(Path(settings.frontend_dist))
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys._MEIPASS) / "frontend")
+    candidates.append(Path(__file__).resolve().parents[2] / "frontend" / "dist")
+    return next((path for path in candidates if (path / "index.html").is_file()), None)
+
+
+frontend_directory = _frontend_directory()
+if frontend_directory and (frontend_directory / "assets").is_dir():
+    app.mount(
+        "/assets",
+        StaticFiles(directory=frontend_directory / "assets"),
+        name="frontend-assets",
+    )
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "version": settings.app_version}
@@ -136,3 +158,13 @@ async def global_exception_handler(_: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(
         status_code=500, content={"error": {"status": 500, "message": "Erro interno inesperado"}}
     )
+
+
+if frontend_directory:
+
+    @app.get("/{spa_path:path}", include_in_schema=False)
+    def serve_frontend(spa_path: str) -> FileResponse:
+        candidate = (frontend_directory / spa_path).resolve()
+        if candidate.is_file() and frontend_directory.resolve() in candidate.parents:
+            return FileResponse(candidate)
+        return FileResponse(frontend_directory / "index.html")

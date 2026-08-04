@@ -1,5 +1,6 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
@@ -129,3 +130,78 @@ class SimulatorConfigInput(BaseModel):
     malformed_probability: float = Field(default=0, ge=0, le=1)
     irregular_frequency: bool = False
     change_units: bool = True
+
+
+class PeriodReportRequest(BaseModel):
+    start: datetime
+    end: datetime
+    timezone: str = "America/Sao_Paulo"
+    title: str = Field(default="Relatório de medições por período", min_length=2, max_length=180)
+    subtitle: str | None = Field(default=None, max_length=240)
+    description: str | None = Field(default=None, max_length=2000)
+    notes: str | None = Field(default=None, max_length=4000)
+    device_ids: list[int] | None = Field(default=None, max_length=100)
+    session_ids: list[int] | None = Field(default=None, max_length=100)
+    channels: list[int] | None = Field(default=None, max_length=32)
+    include_power: bool = True
+    include_temperatures: bool = True
+    include_electrical_details: bool = True
+    include_alerts: bool = True
+    include_quality: bool = True
+    include_session_list: bool = True
+    include_table: bool = True
+    orientation: Literal["portrait", "landscape"] = "landscape"
+    theme: Literal["light", "dark"] = "light"
+    dpi: int = Field(default=160, ge=96, le=300)
+    table_max_rows: int = Field(default=100, ge=0, le=2000)
+    channel_group_size: int = Field(default=8, ge=1, le=16)
+    sync_tolerance_ms: int = Field(default=1500, ge=0, le=3000)
+    use_device_timestamp: bool = True
+    interpolation: Literal["none", "visual_only"] = "none"
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("Fuso horário IANA inválido") from exc
+        return value
+
+    @field_validator("channels")
+    @classmethod
+    def validate_channels(cls, value: list[int] | None) -> list[int] | None:
+        if value is None:
+            return None
+        unique = sorted(set(value))
+        if not unique or any(channel < 1 or channel > 32 for channel in unique):
+            raise ValueError("Canais devem estar entre 1 e 32")
+        return unique
+
+    @field_validator("device_ids", "session_ids")
+    @classmethod
+    def normalize_ids(cls, value: list[int] | None) -> list[int] | None:
+        if value is None:
+            return None
+        unique = sorted(set(value))
+        if not unique or any(item < 1 for item in unique):
+            raise ValueError("Identificadores devem ser inteiros positivos")
+        return unique
+
+    @model_validator(mode="after")
+    def validate_period(self) -> "PeriodReportRequest":
+        zone = ZoneInfo(self.timezone)
+        start = self.start.replace(tzinfo=zone) if self.start.tzinfo is None else self.start
+        end = self.end.replace(tzinfo=zone) if self.end.tzinfo is None else self.end
+        self.start = start.astimezone(UTC)
+        self.end = end.astimezone(UTC)
+        if self.end <= self.start:
+            raise ValueError("O fim do período deve ser posterior ao início")
+        if not (self.include_power or self.include_temperatures or self.include_electrical_details):
+            raise ValueError("Selecione ao menos uma métrica")
+        return self
+
+
+class UsbAssociationRequest(BaseModel):
+    port: str = Field(min_length=1, max_length=120)
+    device_id: int = Field(ge=1)
