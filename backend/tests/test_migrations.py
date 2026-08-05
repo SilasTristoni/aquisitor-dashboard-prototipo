@@ -21,6 +21,20 @@ def test_upgrade_accepts_schema_precreated_by_sqlalchemy(tmp_path):
         connection.execute(
             text("INSERT INTO alembic_version (version_num) VALUES ('0001_initial')")
         )
+        connection.execute(
+            text(
+                "INSERT INTO session_devices "
+                "(id, session_id, device_id, role, created_at) "
+                "VALUES (1, 999, 999, 'combined', CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO system_events "
+                "(id, session_id, timestamp, level, category, message, details) "
+                "VALUES (1, 999, CURRENT_TIMESTAMP, 'info', 'test', 'orphan', '{}')"
+            )
+        )
 
     environment = os.environ.copy()
     environment["THERMOPOWER_DATABASE_URL"] = database_url
@@ -36,6 +50,10 @@ def test_upgrade_accepts_schema_precreated_by_sqlalchemy(tmp_path):
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            "0003_period_reports"
+            "0004_cleanup_orphan_session_data"
         )
         assert "session_devices" in inspect(connection).get_table_names()
+        assert connection.scalar(text("SELECT count(*) FROM session_devices")) == 0
+        assert connection.scalar(
+            text("SELECT session_id FROM system_events WHERE id = 1")
+        ) is None

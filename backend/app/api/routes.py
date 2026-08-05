@@ -20,7 +20,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import StreamingResponse
-from sqlalchemy import Float, Integer, cast, func, or_, select
+from sqlalchemy import Float, Integer, cast, delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.adapters.simulator import SCENARIOS
@@ -848,6 +848,35 @@ def delete_session(session_id: int, db: Db, _: User = Depends(require_roles("adm
         raise HTTPException(status_code=404, detail="Sessão não encontrada")
     if session.status in {"running", "paused"}:
         raise HTTPException(status_code=409, detail="Finalize a sessão antes de excluir")
+    measurement_ids = select(Measurement.id).where(Measurement.session_id == session_id)
+    temperature_sample_ids = select(TemperatureSample.id).where(
+        TemperatureSample.session_id == session_id
+    )
+    db.execute(
+        delete(TemperatureMeasurement).where(
+            TemperatureMeasurement.measurement_id.in_(measurement_ids)
+        )
+    )
+    db.execute(
+        delete(TemperatureChannelValue).where(
+            TemperatureChannelValue.sample_id.in_(temperature_sample_ids)
+        )
+    )
+    for model in (
+        Measurement,
+        TemperatureSample,
+        ElectricalSample,
+        AlertEvent,
+        SessionChannelConfiguration,
+        SessionDevice,
+    ):
+        db.execute(delete(model).where(model.session_id == session_id))
+    db.execute(
+        update(SystemEvent)
+        .where(SystemEvent.session_id == session_id)
+        .values(session_id=None)
+    )
+    db.execute(update(Report).where(Report.session_id == session_id).values(session_id=None))
     db.delete(session)
     db.commit()
     return Response(status_code=204)
