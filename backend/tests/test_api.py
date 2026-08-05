@@ -1,6 +1,17 @@
 import time
 
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select, text
+
+from app.core.database import SessionLocal
+from app.models import (
+    ElectricalSample,
+    Measurement,
+    MeasurementSession,
+    SessionChannelConfiguration,
+    SessionDevice,
+    TemperatureSample,
+)
 
 
 def test_authentication_and_permissions(client: TestClient, auth_headers: dict[str, str]):
@@ -84,6 +95,53 @@ def test_complete_simulated_measurement_flow(client: TestClient, auth_headers: d
         assert report.status_code == 200
         assert content_type in report.headers["content-type"]
         assert len(report.content) > 50
+    client.post(f"/api/v1/devices/{device_id}/disconnect", headers=auth_headers)
+
+
+def test_deleted_session_leaves_no_rows_that_block_the_next_session(
+    client: TestClient, auth_headers: dict[str, str]
+):
+    device_id = client.get("/api/v1/devices", headers=auth_headers).json()[0]["id"]
+    assert client.post(
+        f"/api/v1/devices/{device_id}/connect", headers=auth_headers
+    ).status_code == 200
+
+    first = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers,
+        json={"device_id": device_id, "name": "Sessão que será excluída"},
+    )
+    assert first.status_code == 201, first.text
+    session_id = first.json()["id"]
+    time.sleep(1.1)
+    assert client.post(
+        f"/api/v1/sessions/{session_id}/finish", headers=auth_headers
+    ).status_code == 200
+    assert client.delete(
+        f"/api/v1/sessions/{session_id}", headers=auth_headers
+    ).status_code == 204
+
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(MeasurementSession)) == 0
+        for model in (
+            Measurement,
+            TemperatureSample,
+            ElectricalSample,
+            SessionChannelConfiguration,
+            SessionDevice,
+        ):
+            assert db.scalar(select(func.count()).select_from(model)) == 0
+        assert db.scalar(text("PRAGMA foreign_keys")) == 1
+
+    second = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers,
+        json={"device_id": device_id, "name": "Sessão após exclusão"},
+    )
+    assert second.status_code == 201, second.text
+    assert client.post(
+        f"/api/v1/sessions/{second.json()['id']}/finish", headers=auth_headers
+    ).status_code == 200
     client.post(f"/api/v1/devices/{device_id}/disconnect", headers=auth_headers)
 
 
