@@ -13,5 +13,6 @@ dist/
 build/
 installer/Output/
 reports/
+release/
 *.tsbuildinfo
 reference-input/

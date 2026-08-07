@@ -27,6 +27,10 @@ O contrato legado `DeviceReading` continua disponível para simulador e clientes
 - `SerialCsvAdapter`: estrutura e parser preparados, desabilitados por padrão até o fabricante definir ordem, delimitador e framing.
 - `MockFailureAdapter`: falha em estágios selecionáveis para testes de recuperação.
 - `At4532Adapter` e `Gpm8213Adapter`: limites específicos explícitos; recusam conexão até a homologação do manual, sem comandos SCPI inferidos.
+- `VirtualInstrumentAdapter`: perfis AT4532 e GPM-8213 exclusivamente simulados, acionados pelo
+  provider do Virtual Lab; nunca altera o estado de homologação física.
+- `SerialTransport`: fronteira com implementações real, `loop://` e fake. Loopback não aparece
+  na descoberta USB e é identificado como teste de software.
 - `At4532XlsxImporter` e `Gpm8213TxtImporter`: operacionais com detecção de cabeçalho e unidades.
 
 ## JSON provisório
@@ -75,3 +79,8 @@ Descrições contendo literalmente AT4532 ou GPM-8213 geram apenas `possible_*` 
 média. Nenhum VID/PID conhecido foi codificado, pois os manuais mencionados no briefing não
 existem no repositório. Porta aberta, nome parecido ou driver instalado não equivalem a
 identificação/homologação do instrumento.
+
+`PortDiscoveryProvider` separa `WindowsSerialPortDiscoveryProvider`,
+`VirtualUsbDiscoveryProvider` e `TestPortDiscoveryProvider`. Todo resultado declara `source`,
+`simulated`, primeira/última observação e os estados de validação. O diagnóstico físico usa
+somente o provider Windows e não transmite bytes.

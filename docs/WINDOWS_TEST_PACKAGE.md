@@ -1,4 +1,4 @@
-# Pacote de homologação Windows — 0.4.0-beta
+# Pacote de homologação Windows — 0.5.0-beta
 
 ## Objetivo e limites
 
@@ -32,7 +32,9 @@ Para validar somente o pacote portátil, sem Inno Setup:
 Saídas esperadas:
 
 - `dist\ThermoPowerMonitor\ThermoPowerMonitor.exe` e dependências portáteis;
-- `dist\ThermoPower-Setup-0.4.0-beta.exe` quando o Inno Setup estiver disponível.
+- `dist\ThermoPowerVirtualLab\ThermoPowerVirtualLab.exe` com dados isolados;
+- `release\ThermoPower-Monitor-0.5.0-beta\` com instalador, ZIPs, PDFs e SHA-256;
+- `dist\ThermoPower-Setup-0.5.0-beta.exe` quando o Inno Setup estiver disponível.
 
 O script interrompe o build em falhas de lint, typecheck, testes, frontend ou PyInstaller.
 Após gerar o pacote portátil, valide migrations, SPA, health e login executando
@@ -40,7 +42,9 @@ Após gerar o pacote portátil, valide migrations, SPA, health e login executand
 
 ## Instalar e executar
 
-1. Execute `ThermoPower-Setup-0.4.0-beta.exe` como o usuário que fará o teste.
+1. Execute `ThermoPower-Setup-0.5.0-beta.exe` como o usuário que fará o teste.
+   Se o Monitor ou o Virtual Lab estiver aberto, o instalador identifica o processo e solicita
+   que ele seja fechado antes de substituir os arquivos.
 2. Mantenha ou desmarque o atalho da área de trabalho.
 3. Abra **ThermoPower Monitor**. O launcher aplica migrations, escolhe uma porta HTTP local
    livre e abre o navegador padrão.

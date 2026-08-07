@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.core.database import SessionLocal
+from app.core.release import release_configuration
 from app.models.entities import (
     Device,
     ElectricalSample,
@@ -26,7 +27,9 @@ from app.services.usb_discovery import usb_discovery_service
 def _seed_period_data() -> tuple[datetime, datetime, list[int]]:
     start = datetime(2026, 1, 15, 13, 0, tzinfo=UTC)
     with SessionLocal() as db:
-        user = db.scalar(select(User).where(User.email == "admin@demo.thermopower.com"))
+        user = db.scalar(
+            select(User).where(User.email == release_configuration.homologation_email)
+        )
         device = db.scalar(select(Device).where(Device.name == "Aquisitor simulado"))
         sessions = [
             MeasurementSession(
@@ -223,7 +226,9 @@ def test_downsampling_preserves_global_extremes():
 def test_period_service_falls_back_to_unmigrated_legacy_rows(client: TestClient):
     start = datetime(2025, 4, 1, 12, 0, tzinfo=UTC)
     with SessionLocal() as db:
-        user = db.scalar(select(User).where(User.email == "admin@demo.thermopower.com"))
+        user = db.scalar(
+            select(User).where(User.email == release_configuration.homologation_email)
+        )
         device = db.scalar(select(Device).where(Device.name == "Aquisitor simulado"))
         session = MeasurementSession(
             device_id=device.id,

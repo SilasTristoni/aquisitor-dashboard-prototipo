@@ -1,4 +1,4 @@
-# ThermoPower Monitor
+# ThermoPower Monitor 0.5.0-beta
 
 Plataforma full-stack para aquisição industrial combinada: até 32 temperaturas pelo Applent AT4532 e grandezas elétricas pelo GW Instek GPM-8213. As sessões são rastreáveis, aceitam uma ou as duas fontes, sincronizam timestamps e mantêm o protótipo original em `legacy/`.
 
@@ -19,7 +19,9 @@ Plataforma full-stack para aquisição industrial combinada: até 32 temperatura
 - relatórios por intervalo de data/hora atravessando múltiplas sessões, com estatísticas sobre
   todos os dados e gráficos Matplotlib reais em PDF/PNG/JPEG;
 - descoberta USB/COM pelo backend, associação por metadados reais e diagnóstico em etapas;
-- assistente de primeiro uso e estratégia de pacote Windows 0.4.0-beta com PyInstaller/Inno;
+- assistente de primeiro uso e pacote Windows 0.5.0-beta com executáveis principal e Virtual Lab;
+- laboratório USB virtual AT4532/GPM-8213 com hot-plug e armazenamento isolado;
+- diagnóstico USB físico passivo com snapshots, comparação e ZIP sanitizado para suporte;
 - comparação de sessões, visão executiva e diagnóstico do sistema;
 - simulador configurável com oito cenários;
 - adaptadores `SimulatorAdapter`, `SerialJsonAdapter`, `SerialCsvAdapter` e `MockFailureAdapter`;
@@ -73,6 +75,12 @@ Para compilar o instalador beta sem exigir Python/Node no computador de destino,
 [Pacote de homologação Windows](docs/WINDOWS_TEST_PACKAGE.md) e execute
 `scripts\build-windows.ps1` em um host Windows com Inno Setup 6.
 
+O build monta `release\ThermoPower-Monitor-0.5.0-beta` com instalador, ZIP portátil,
+ZIP do laboratório, dois PDFs, notas e hashes. A cliente não precisa instalar Python, Node.js,
+npm, banco de dados ou ferramentas de desenvolvimento. Consulte também o
+[guia da cliente](docs/CLIENT_TEST_GUIDE.md), o [laboratório virtual](docs/VIRTUAL_USB_LAB.md)
+e o [diagnóstico USB](docs/USB_DIAGNOSTIC.md).
+
 ### Importação AT4532 + GPM-8213
 
 1. Entre no sistema e abra **Importar arquivos**.
@@ -87,8 +95,8 @@ Linux/macOS usam os equivalentes `source .venv/bin/activate` e `.venv/bin/python
 
 ## Usuário de demonstração
 
-- E-mail: `admin@demo.thermopower.com`
-- Senha: `ThermoPower@123`
+- E-mail: `homologacao@demo.thermopower.com`
+- Senha: `ThermoPower-HML@2026`
 
 Essas credenciais são exclusivamente iniciais. Defina `THERMOPOWER_DEMO_ADMIN_PASSWORD` e um segredo JWT forte em qualquer implantação. Não exponha a configuração padrão em rede.
 

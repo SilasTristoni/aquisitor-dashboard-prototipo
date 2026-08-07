@@ -15,13 +15,17 @@ services:
     restart: unless-stopped
 
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - path: .env
+        required: false
     environment:
       THERMOPOWER_ENVIRONMENT: production
       THERMOPOWER_DATABASE_URL: postgresql+psycopg://thermopower:${POSTGRES_PASSWORD:-thermopower-local-only}@database:5432/thermopower
       THERMOPOWER_JWT_SECRET: ${THERMOPOWER_JWT_SECRET:-replace-this-before-any-network-exposure}
       THERMOPOWER_CORS_ORIGINS: '["http://localhost:8080"]'
-      THERMOPOWER_DEMO_ADMIN_PASSWORD: ${THERMOPOWER_DEMO_ADMIN_PASSWORD:-ThermoPower@123}
     depends_on:
       database:
         condition: service_healthy

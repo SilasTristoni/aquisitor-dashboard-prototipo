@@ -44,13 +44,14 @@ pushd backend
 popd
 
 echo [5/5] Iniciando servicos...
+for /f "usebackq tokens=1,* delims==" %%A in (`powershell -NoProfile -Command "$c = Get-Content -Raw 'release-config.json' ^| ConvertFrom-Json; 'THERMOPOWER_DEMO_ADMIN_EMAIL=' + $c.homologation.email; 'THERMOPOWER_DEMO_ADMIN_PASSWORD=' + $c.homologation.password"`) do set "%%A=%%B"
+set "THERMOPOWER_LOGIN_PREFILL_ENABLED=1"
 start "ThermoPower Backend" cmd /k "cd /d ""%~dp0backend"" && ..\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
 start "ThermoPower Frontend" cmd /k "cd /d ""%~dp0frontend"" && npm run dev -- --host 127.0.0.1"
 
 timeout /t 5 /nobreak >nul
 start "" "http://127.0.0.1:5173"
 echo.
-echo ThermoPower aberto. Credenciais de demonstracao:
-echo admin@demo.thermopower.com / ThermoPower@123
+echo ThermoPower aberto. As credenciais de homologacao sao preenchidas pela interface.
 echo Mantenha as duas janelas de servico abertas.
 endlocal

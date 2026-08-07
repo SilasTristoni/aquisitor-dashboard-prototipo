@@ -10,6 +10,8 @@ import traceback
 import webbrowser
 from pathlib import Path
 
+_APPLICATION_MUTEX = None
+
 
 def _runtime_root() -> Path:
     if getattr(sys, "frozen", False):
@@ -17,14 +19,14 @@ def _runtime_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _application_directory() -> Path:
+def _application_directory(virtual_lab: bool = False) -> Path:
     configured = os.environ.get("THERMOPOWER_APP_DATA_DIR")
     if configured:
         path = Path(configured)
         path.mkdir(parents=True, exist_ok=True)
         return path
     base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    path = base / "ThermoPower Monitor"
+    path = base / ("ThermoPower Virtual Lab" if virtual_lab else "ThermoPower Monitor")
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -49,24 +51,38 @@ def _free_port(start: int = 8765, attempts: int = 40) -> int:
     raise RuntimeError("Não foi encontrada uma porta local livre para iniciar o ThermoPower")
 
 
-def _configure_environment(runtime: Path, application: Path) -> None:
+def _configure_environment(runtime: Path, application: Path, virtual_lab: bool = False) -> None:
     data = application / "data"
     logs = application / "logs"
     reports = application / "reports"
     for path in (data, logs, reports):
         path.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("THERMOPOWER_ENVIRONMENT", "windows-beta")
-    database_url = f"sqlite:///{(data / 'thermopower.db').as_posix()}"
-    os.environ.setdefault("THERMOPOWER_DATABASE_URL", database_url)
+    os.environ["THERMOPOWER_ENVIRONMENT"] = "virtual-lab" if virtual_lab else "windows-beta"
+    database_name = "thermopower-virtual-lab.db" if virtual_lab else "thermopower.db"
+    database_url = f"sqlite:///{(data / database_name).as_posix()}"
+    os.environ["THERMOPOWER_DATABASE_URL"] = database_url
     os.environ.setdefault("THERMOPOWER_REPORT_OUTPUT_DIRECTORY", str(reports))
     os.environ.setdefault("THERMOPOWER_FRONTEND_DIST", str(runtime / "frontend"))
     os.environ.setdefault("THERMOPOWER_JWT_SECRET", _persistent_secret(application))
-    os.environ.setdefault("THERMOPOWER_DEMO_ADMIN_EMAIL", "homologacao@demo.thermopower.com")
-    os.environ.setdefault("THERMOPOWER_DEMO_ADMIN_PASSWORD", "ThermoPower-HML@2026")
+    os.environ["THERMOPOWER_LOGIN_PREFILL_ENABLED"] = "1"
     log_path = logs / "thermopower.log"
+    os.environ["THERMOPOWER_APP_DATA_DIR"] = str(application)
+    os.environ["THERMOPOWER_LOG_FILE"] = str(log_path)
+    os.environ["THERMOPOWER_VIRTUAL_LAB_MODE"] = "1" if virtual_lab else "0"
+    os.environ["THERMOPOWER_VIRTUAL_LAB_ENABLED"] = "1" if virtual_lab else "0"
     handler = logging.FileHandler(log_path, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     logging.getLogger().addHandler(handler)
+
+
+def _register_application_mutex(virtual_lab: bool) -> None:
+    global _APPLICATION_MUTEX
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    name = "ThermoPowerVirtualLabRunning" if virtual_lab else "ThermoPowerMonitorRunning"
+    _APPLICATION_MUTEX = ctypes.windll.kernel32.CreateMutexW(None, False, name)
 
 
 def _apply_migrations(runtime: Path) -> None:
@@ -79,10 +95,11 @@ def _apply_migrations(runtime: Path) -> None:
     command.upgrade(configuration, "head")
 
 
-def main() -> None:
+def main(virtual_lab: bool = False) -> None:
+    _register_application_mutex(virtual_lab)
     runtime = _runtime_root()
-    application = _application_directory()
-    _configure_environment(runtime, application)
+    application = _application_directory(virtual_lab)
+    _configure_environment(runtime, application, virtual_lab)
     _apply_migrations(runtime)
     port = _free_port()
     address = f"http://127.0.0.1:{port}"

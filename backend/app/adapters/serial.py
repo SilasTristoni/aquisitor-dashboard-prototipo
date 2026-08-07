@@ -5,8 +5,6 @@ import json
 from collections.abc import AsyncIterator
 from datetime import datetime
 
-import serial
-
 from app.adapters.base import (
     DeviceAdapter,
     DeviceInformation,
@@ -14,13 +12,20 @@ from app.adapters.base import (
     DeviceStatus,
     power_to_watts,
 )
+from app.adapters.transports import RealSerialTransport, SerialTransport
 
 
 class SerialJsonAdapter(DeviceAdapter):
-    def __init__(self, port: str | None, baud_rate: int = 115200) -> None:
+    def __init__(
+        self,
+        port: str | None,
+        baud_rate: int = 115200,
+        transport: SerialTransport | None = None,
+    ) -> None:
         self.port = port
         self.baud_rate = baud_rate
-        self.connection: serial.Serial | None = None
+        self.transport = transport
+        self.connection: SerialTransport | None = None
         self.reading = False
         self.last_message_at: datetime | None = None
         self.read_errors = 0
@@ -29,9 +34,10 @@ class SerialJsonAdapter(DeviceAdapter):
     async def connect(self) -> None:
         if not self.port:
             raise ValueError("Porta serial não configurada")
-        self.connection = await asyncio.to_thread(
-            serial.Serial, self.port, self.baud_rate, timeout=1
+        self.connection = self.transport or RealSerialTransport(
+            self.port, self.baud_rate, timeout=1
         )
+        await asyncio.to_thread(self.connection.open)
 
     async def disconnect(self) -> None:
         self.reading = False
@@ -58,17 +64,24 @@ class SerialJsonAdapter(DeviceAdapter):
         if not self.connection:
             raise RuntimeError("Porta serial não conectada")
         self.reading = True
+        pending = bytearray()
         while self.reading and self.connection.is_open:
-            line = await asyncio.to_thread(self.connection.readline)
-            if not line:
+            chunk = await asyncio.to_thread(self.connection.readline)
+            if not chunk:
                 continue
-            try:
-                reading = self.parse_message(line)
-                self.last_message_at = reading.timestamp
-                self.message_count += 1
-                yield reading
-            except (ValueError, KeyError, json.JSONDecodeError, UnicodeDecodeError):
-                self.read_errors += 1
+            pending.extend(chunk)
+            while b"\n" in pending:
+                line, _, remainder = pending.partition(b"\n")
+                pending = bytearray(remainder)
+                if not line.strip():
+                    continue
+                try:
+                    reading = self.parse_message(line)
+                    self.last_message_at = reading.timestamp
+                    self.message_count += 1
+                    yield reading
+                except (ValueError, KeyError, json.JSONDecodeError, UnicodeDecodeError):
+                    self.read_errors += 1
 
     async def get_status(self) -> DeviceStatus:
         connected = bool(self.connection and self.connection.is_open)

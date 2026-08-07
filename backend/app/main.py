@@ -78,6 +78,57 @@ def seed_database() -> None:
                     ),
                 ]
             )
+        if settings.virtual_lab_mode:
+            virtual_devices = [
+                (
+                    "Virtual Applent AT4532",
+                    "Applent (simulado)",
+                    "AT4532 Virtual",
+                    "VLAB-AT4532-001",
+                    "virtual_at4532",
+                ),
+                (
+                    "Virtual GW Instek GPM-8213",
+                    "GW Instek (simulado)",
+                    "GPM-8213 Virtual",
+                    "VLAB-GPM8213-001",
+                    "virtual_gpm8213",
+                ),
+            ]
+            for name, manufacturer, model, serial_number, protocol in virtual_devices:
+                virtual = db.scalar(select(Device).where(Device.serial_number == serial_number))
+                if virtual:
+                    continue
+                virtual = Device(
+                    name=name,
+                    manufacturer=manufacturer,
+                    model=model,
+                    serial_number=serial_number,
+                    connection_type="serial",
+                    protocol=protocol,
+                    metadata_json={
+                        "simulated": True,
+                        "validation": {
+                            "identity_confirmed": False,
+                            "protocol_validated": False,
+                            "acquisition_validated": False,
+                            "homologated": False,
+                        },
+                    },
+                )
+                db.add(virtual)
+                db.flush()
+                if protocol == "virtual_at4532":
+                    for channel in range(1, 33):
+                        db.add(
+                            ChannelConfiguration(
+                                device_id=virtual.id,
+                                channel=channel,
+                                name=f"Termopar virtual {channel}",
+                                enabled=channel <= 8,
+                                color=["#7C3AED", "#A855F7", "#C084FC"][channel % 3],
+                            )
+                        )
         db.commit()
 
 
@@ -128,6 +179,24 @@ if frontend_directory and (frontend_directory / "assets").is_dir():
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "version": settings.app_version}
+
+
+@app.get("/api/v1/public-config")
+def public_config() -> dict:
+    prefill = {"enabled": settings.login_prefill_enabled}
+    if settings.login_prefill_enabled:
+        prefill.update(
+            {
+                "email": settings.demo_admin_email,
+                "password": settings.demo_admin_password,
+            }
+        )
+    return {
+        "version": settings.app_version,
+        "environment": settings.environment,
+        "virtual_lab": settings.virtual_lab_mode,
+        "login_prefill": prefill,
+    }
 
 
 @app.exception_handler(HTTPException)

@@ -32,6 +32,7 @@ from app.models.entities import (
     TemperatureSample,
 )
 from app.schemas.contracts import SimulatorConfigInput
+from app.services.virtual_usb_lab import VirtualInstrumentAdapter
 from app.services.websocket import websocket_hub
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,14 @@ class AcquisitionService:
             return At4532Adapter(device.port, device.baud_rate)
         if device.protocol == "gpm8213_serial":
             return Gpm8213Adapter(device.port, device.baud_rate)
+        if device.protocol == "virtual_at4532":
+            if not settings.virtual_lab_mode and not settings.lab_api_enabled:
+                raise ValueError("Adaptador virtual indisponível neste ambiente")
+            return VirtualInstrumentAdapter(device.port, "at4532")
+        if device.protocol == "virtual_gpm8213":
+            if not settings.virtual_lab_mode and not settings.lab_api_enabled:
+                raise ValueError("Adaptador virtual indisponível neste ambiente")
+            return VirtualInstrumentAdapter(device.port, "gpm8213")
         raise ValueError(f"Protocolo não suportado: {device.protocol}")
 
     async def connect(self, device_id: int) -> dict:
@@ -251,15 +260,30 @@ class AcquisitionService:
                         ElectricalSample(
                             session_id=session_id,
                             device_id=device_id,
-                            device_timestamp=reading.timestamp,
+                            device_timestamp=reading.device_timestamp or reading.timestamp,
                             received_timestamp=reading.timestamp,
+                            voltage_v=reading.voltage_v,
+                            current_a=reading.current_a,
                             active_power_w=reading.power_w,
-                            original_values={"active_power": reading.raw_power},
-                            original_units={"active_power": reading.raw_power_unit},
+                            apparent_power_va=reading.apparent_power_va,
+                            reactive_power_var=reading.reactive_power_var,
+                            power_factor=reading.power_factor,
+                            voltage_frequency_hz=reading.voltage_frequency_hz,
+                            current_frequency_hz=reading.current_frequency_hz,
+                            original_values={
+                                "active_power": reading.raw_power,
+                                "voltage": reading.voltage_v,
+                                "current": reading.current_a,
+                            },
+                            original_units={
+                                "active_power": reading.raw_power_unit,
+                                "voltage": "V",
+                                "current": "A",
+                            },
                             quality=reading.quality,
-                            source="live",
+                            source="simulated" if reading.raw_payload.get("simulated") else "live",
                             sequence=sequence,
-                            raw_payload={},
+                            raw_payload=reading.raw_payload,
                         )
                     )
                 corrected_values: list[tuple[int, float | None]] = []
@@ -273,12 +297,13 @@ class AcquisitionService:
                     temperature_sample = TemperatureSample(
                         session_id=session_id,
                         device_id=device_id,
-                        device_timestamp=reading.timestamp,
+                        device_timestamp=reading.device_timestamp or reading.timestamp,
                         received_timestamp=reading.timestamp,
+                        ambient_temperature_c=reading.ambient_temperature_c,
                         quality=reading.quality,
-                        source="live",
+                        source="simulated" if reading.raw_payload.get("simulated") else "live",
                         sequence=sequence,
-                        raw_payload={},
+                        raw_payload=reading.raw_payload,
                     )
                     temperature_sample.channels = [
                         TemperatureChannelValue(

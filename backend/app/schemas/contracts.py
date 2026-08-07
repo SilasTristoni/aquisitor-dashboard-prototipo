@@ -52,6 +52,8 @@ class DeviceInput(BaseModel):
         "mock_failure",
         "at4532_serial",
         "gpm8213_serial",
+        "virtual_at4532",
+        "virtual_gpm8213",
         "temperature_file",
         "electrical_file",
     ] = "simulator"
@@ -205,3 +207,34 @@ class PeriodReportRequest(BaseModel):
 class UsbAssociationRequest(BaseModel):
     port: str = Field(min_length=1, max_length=120)
     device_id: int = Field(ge=1)
+
+
+class VirtualUsbPlugRequest(BaseModel):
+    profile: Literal["at4532", "gpm8213"]
+    port: str = Field(pattern=r"(?i)^COM\d+$", max_length=20)
+    serial_number: str | None = Field(default=None, max_length=120)
+    omit_serial: bool = False
+    vid: int | None = Field(default=None, ge=0, le=65535)
+    pid: int | None = Field(default=None, ge=0, le=65535)
+    omit_vid_pid: bool = False
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class VirtualUsbPortRequest(BaseModel):
+    port: str = Field(pattern=r"(?i)^COM\d+$", max_length=20)
+
+
+class VirtualUsbChangePortRequest(VirtualUsbPortRequest):
+    new_port: str = Field(pattern=r"(?i)^COM\d+$", max_length=20)
+
+
+class VirtualUsbFlagRequest(VirtualUsbPortRequest):
+    enabled: bool = True
+
+
+class UsbSnapshotRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+
+
+class DiagnosticExportRequest(BaseModel):
+    consent: bool

@@ -59,14 +59,20 @@ from app.schemas.contracts import (
     ChannelInput,
     ChannelProfileCreate,
     DeviceInput,
+    DiagnosticExportRequest,
     LoginRequest,
     PeriodReportRequest,
     SessionCreate,
     SimulatorConfigInput,
     TokenResponse,
     UsbAssociationRequest,
+    UsbSnapshotRequest,
     UserCreate,
     UserRead,
+    VirtualUsbChangePortRequest,
+    VirtualUsbFlagRequest,
+    VirtualUsbPlugRequest,
+    VirtualUsbPortRequest,
 )
 from app.services.acquisition import acquisition_service
 from app.services.imports import create_import_session
@@ -79,7 +85,9 @@ from app.services.period_reporting import PeriodReportDataService
 from app.services.reporting import create_chart_image, create_csv, create_pdf, create_xlsx
 from app.services.statistics import executive_statistics, session_statistics
 from app.services.synchronization import synchronized_series
-from app.services.usb_discovery import usb_discovery_service
+from app.services.usb_diagnostic import read_recent_log, usb_diagnostic_service
+from app.services.usb_discovery import usb_discovery_service, virtual_usb_discovery_service
+from app.services.virtual_usb_lab import virtual_usb_lab_service
 from app.services.websocket import websocket_hub
 
 router = APIRouter(prefix="/api/v1")
@@ -233,7 +241,7 @@ def create_device(payload: DeviceInput, db: Db, _: User = Depends(require_roles(
 
 @router.get("/device-ports")
 def list_device_ports(db: Db, _: CurrentUser) -> list[dict]:
-    return usb_discovery_service.discover(db, _active_device_ports(db))
+    return _discovery_service().discover(db, _active_device_ports(db))
 
 
 def _active_device_ports(db: Session) -> set[str]:
@@ -245,9 +253,13 @@ def _active_device_ports(db: Session) -> set[str]:
     }
 
 
+def _discovery_service():
+    return virtual_usb_discovery_service if settings.virtual_lab_mode else usb_discovery_service
+
+
 @router.get("/hardware/discovery")
 def discover_hardware(db: Db, _: CurrentUser) -> list[dict]:
-    return usb_discovery_service.discover(db, _active_device_ports(db))
+    return _discovery_service().discover(db, _active_device_ports(db))
 
 
 @router.post("/hardware/discovery/associate")
@@ -257,9 +269,154 @@ def associate_discovered_hardware(
     _: User = Depends(require_roles("admin", "operator")),
 ) -> dict:
     try:
-        return usb_discovery_service.associate(db, payload.port, payload.device_id)
+        return _discovery_service().associate(db, payload.port, payload.device_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _require_lab_mode() -> None:
+    if not settings.lab_api_enabled:
+        raise HTTPException(status_code=404, detail="Laboratório virtual indisponível neste modo")
+
+
+@router.get("/runtime")
+def runtime_information(_: CurrentUser) -> dict:
+    return {
+        "version": settings.app_version,
+        "environment": settings.environment,
+        "virtual_lab": settings.virtual_lab_mode,
+        "lab_api_enabled": settings.lab_api_enabled,
+        "banner": "LABORATÓRIO VIRTUAL" if settings.virtual_lab_mode else None,
+    }
+
+
+@router.get("/lab/usb/state")
+def virtual_usb_state(_: CurrentUser) -> dict:
+    _require_lab_mode()
+    return virtual_usb_lab_service.state()
+
+
+@router.post("/lab/usb/plug")
+def virtual_usb_plug(
+    payload: VirtualUsbPlugRequest,
+    _: User = Depends(require_roles("admin", "operator")),
+) -> dict:
+    _require_lab_mode()
+    serial_number: str | None | object = (
+        None if payload.omit_serial else payload.serial_number if payload.serial_number else ...
+    )
+    vid: int | None | object = (
+        None if payload.omit_vid_pid else payload.vid if payload.vid is not None else ...
+    )
+    pid: int | None | object = (
+        None if payload.omit_vid_pid else payload.pid if payload.pid is not None else ...
+    )
+    try:
+        return virtual_usb_lab_service.plug(
+            payload.profile,
+            payload.port,
+            serial_number=serial_number,
+            vid=vid,
+            pid=pid,
+            options=payload.options,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/lab/usb/unplug")
+async def virtual_usb_unplug(
+    payload: VirtualUsbPortRequest,
+    db: Db,
+    _: User = Depends(require_roles("admin", "operator")),
+) -> dict:
+    _require_lab_mode()
+    try:
+        result = virtual_usb_lab_service.unplug(payload.port)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    device_ids = list(db.scalars(select(Device.id).where(Device.port == payload.port)))
+    for device_id in device_ids:
+        await acquisition_service.disconnect(device_id)
+    return result
+
+
+@router.post("/lab/usb/change-port")
+def virtual_usb_change_port(
+    payload: VirtualUsbChangePortRequest,
+    db: Db,
+    _: User = Depends(require_roles("admin", "operator")),
+) -> dict:
+    _require_lab_mode()
+    try:
+        result = virtual_usb_lab_service.change_port(payload.port, payload.new_port)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    for device in db.scalars(select(Device).where(Device.port == payload.port)):
+        device.port = payload.new_port
+    db.commit()
+    return result
+
+
+@router.post("/lab/usb/set-busy")
+def virtual_usb_set_busy(
+    payload: VirtualUsbFlagRequest,
+    _: User = Depends(require_roles("admin", "operator")),
+) -> dict:
+    _require_lab_mode()
+    try:
+        return virtual_usb_lab_service.set_busy(payload.port, payload.enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/lab/usb/set-driver-missing")
+def virtual_usb_set_driver_missing(
+    payload: VirtualUsbFlagRequest,
+    _: User = Depends(require_roles("admin", "operator")),
+) -> dict:
+    _require_lab_mode()
+    try:
+        return virtual_usb_lab_service.set_driver_missing(payload.port, payload.enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/lab/usb/reset")
+async def virtual_usb_reset(
+    _: User = Depends(require_roles("admin", "operator")),
+) -> dict:
+    _require_lab_mode()
+    for device_id in list(acquisition_service.runtimes):
+        await acquisition_service.disconnect(device_id)
+    return virtual_usb_lab_service.reset()
+
+
+@router.post("/hardware/diagnostic/snapshots")
+def capture_usb_snapshot(payload: UsbSnapshotRequest, db: Db, _: CurrentUser) -> dict:
+    if settings.virtual_lab_mode:
+        raise HTTPException(
+            status_code=409, detail="Diagnóstico físico indisponível no laboratório"
+        )
+    return usb_diagnostic_service.capture(db, payload.name, _active_device_ports(db))
+
+
+@router.get("/hardware/diagnostic/preview")
+def preview_usb_diagnostic(_: CurrentUser) -> dict:
+    return usb_diagnostic_service.preview()
+
+
+@router.post("/hardware/diagnostic/export")
+def export_usb_diagnostic(payload: DiagnosticExportRequest, _: CurrentUser) -> StreamingResponse:
+    if not payload.consent:
+        raise HTTPException(status_code=422, detail="Confirme o consentimento antes de exportar")
+    filename, content = usb_diagnostic_service.export(read_recent_log())
+    encoded = quote(filename)
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+    )
 
 
 @router.put("/devices/{device_id}")
