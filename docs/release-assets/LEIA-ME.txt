@@ -1,0 +1,7 @@
+THERMOPOWER MONITOR 0.5.0-BETA
+
+Use ThermoPower-Setup para instalar ou extraia o pacote Portable.
+O Virtual Lab possui atalho e dados separados; tudo nele é simulado.
+No aplicativo principal, use Equipamentos > Diagnóstico para realizar as seis capturas do roteiro.
+A detecção USB não confirma leitura ou homologação física.
+Confira SHA256SUMS.txt antes de executar os arquivos.

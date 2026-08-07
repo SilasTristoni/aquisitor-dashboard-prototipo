@@ -113,7 +113,7 @@ bloqueia o simulador.
 ## Pacote Windows
 
 O build produzirá o frontend estático, empacotará backend/launcher com PyInstaller e criará o
-instalador Inno Setup `ThermoPower-Setup-0.4.0-beta.exe`. Em execução empacotada, o FastAPI
+instalador Inno Setup `ThermoPower-Setup-0.5.0-beta.exe`. Em execução empacotada, o FastAPI
 serve a SPA. Banco, logs e relatórios ficam sob `%LOCALAPPDATA%\ThermoPower Monitor`; o
 launcher aplica migrations, escolhe porta local livre, inicia o servidor e abre o navegador.
 Credenciais de homologação são locais, documentadas e sobrescrevíveis por ambiente — nunca

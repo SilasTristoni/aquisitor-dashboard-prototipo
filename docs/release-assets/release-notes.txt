@@ -1,0 +1,7 @@
+ThermoPower Monitor {{VERSION}}
+
+- Laboratório Virtual AT4532/GPM-8213 isolado com hot-plug.
+- Descoberta real e virtual por providers distintos e marcados.
+- Diagnóstico USB passivo com snapshots, diff, prévia e ZIP sanitizado.
+- Executáveis principal e Virtual Lab, instalador opcional e pacotes portáteis.
+- Aquisição física AT4532/GPM-8213 permanece bloqueada e pendente de homologação.

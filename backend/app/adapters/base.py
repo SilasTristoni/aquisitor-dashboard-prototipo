@@ -25,6 +25,16 @@ class DeviceReading(BaseModel):
     power_w: float
     temperatures_c: list[float | None] = Field(max_length=32)
     quality: str = "good"
+    voltage_v: float | None = None
+    current_a: float | None = None
+    apparent_power_va: float | None = None
+    reactive_power_var: float | None = None
+    power_factor: float | None = None
+    voltage_frequency_hz: float | None = None
+    current_frequency_hz: float | None = None
+    ambient_temperature_c: float | None = None
+    device_timestamp: datetime | None = None
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("temperatures_c")
     @classmethod
