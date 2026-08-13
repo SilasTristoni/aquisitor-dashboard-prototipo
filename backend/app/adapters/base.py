@@ -20,10 +20,21 @@ def power_to_watts(value: float, unit: str) -> float:
 
 class DeviceReading(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    raw_power: float
+    raw_power: float | None
     raw_power_unit: str
-    power_w: float
+    power_w: float | None
     temperatures_c: list[float | None] = Field(max_length=32)
+    channel_quality: list[str] = Field(default_factory=list, max_length=32)
+    voltage_v: float | None = None
+    current_a: float | None = None
+    apparent_power_va: float | None = None
+    reactive_power_var: float | None = None
+    power_factor: float | None = None
+    voltage_frequency_hz: float | None = None
+    current_frequency_hz: float | None = None
+    raw_values: dict[str, Any] = Field(default_factory=dict)
+    raw_units: dict[str, str] = Field(default_factory=dict)
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
     quality: str = "good"
 
     @field_validator("temperatures_c")

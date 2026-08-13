@@ -38,9 +38,9 @@ export type Reading = {
   timestamp: string;
   device_id: number;
   session_id?: number;
-  raw_power: number;
+  raw_power: number | null;
   raw_power_unit: string;
-  power_w: number;
+  power_w: number | null;
   temperatures_c: Array<number | null>;
   quality: string;
 };

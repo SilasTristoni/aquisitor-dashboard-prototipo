@@ -37,6 +37,16 @@ class UserRead(ApiModel):
     created_at: datetime
 
 
+class SerialPortSettings(BaseModel):
+    data_bits: Literal[5, 6, 7, 8] | None = None
+    parity: Literal["N", "E", "O", "M", "S"] | None = None
+    stop_bits: Literal[1, 1.5, 2] | None = None
+    timeout_s: float | None = Field(default=None, ge=0.05, le=30)
+    read_timeout_s: float | None = Field(default=None, ge=0.05, le=30)
+    line_terminator: str | None = Field(default=None, max_length=40)
+    framing: str | None = Field(default=None, max_length=120)
+
+
 class DeviceInput(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     manufacturer: str | None = None
@@ -44,7 +54,7 @@ class DeviceInput(BaseModel):
     serial_number: str | None = None
     connection_type: Literal["simulator", "serial", "file", "tcp"] = "simulator"
     port: str | None = None
-    baud_rate: int = Field(default=115200, ge=300, le=4_000_000)
+    baud_rate: int | None = Field(default=None, ge=300, le=4_000_000)
     protocol: Literal[
         "simulator",
         "serial_json",
@@ -57,6 +67,13 @@ class DeviceInput(BaseModel):
     ] = "simulator"
     active: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
+    serial_settings: SerialPortSettings | None = None
+
+    @model_validator(mode="after")
+    def physical_defaults(self) -> "DeviceInput":
+        if self.protocol == "at4532_serial" and self.baud_rate is None:
+            self.baud_rate = 19200
+        return self
 
 
 class SessionCreate(BaseModel):
@@ -205,3 +222,51 @@ class PeriodReportRequest(BaseModel):
 class UsbAssociationRequest(BaseModel):
     port: str = Field(min_length=1, max_length=120)
     device_id: int = Field(ge=1)
+
+
+class SerialDiagnosticOpenRequest(BaseModel):
+    port: str = Field(min_length=1, max_length=120)
+    baud_rate: int = Field(ge=300, le=4_000_000)
+    data_bits: Literal[5, 6, 7, 8] | None = None
+    parity: Literal["N", "E", "O", "M", "S"] | None = None
+    stop_bits: Literal[1, 1.5, 2] | None = None
+    timeout_s: float = Field(ge=0.05, le=30)
+    read_timeout_s: float = Field(ge=0.05, le=30)
+    line_terminator: str | None = Field(default=None, max_length=40)
+    framing: str | None = Field(default=None, max_length=120)
+    use_engineering_assumption_8n1: bool = False
+
+    @model_validator(mode="after")
+    def validate_serial_parameter_source(self) -> "SerialDiagnosticOpenRequest":
+        values = (self.data_bits, self.parity, self.stop_bits)
+        if self.use_engineering_assumption_8n1:
+            if any(value is not None for value in values):
+                raise ValueError(
+                    "O modo exploratório 8-N-1 não pode ser combinado com parâmetros confirmados"
+                )
+            return self
+        if any(value is None for value in values):
+            raise ValueError(
+                "Confirme data bits, parity e stop bits ou autorize explicitamente a hipótese 8-N-1"
+            )
+        return self
+
+
+class SerialDiagnosticReadRequest(BaseModel):
+    session_id: str = Field(min_length=8, max_length=64)
+    max_bytes: int = Field(default=4096, ge=1, le=65_536)
+
+
+class SerialDiagnosticCloseRequest(BaseModel):
+    session_id: str = Field(min_length=8, max_length=64)
+
+
+class ProtocolProbeRequest(BaseModel):
+    mode: Literal["identity", "read", "full"]
+    operator_confirmed: bool
+
+    @model_validator(mode="after")
+    def require_operator_confirmation(self) -> "ProtocolProbeRequest":
+        if not self.operator_confirmed:
+            raise ValueError("Confirme o envio dos comandos oficiais antes de iniciar o teste")
+        return self

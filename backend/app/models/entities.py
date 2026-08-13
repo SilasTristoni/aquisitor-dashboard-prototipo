@@ -52,7 +52,7 @@ class Device(Base):
     serial_number: Mapped[str | None] = mapped_column(String(120), unique=True)
     connection_type: Mapped[str] = mapped_column(String(30), default="simulator")
     port: Mapped[str | None] = mapped_column(String(120))
-    baud_rate: Mapped[int] = mapped_column(Integer, default=115200)
+    baud_rate: Mapped[int | None] = mapped_column(Integer, nullable=True)
     protocol: Mapped[str] = mapped_column(String(40), default="simulator")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)

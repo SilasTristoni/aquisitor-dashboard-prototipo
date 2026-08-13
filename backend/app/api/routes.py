@@ -24,6 +24,8 @@ from sqlalchemy import Float, Integer, cast, delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.adapters.simulator import SCENARIOS
+from app.adapters.specific import ProtocolDocumentationRequired
+from app.adapters.transports import SerialTransportConfiguration, SerialTransportError
 from app.api.deps import get_current_user, require_roles
 from app.core.config import get_settings
 from app.core.database import engine, get_db
@@ -61,6 +63,10 @@ from app.schemas.contracts import (
     DeviceInput,
     LoginRequest,
     PeriodReportRequest,
+    ProtocolProbeRequest,
+    SerialDiagnosticCloseRequest,
+    SerialDiagnosticOpenRequest,
+    SerialDiagnosticReadRequest,
     SessionCreate,
     SimulatorConfigInput,
     TokenResponse,
@@ -69,6 +75,7 @@ from app.schemas.contracts import (
     UserRead,
 )
 from app.services.acquisition import acquisition_service
+from app.services.diagnostic_export import create_diagnostic_zip
 from app.services.imports import create_import_session
 from app.services.period_documents import (
     render_period_chart,
@@ -76,7 +83,9 @@ from app.services.period_documents import (
     safe_report_filename,
 )
 from app.services.period_reporting import PeriodReportDataService
+from app.services.protocol_probe import protocol_probe_service
 from app.services.reporting import create_chart_image, create_csv, create_pdf, create_xlsx
+from app.services.serial_diagnostic import real_serial_diagnostic_service
 from app.services.statistics import executive_statistics, session_statistics
 from app.services.synchronization import synchronized_series
 from app.services.usb_discovery import usb_discovery_service
@@ -163,6 +172,22 @@ def login(payload: LoginRequest, request: Request, db: Db) -> TokenResponse:
     )
 
 
+@router.get("/build-info")
+def build_info() -> dict:
+    demo_environments = {"development", "test", "windows-beta", "physical-alpha"}
+    demo_credentials = None
+    if settings.environment in demo_environments:
+        demo_credentials = {
+            "email": settings.demo_admin_email,
+            "password": settings.demo_admin_password,
+        }
+    return {
+        "version": settings.app_version,
+        "environment": settings.environment,
+        "demo_credentials": demo_credentials,
+    }
+
+
 @router.get("/auth/me", response_model=UserRead)
 def me(user: CurrentUser) -> User:
     return user
@@ -201,6 +226,9 @@ def list_devices(db: Db, _: CurrentUser) -> list[dict]:
 
 @router.post("/devices", status_code=201)
 def create_device(payload: DeviceInput, db: Db, _: User = Depends(require_roles("admin"))) -> dict:
+    metadata = dict(payload.metadata)
+    if payload.serial_settings is not None:
+        metadata["serial"] = payload.serial_settings.model_dump()
     device = Device(
         name=payload.name,
         manufacturer=payload.manufacturer,
@@ -211,7 +239,7 @@ def create_device(payload: DeviceInput, db: Db, _: User = Depends(require_roles(
         baud_rate=payload.baud_rate,
         protocol=payload.protocol,
         active=payload.active,
-        metadata_json=payload.metadata,
+        metadata_json=metadata,
     )
     db.add(device)
     db.flush()
@@ -262,6 +290,75 @@ def associate_discovered_hardware(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+def _serial_diagnostic_http_error(exc: SerialTransportError) -> HTTPException:
+    status = {
+        "port_busy": 409,
+        "diagnostic_already_open": 409,
+        "port_not_found": 404,
+        "diagnostic_session_not_found": 404,
+        "driver_unavailable": 422,
+    }.get(exc.code, 422)
+    return HTTPException(status_code=status, detail=str(exc))
+
+
+@router.post("/hardware/serial-diagnostic/open")
+async def open_serial_diagnostic(
+    payload: SerialDiagnosticOpenRequest,
+    _: User = Depends(require_roles("admin")),
+) -> dict:
+    if payload.use_engineering_assumption_8n1:
+        data_bits, parity, stop_bits = 8, "N", 1
+        parameters_source = "engineering_assumption"
+        physical_validation = "pending"
+    else:
+        data_bits = payload.data_bits
+        parity = payload.parity
+        stop_bits = payload.stop_bits
+        parameters_source = "user_confirmed"
+        physical_validation = "parameters_confirmed"
+    configuration = SerialTransportConfiguration(
+        port=payload.port,
+        baud_rate=payload.baud_rate,
+        data_bits=data_bits,
+        parity=parity,
+        stop_bits=stop_bits,
+        timeout_s=payload.timeout_s,
+        read_timeout_s=payload.read_timeout_s,
+        line_terminator=payload.line_terminator,
+        framing=payload.framing,
+    )
+    try:
+        return await real_serial_diagnostic_service.open(
+            configuration,
+            parameters_source=parameters_source,
+            physical_validation=physical_validation,
+        )
+    except SerialTransportError as exc:
+        raise _serial_diagnostic_http_error(exc) from exc
+
+
+@router.post("/hardware/serial-diagnostic/read")
+async def read_serial_diagnostic(
+    payload: SerialDiagnosticReadRequest,
+    _: User = Depends(require_roles("admin")),
+) -> dict:
+    try:
+        return await real_serial_diagnostic_service.read(payload.session_id, payload.max_bytes)
+    except SerialTransportError as exc:
+        raise _serial_diagnostic_http_error(exc) from exc
+
+
+@router.post("/hardware/serial-diagnostic/close")
+async def close_serial_diagnostic(
+    payload: SerialDiagnosticCloseRequest,
+    _: User = Depends(require_roles("admin")),
+) -> dict:
+    try:
+        return await real_serial_diagnostic_service.close(payload.session_id)
+    except SerialTransportError as exc:
+        raise _serial_diagnostic_http_error(exc) from exc
+
+
 @router.put("/devices/{device_id}")
 def update_device(
     device_id: int, payload: DeviceInput, db: Db, _: User = Depends(require_roles("admin"))
@@ -269,9 +366,12 @@ def update_device(
     device = db.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Equipamento não encontrado")
-    for field, value in payload.model_dump(exclude={"metadata"}).items():
+    for field, value in payload.model_dump(exclude={"metadata", "serial_settings"}).items():
         setattr(device, field, value)
-    device.metadata_json = payload.metadata
+    metadata = dict(payload.metadata)
+    if payload.serial_settings is not None:
+        metadata["serial"] = payload.serial_settings.model_dump()
+    device.metadata_json = metadata
     db.commit()
     db.refresh(device)
     return _device_dict(device)
@@ -302,6 +402,10 @@ async def connect_device(
 ) -> dict:
     try:
         return await acquisition_service.connect(device_id)
+    except ProtocolDocumentationRequired as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SerialTransportError as exc:
+        raise _serial_diagnostic_http_error(exc) from exc
     except (ValueError, RuntimeError, ConnectionError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -319,21 +423,77 @@ async def device_status(device_id: int, _: CurrentUser) -> dict:
     return await acquisition_service.status(device_id)
 
 
+@router.post("/devices/{device_id}/protocol-probe")
+async def run_documented_protocol_probe(
+    device_id: int,
+    payload: ProtocolProbeRequest,
+    db: Db,
+    _: User = Depends(require_roles("admin", "operator")),
+) -> dict:
+    device = db.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+    if device.protocol == "gpm8213_serial" and device.serial_number:
+        usb_discovery_service.discover(db, _active_device_ports(db))
+        db.refresh(device)
+    try:
+        return await protocol_probe_service.run(device, payload.mode)
+    except (ValueError, RuntimeError, ConnectionError, OSError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/devices/{device_id}/diagnostic-export")
+def export_complete_diagnostic(
+    device_id: int,
+    db: Db,
+    _: User = Depends(require_roles("admin", "operator")),
+) -> StreamingResponse:
+    device = db.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+    probe = protocol_probe_service.latest_results.get(device_id)
+    if not probe:
+        raise HTTPException(
+            status_code=409,
+            detail="Execute primeiro o Teste de Protocolo Documentado para incluir TX/RX.",
+        )
+    discoveries = usb_discovery_service.discover(db, _active_device_ports(db))
+    payload = create_diagnostic_zip(device, probe, discoveries)
+    filename = f"ThermoPower-diagnostic-{device.model or device.id}.zip"
+    return StreamingResponse(
+        io.BytesIO(payload),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post("/devices/{device_id}/test")
 async def test_device_connection(
-    device_id: int, _: User = Depends(require_roles("admin", "operator"))
+    device_id: int, db: Db, _: User = Depends(require_roles("admin", "operator"))
 ) -> dict:
     was_connected = device_id in acquisition_service.runtimes
     started = time.monotonic()
+    device = db.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+    usb = (device.metadata_json or {}).get("usb", {})
+    identity_confirmed = bool(device.serial_number or usb.get("manual_confirmed"))
     stages = [
-        {"key": "open_port", "label": "Abrir porta", "status": "pending"},
-        {"key": "receive_data", "label": "Receber dados", "status": "pending"},
-        {"key": "recognize_format", "label": "Reconhecer formato", "status": "pending"},
-        {"key": "inspect_channels", "label": "Inspecionar canais", "status": "pending"},
+        {"key": "usb", "label": "USB detectado", "status": "passed" if device.port else "failed"},
+        {
+            "key": "identity",
+            "label": "Identidade",
+            "status": "passed" if identity_confirmed else "failed",
+            "message": ("Identidade confirmada" if identity_confirmed else "Identidade ambígua"),
+        },
+        {"key": "port", "label": "Porta", "status": "passed" if device.port else "failed"},
+        {"key": "protocol", "label": "Protocolo", "status": "pending"},
+        {"key": "reading", "label": "Leitura", "status": "pending"},
+        {"key": "acquisition", "label": "Aquisição", "status": "pending"},
     ]
     try:
         status = await acquisition_service.connect(device_id)
-        stages[0]["status"] = "passed"
+        stages[3]["status"] = "passed"
         runtime = acquisition_service.runtimes[device_id]
         for _ in range(30):
             if runtime.latest:
@@ -342,9 +502,17 @@ async def test_device_connection(
         info = await runtime.adapter.get_device_information()
         adapter_status = await runtime.adapter.get_status()
         received = runtime.latest is not None
-        stages[1]["status"] = "passed" if received else "failed"
-        stages[2]["status"] = "passed" if received else "not_run"
-        stages[3]["status"] = "passed" if received else "not_run"
+        stages[4]["status"] = "passed" if received else "failed"
+        stages[5]["status"] = "passed" if received else "not_run"
+        if not received:
+            stages[4]["message"] = (
+                "Formato recebido não reconhecido."
+                if adapter_status.read_errors
+                else "Instrumento não respondeu."
+            )
+        else:
+            stages[4]["message"] = "Leitura recebida."
+            stages[5]["message"] = "Comunicação estabelecida."
         return {
             "port_open": adapter_status.connected,
             "data_received": received,
@@ -359,9 +527,13 @@ async def test_device_connection(
             "physical_validation": "pending",
         }
     except (ValueError, RuntimeError, ConnectionError, OSError) as exc:
-        stages[0]["status"] = "failed"
-        stages[0]["message"] = str(exc)
-        for stage in stages[1:]:
+        stages[3]["status"] = "failed"
+        stages[3]["message"] = (
+            "O comando solicitado não possui fonte oficial registrada."
+            if isinstance(exc, ProtocolDocumentationRequired)
+            else str(exc)
+        )
+        for stage in stages[4:]:
             stage["status"] = "not_run"
         return {
             "port_open": False,
@@ -872,9 +1044,7 @@ def delete_session(session_id: int, db: Db, _: User = Depends(require_roles("adm
     ):
         db.execute(delete(model).where(model.session_id == session_id))
     db.execute(
-        update(SystemEvent)
-        .where(SystemEvent.session_id == session_id)
-        .values(session_id=None)
+        update(SystemEvent).where(SystemEvent.session_id == session_id).values(session_id=None)
     )
     db.execute(update(Report).where(Report.session_id == session_id).values(session_id=None))
     db.delete(session)

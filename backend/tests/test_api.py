@@ -48,7 +48,7 @@ def test_paginated_collections(client: TestClient, auth_headers: dict[str, str])
 
 def test_complete_simulated_measurement_flow(client: TestClient, auth_headers: dict[str, str]):
     devices = client.get("/api/v1/devices", headers=auth_headers).json()
-    device_id = devices[0]["id"]
+    device_id = next(device["id"] for device in devices if device["protocol"] == "simulator")
     connected = client.post(f"/api/v1/devices/{device_id}/connect", headers=auth_headers)
     assert connected.status_code == 200
     scenario = client.post(
@@ -101,7 +101,8 @@ def test_complete_simulated_measurement_flow(client: TestClient, auth_headers: d
 def test_deleted_session_leaves_no_rows_that_block_the_next_session(
     client: TestClient, auth_headers: dict[str, str]
 ):
-    device_id = client.get("/api/v1/devices", headers=auth_headers).json()[0]["id"]
+    devices = client.get("/api/v1/devices", headers=auth_headers).json()
+    device_id = next(device["id"] for device in devices if device["protocol"] == "simulator")
     assert client.post(
         f"/api/v1/devices/{device_id}/connect", headers=auth_headers
     ).status_code == 200

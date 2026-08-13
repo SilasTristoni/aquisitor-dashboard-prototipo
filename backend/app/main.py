@@ -16,6 +16,7 @@ from app.core.database import Base, SessionLocal, engine
 from app.core.security import hash_password
 from app.models.entities import AlertRule, ChannelConfiguration, Device, User
 from app.services.acquisition import acquisition_service
+from app.services.serial_diagnostic import real_serial_diagnostic_service
 
 settings = get_settings()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -78,16 +79,146 @@ def seed_database() -> None:
                     ),
                 ]
             )
+        at4532 = db.scalar(select(Device).where(Device.name == "Applent AT4532 · LAB"))
+        if not at4532:
+            at4532 = Device(
+                name="Applent AT4532 · LAB",
+                manufacturer="Applent Instruments",
+                model="AT4532",
+                connection_type="serial",
+                port="COM5",
+                baud_rate=19200,
+                protocol="at4532_serial",
+                metadata_json={
+                    "usb": {
+                        "vid": 0x1A86,
+                        "pid": 0x7523,
+                        "manual_confirmed": True,
+                        "confirmed_port": "COM5",
+                        "confirmed_at": "2026-08-10",
+                        "driver": "CH341/CH340",
+                    },
+                    "serial": {
+                        "data_bits": 8,
+                        "parity": "N",
+                        "stop_bits": 1,
+                        "timeout_s": 1,
+                        "read_timeout_s": 2,
+                        "line_terminator": "LF (0x0A)",
+                        "framing": "SCPI ASCII",
+                        "parameters_source": "vendor_documented",
+                    },
+                    "expected_interval_ms": 3000,
+                    "channel_count": 32,
+                    "protocol_status": "vendor_documented_physical_validation_pending",
+                    "physical_validation": "pending",
+                },
+            )
+            db.add(at4532)
+            db.flush()
+            colors = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444"]
+            for channel in range(1, 33):
+                db.add(
+                    ChannelConfiguration(
+                        device_id=at4532.id,
+                        channel=channel,
+                        name=f"Canal {channel}",
+                        enabled=True,
+                        color=colors[(channel - 1) % len(colors)],
+                    )
+                )
+        at_metadata = dict(at4532.metadata_json or {})
+        at_metadata.update(
+            {
+                "serial": {
+                    "data_bits": 8,
+                    "parity": "N",
+                    "stop_bits": 1,
+                    "timeout_s": 1,
+                    "read_timeout_s": 2,
+                    "line_terminator": "LF (0x0A)",
+                    "framing": "SCPI ASCII",
+                    "parameters_source": "vendor_documented",
+                },
+                "expected_interval_ms": 3000,
+                "channel_count": 32,
+                "protocol_status": "vendor_documented_physical_validation_pending",
+                "physical_validation": "pending",
+            }
+        )
+        at4532.metadata_json = at_metadata
+        at4532.baud_rate = 19200
+        gpm8213 = db.scalar(select(Device).where(Device.serial_number == "GES913349"))
+        if not gpm8213:
+            gpm8213 = Device(
+                name="GW Instek GPM-8213 · LAB",
+                manufacturer="GW Instek",
+                model="GPM-8213",
+                serial_number="GES913349",
+                connection_type="serial",
+                port=None,
+                baud_rate=None,
+                protocol="gpm8213_serial",
+                metadata_json={
+                    "usb": {
+                        "vid": 0x2184,
+                        "pid": 0x0052,
+                        "serial_number": "GES913349",
+                        "driver": "usbser",
+                    },
+                    "serial": {
+                        "data_bits": 8,
+                        "parity": "N",
+                        "stop_bits": 1,
+                        "timeout_s": 1,
+                        "read_timeout_s": 2,
+                        "line_terminator": "CR+LF (0x0D 0x0A)",
+                        "framing": "SCPI ASCII over USB CDC",
+                        "parameters_source": "vendor_documented",
+                    },
+                    "expected_interval_ms": 1000,
+                    "protocol_status": "vendor_documented_physical_validation_pending",
+                    "physical_validation": "pending",
+                },
+            )
+            db.add(gpm8213)
+        gpm_metadata = dict(gpm8213.metadata_json or {})
+        gpm_metadata.update(
+            {
+                "serial": {
+                    "data_bits": 8,
+                    "parity": "N",
+                    "stop_bits": 1,
+                    "timeout_s": 1,
+                    "read_timeout_s": 2,
+                    "line_terminator": "CR+LF (0x0D 0x0A)",
+                    "framing": "SCPI ASCII over USB CDC",
+                    "parameters_source": "vendor_documented",
+                    "baud_relevance": "not_specified_for_usb_cdc",
+                },
+                "expected_interval_ms": 1000,
+                "protocol_status": "vendor_documented_physical_validation_pending",
+                "physical_validation": "pending",
+            }
+        )
+        gpm8213.metadata_json = gpm_metadata
         db.commit()
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    logging.getLogger(__name__).info(
+        "startup version=%s environment=%s", settings.app_version, settings.environment
+    )
     Base.metadata.create_all(engine)
     seed_database()
     yield
+    await real_serial_diagnostic_service.shutdown()
     for device_id in list(acquisition_service.runtimes):
         await acquisition_service.disconnect(device_id)
+    logging.getLogger(__name__).info("shutdown complete")
+    for handler in logging.getLogger().handlers:
+        handler.flush()
 
 
 app = FastAPI(
@@ -140,13 +271,17 @@ async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    details = exc.errors()
+    for detail in details:
+        if "ctx" in detail:
+            detail["ctx"] = {key: str(value) for key, value in detail["ctx"].items()}
     return JSONResponse(
         status_code=422,
         content={
             "error": {
                 "status": 422,
                 "message": "Dados de entrada inválidos",
-                "details": exc.errors(),
+                "details": details,
             }
         },
     )

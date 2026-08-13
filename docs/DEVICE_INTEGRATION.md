@@ -26,7 +26,10 @@ O contrato legado `DeviceReading` continua disponível para simulador e clientes
 - `SerialJsonAdapter`: parser operacional; abertura da porta depende da biblioteca/porta e de homologação com hardware.
 - `SerialCsvAdapter`: estrutura e parser preparados, desabilitados por padrão até o fabricante definir ordem, delimitador e framing.
 - `MockFailureAdapter`: falha em estágios selecionáveis para testes de recuperação.
-- `At4532Adapter` e `Gpm8213Adapter`: limites específicos explícitos; recusam conexão até a homologação do manual, sem comandos SCPI inferidos.
+- `At4532SerialAdapter` e `Gpm8213UsbSerialAdapter`: transport/protocol/parser/normalizer
+  separados; usam somente comandos SCPI rastreados nos manuais oficiais e mantêm validação
+  física pendente.
+- `RealSerialDiagnosticService`: abre/lê/fecha bytes raw em modo estritamente read-only e nunca produz medições.
 - `At4532XlsxImporter` e `Gpm8213TxtImporter`: operacionais com detecção de cabeçalho e unidades.
 
 ## JSON provisório
@@ -62,7 +65,9 @@ Também aceita `mW` e `kW`. Esse é um contrato de desenvolvimento, não o proto
 6. Medir perda de amostras, jitter, clock drift e comportamento após suspensão do computador.
 7. Documentar matriz firmware/driver/SO e assinar protocolo homologado.
 
-Até essa validação, a integração serial deve ser apresentada como **preparada, não homologada**. A pasta `reference-input/` recebida estava vazia; os testes automatizados usam apenas fixtures sintéticas geradas em memória.
+Até essa validação, a integração serial deve ser apresentada como **preparada, não homologada**.
+As fixtures de protocolo reproduzem os formatos e exemplos publicados nos manuais oficiais;
+os arquivos do fabricante baixados para inspeção ficam fora do pacote distribuído.
 
 ## Descoberta USB / COM
 
@@ -71,7 +76,7 @@ e fechar a porta imediatamente, sem transmitir bytes, para distinguir disponibil
 por outro processo. Aquisições ativas do próprio ThermoPower são marcadas ocupadas sem nova
 abertura. A associação usa, nesta ordem, número de série USB, par VID/PID salvo e nome da porta.
 
-Descrições contendo literalmente AT4532 ou GPM-8213 geram apenas `possible_*` com confiança
-média. Nenhum VID/PID conhecido foi codificado, pois os manuais mencionados no briefing não
-existem no repositório. Porta aberta, nome parecido ou driver instalado não equivalem a
-identificação/homologação do instrumento.
+Descrições contendo literalmente AT4532 ou GPM-8213 geram apenas `possible_*`. O CH340
+`1A86/7523` continua sendo só candidato sem confirmação manual; o GPM usa a combinação oficial
+`2184/0052` e, principalmente, o serial único `GES913349`. Porta aberta ou driver instalado não
+equivalem a uma resposta SCPI válida.

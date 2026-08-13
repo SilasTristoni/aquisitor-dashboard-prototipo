@@ -1,10 +1,13 @@
 param(
-    [string]$Version = "0.4.0-beta",
+    [string]$Version,
     [switch]$SkipInstaller
 )
 
 $ErrorActionPreference = "Stop"
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+if (-not $Version) {
+    $Version = (Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot "VERSION.txt")).Trim()
+}
 $Python = Join-Path $RepositoryRoot ".venv\Scripts\python.exe"
 
 if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {

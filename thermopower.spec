@@ -5,6 +5,7 @@ from PyInstaller.utils.hooks import collect_data_files
 root = Path(SPECPATH)
 backend = root / "backend"
 datas = [
+    (str(root / "VERSION.txt"), "."),
     (str(root / "frontend" / "dist"), "frontend"),
     (str(backend / "alembic"), "alembic"),
     (str(backend / "alembic.ini"), "."),

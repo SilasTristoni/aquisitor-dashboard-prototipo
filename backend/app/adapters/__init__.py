@@ -1,7 +1,27 @@
 from app.adapters.base import DeviceAdapter, DeviceInformation, DeviceReading, DeviceStatus
 from app.adapters.serial import SerialCsvAdapter, SerialJsonAdapter
 from app.adapters.simulator import MockFailureAdapter, SimulatorAdapter
-from app.adapters.specific import At4532Adapter, Gpm8213Adapter
+from app.adapters.specific import (
+    At4532Adapter,
+    At4532Normalizer,
+    At4532Parser,
+    At4532Protocol,
+    At4532SerialAdapter,
+    Gpm8213Adapter,
+    Gpm8213Normalizer,
+    Gpm8213Parser,
+    Gpm8213Protocol,
+    Gpm8213UsbSerialAdapter,
+    ProtocolDocumentationRequired,
+    ProtocolResponseError,
+)
+from app.adapters.transports import (
+    At4532SerialTransport,
+    Gpm8213SerialTransport,
+    SerialTransport,
+    SerialTransportConfiguration,
+    SerialTransportError,
+)
 
 __all__ = [
     "DeviceAdapter",
@@ -9,9 +29,24 @@ __all__ = [
     "DeviceReading",
     "DeviceStatus",
     "At4532Adapter",
+    "At4532Normalizer",
+    "At4532Parser",
+    "At4532SerialAdapter",
+    "At4532SerialTransport",
+    "At4532Protocol",
     "Gpm8213Adapter",
+    "Gpm8213Normalizer",
+    "Gpm8213Parser",
+    "Gpm8213UsbSerialAdapter",
+    "Gpm8213SerialTransport",
+    "Gpm8213Protocol",
     "MockFailureAdapter",
     "SerialCsvAdapter",
     "SerialJsonAdapter",
     "SimulatorAdapter",
+    "ProtocolDocumentationRequired",
+    "ProtocolResponseError",
+    "SerialTransport",
+    "SerialTransportConfiguration",
+    "SerialTransportError",
 ]

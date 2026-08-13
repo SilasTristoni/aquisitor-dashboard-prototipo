@@ -10,6 +10,8 @@ import traceback
 import webbrowser
 from pathlib import Path
 
+_APPLICATION_MUTEX = None
+
 
 def _runtime_root() -> Path:
     if getattr(sys, "frozen", False):
@@ -55,6 +57,7 @@ def _configure_environment(runtime: Path, application: Path) -> None:
     reports = application / "reports"
     for path in (data, logs, reports):
         path.mkdir(parents=True, exist_ok=True)
+    os.environ["THERMOPOWER_APP_DATA_DIR"] = str(application.resolve())
     os.environ.setdefault("THERMOPOWER_ENVIRONMENT", "windows-beta")
     database_url = f"sqlite:///{(data / 'thermopower.db').as_posix()}"
     os.environ.setdefault("THERMOPOWER_DATABASE_URL", database_url)
@@ -63,10 +66,57 @@ def _configure_environment(runtime: Path, application: Path) -> None:
     os.environ.setdefault("THERMOPOWER_JWT_SECRET", _persistent_secret(application))
     os.environ.setdefault("THERMOPOWER_DEMO_ADMIN_EMAIL", "homologacao@demo.thermopower.com")
     os.environ.setdefault("THERMOPOWER_DEMO_ADMIN_PASSWORD", "ThermoPower-HML@2026")
-    log_path = logs / "thermopower.log"
-    handler = logging.FileHandler(log_path, encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-    logging.getLogger().addHandler(handler)
+    _configure_file_logging(runtime, application)
+
+
+def _configure_file_logging(runtime: Path, application: Path) -> None:
+    log_path = application / "logs" / "thermopower.log"
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    handlers = [
+        handler
+        for handler in root_logger.handlers
+        if isinstance(handler, logging.FileHandler)
+        and Path(handler.baseFilename).resolve() == log_path.resolve()
+    ]
+    if not handlers:
+        handler = logging.FileHandler(log_path, encoding="utf-8", delay=False)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        root_logger.addHandler(handler)
+        handlers.append(handler)
+    root_logger.info("launcher configured application=%s runtime=%s", application, runtime)
+    for handler in handlers:
+        handler.flush()
+
+
+def _acquire_single_instance(name: str = "ThermoPowerMonitorRunning", kernel32=None) -> bool:
+    global _APPLICATION_MUTEX
+    if sys.platform != "win32" and kernel32 is None:
+        return True
+    if kernel32 is None:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+    handle = kernel32.CreateMutexW(None, False, name)
+    if not handle:
+        raise OSError("Não foi possível criar o mutex da aplicação")
+    if kernel32.GetLastError() == 183:
+        kernel32.CloseHandle(handle)
+        return False
+    _APPLICATION_MUTEX = handle
+    return True
+
+
+def _release_single_instance(kernel32=None) -> None:
+    global _APPLICATION_MUTEX
+    if not _APPLICATION_MUTEX:
+        return
+    if kernel32 is None:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+    kernel32.CloseHandle(_APPLICATION_MUTEX)
+    _APPLICATION_MUTEX = None
 
 
 def _apply_migrations(runtime: Path) -> None:
@@ -80,10 +130,23 @@ def _apply_migrations(runtime: Path) -> None:
 
 
 def main() -> None:
+    mutex_name = os.environ.get("THERMOPOWER_MUTEX_NAME", "ThermoPowerMonitorRunning")
+    if not _acquire_single_instance(mutex_name):
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            "O ThermoPower Monitor já está em execução.",
+            "ThermoPower Monitor",
+            0x40,
+        )
+        return
     runtime = _runtime_root()
     application = _application_directory()
     _configure_environment(runtime, application)
     _apply_migrations(runtime)
+    # Alembic's logging configuration may replace root handlers while applying migrations.
+    _configure_file_logging(runtime, application)
     port = _free_port()
     address = f"http://127.0.0.1:{port}"
     if os.environ.get("THERMOPOWER_NO_BROWSER", "").casefold() not in {"1", "true", "yes"}:
@@ -91,13 +154,18 @@ def main() -> None:
 
     import uvicorn
 
-    uvicorn.run(
-        "app.main:app",
-        host="127.0.0.1",
-        port=port,
-        log_level="info",
-        log_config=None,
-    )
+    try:
+        uvicorn.run(
+            "app.main:app",
+            host="127.0.0.1",
+            port=port,
+            log_level="info",
+            log_config=None,
+        )
+    finally:
+        logging.getLogger(__name__).info("launcher stopping")
+        logging.shutdown()
+        _release_single_instance()
 
 
 if __name__ == "__main__":

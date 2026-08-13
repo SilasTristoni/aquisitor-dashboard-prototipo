@@ -32,6 +32,7 @@ from app.models.entities import (
     TemperatureSample,
 )
 from app.schemas.contracts import SimulatorConfigInput
+from app.services.usb_discovery import usb_discovery_service
 from app.services.websocket import websocket_hub
 
 logger = logging.getLogger(__name__)
@@ -68,8 +69,12 @@ class AcquisitionService:
         if device.protocol == "simulator":
             return SimulatorAdapter()
         if device.protocol == "serial_json":
+            if device.baud_rate is None:
+                raise ValueError("Baud rate não configurado.")
             return SerialJsonAdapter(device.port, device.baud_rate)
         if device.protocol == "serial_csv":
+            if device.baud_rate is None:
+                raise ValueError("Baud rate não configurado.")
             return SerialCsvAdapter(device.port, device.baud_rate)
         if device.protocol == "mock_failure":
             return MockFailureAdapter()
@@ -86,7 +91,17 @@ class AcquisitionService:
             device = db.get(Device, device_id)
             if not device or not device.active:
                 raise ValueError("Equipamento não encontrado ou inativo")
+            if device.protocol == "gpm8213_serial" and device.serial_number:
+                # The USB serial is stable; Windows may assign a different COM port.
+                usb_discovery_service.discover(db)
+                db.refresh(device)
             adapter = self._adapter_for(device)
+            logger.info(
+                "device connect requested device_id=%s protocol=%s port=%s",
+                device_id,
+                device.protocol,
+                device.port,
+            )
             await adapter.connect()
             device.last_connected_at = datetime.now(UTC)
             db.add(
@@ -108,6 +123,7 @@ class AcquisitionService:
         await self._flush(device_id, runtime)
         await runtime.adapter.stop_reading()
         await runtime.adapter.disconnect()
+        logger.info("device disconnected device_id=%s", device_id)
         if runtime.task:
             runtime.task.cancel()
             try:
@@ -254,12 +270,21 @@ class AcquisitionService:
                             device_timestamp=reading.timestamp,
                             received_timestamp=reading.timestamp,
                             active_power_w=reading.power_w,
-                            original_values={"active_power": reading.raw_power},
-                            original_units={"active_power": reading.raw_power_unit},
+                            voltage_v=reading.voltage_v,
+                            current_a=reading.current_a,
+                            apparent_power_va=reading.apparent_power_va,
+                            reactive_power_var=reading.reactive_power_var,
+                            power_factor=reading.power_factor,
+                            voltage_frequency_hz=reading.voltage_frequency_hz,
+                            current_frequency_hz=reading.current_frequency_hz,
+                            original_values=reading.raw_values
+                            or {"active_power": reading.raw_power},
+                            original_units=reading.raw_units
+                            or {"active_power": reading.raw_power_unit},
                             quality=reading.quality,
                             source="live",
                             sequence=sequence,
-                            raw_payload={},
+                            raw_payload=reading.raw_payload,
                         )
                     )
                 corrected_values: list[tuple[int, float | None]] = []
@@ -278,7 +303,7 @@ class AcquisitionService:
                         quality=reading.quality,
                         source="live",
                         sequence=sequence,
-                        raw_payload={},
+                        raw_payload=reading.raw_payload,
                     )
                     temperature_sample.channels = [
                         TemperatureChannelValue(
@@ -286,14 +311,24 @@ class AcquisitionService:
                             temperature_c=corrected,
                             original_value=reading.temperatures_c[index - 1],
                             original_unit="°C",
-                            quality="missing" if value is None else "good",
+                            quality=(
+                                reading.channel_quality[index - 1]
+                                if index <= len(reading.channel_quality)
+                                else "missing"
+                                if value is None
+                                else "good"
+                            ),
                         )
                         for (index, corrected), value in zip(
                             corrected_values, reading.temperatures_c, strict=False
                         )
                     ]
                     db.add(temperature_sample)
-                if role == "combined":
+                if (
+                    role == "combined"
+                    and reading.power_w is not None
+                    and reading.raw_power is not None
+                ):
                     measurement = Measurement(
                         session_id=session_id,
                         timestamp=reading.timestamp,
@@ -329,7 +364,7 @@ class AcquisitionService:
             ).all()
             for rule in rules:
                 values: list[tuple[int | None, float]] = []
-                if rule.metric == "power":
+                if rule.metric == "power" and reading.power_w is not None:
                     values = [(None, reading.power_w)]
                 elif rule.metric == "temperature":
                     values = [

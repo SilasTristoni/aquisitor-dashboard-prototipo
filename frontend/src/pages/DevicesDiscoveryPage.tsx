@@ -11,7 +11,7 @@ import {
   Usb,
 } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
-import { api, formatDate } from "../api";
+import { api, download, formatDate } from "../api";
 import { useAuth } from "../auth";
 import { Badge, Empty, ErrorNotice, PageHeader, Panel, Spinner } from "../components/ui";
 import type { Device } from "../types";
@@ -54,6 +54,16 @@ export default function DevicesDiscoveryPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [loadingDiscovery, setLoadingDiscovery] = useState(false);
   const [error, setError] = useState("");
+  const [diagnostic, setDiagnostic] = useState<any>(null);
+  const [diagnosticSession, setDiagnosticSession] = useState("");
+  const [diagnosticDataBits, setDiagnosticDataBits] = useState("");
+  const [diagnosticParity, setDiagnosticParity] = useState("");
+  const [diagnosticStopBits, setDiagnosticStopBits] = useState("");
+  const [useEngineeringAssumption, setUseEngineeringAssumption] = useState(false);
+
+  const confirmedSerialParameters = Boolean(
+    diagnosticDataBits && diagnosticParity && diagnosticStopBits,
+  );
 
   const loadDevices = useCallback(async () => {
     try {
@@ -102,9 +112,18 @@ export default function DevicesDiscoveryPage() {
           connection_type: data.get("connection"),
           protocol: data.get("protocol"),
           port: data.get("port") || null,
-          baud_rate: Number(data.get("baud")),
+          baud_rate: data.get("baud") ? Number(data.get("baud")) : null,
           active: true,
           metadata: {},
+          serial_settings: {
+            data_bits: data.get("data_bits") ? Number(data.get("data_bits")) : null,
+            parity: data.get("parity") || null,
+            stop_bits: data.get("stop_bits") ? Number(data.get("stop_bits")) : null,
+            timeout_s: data.get("timeout") ? Number(data.get("timeout")) : null,
+            read_timeout_s: data.get("read_timeout") ? Number(data.get("read_timeout")) : null,
+            line_terminator: data.get("terminator") || null,
+            framing: data.get("framing") || null,
+          },
         }),
       });
       setShowCreate(false);
@@ -128,10 +147,36 @@ export default function DevicesDiscoveryPage() {
     }
   }
 
-  async function testConnection(id: number) {
+  async function testConnection(device: Device, mode: "identity" | "read" | "full") {
+    const isAt4532 = device.protocol === "at4532_serial";
+    const isPhysicalVendor = isAt4532 || device.protocol === "gpm8213_serial";
+    if (!isPhysicalVendor) {
+      setTest({ loading: true });
+      try {
+        setTest(await api(`/devices/${device.id}/test`, { method: "POST" }));
+      } catch (reason) {
+        setTest({ error: reason instanceof Error ? reason.message : "Falha no diagnóstico" });
+      }
+      return;
+    }
+    const source = isAt4532
+      ? "AT45xx User's Guide, seções 9.1/9.5.3/9.5.5"
+      : "GPM-8213 User Manual, Remote Control/NUMeric Commands";
+    const command = mode === "identity"
+      ? "*IDN?"
+      : isAt4532
+        ? "*IDN? + SYST:UNIT CEL + FETCH?"
+        : "*IDN? + NUMBER 8/NUMBER? + ITEM1..8 + HEADER? + VALUE?";
+    const confirmed = window.confirm(
+      `Teste de Protocolo Documentado\n\nEquipamento: ${device.name}\nPorta: ${device.port ?? "não associada"}\nParâmetros: 8-N-1, sem flow control\nFonte: ${source}\nComando/finalidade: ${command}\n\nSerão enviados somente comandos documentados oficialmente pelo fabricante. Confirmar TX?`,
+    );
+    if (!confirmed) return;
     setTest({ loading: true });
     try {
-      setTest(await api(`/devices/${id}/test`, { method: "POST" }));
+      setTest(await api(`/devices/${device.id}/protocol-probe`, {
+        method: "POST",
+        body: JSON.stringify({ mode, operator_confirmed: true }),
+      }));
     } catch (reason) {
       setTest({ error: reason instanceof Error ? reason.message : "Falha no diagnóstico" });
     }
@@ -156,6 +201,59 @@ export default function DevicesDiscoveryPage() {
       await Promise.all([loadDevices(), discover()]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Falha ao remover equipamento");
+    }
+  }
+
+  async function openDiagnostic(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const dataBits = useEngineeringAssumption ? null : diagnosticDataBits;
+    const parity = useEngineeringAssumption ? null : diagnosticParity;
+    const stopBits = useEngineeringAssumption ? null : diagnosticStopBits;
+    setDiagnostic({ loading: true });
+    try {
+      const result = await api<any>("/hardware/serial-diagnostic/open", {
+        method: "POST",
+        body: JSON.stringify({
+          port: data.get("diagnostic_port"),
+          baud_rate: Number(data.get("diagnostic_baud")),
+          data_bits: dataBits ? Number(dataBits) : null,
+          parity: parity || null,
+          stop_bits: stopBits ? Number(stopBits) : null,
+          timeout_s: Number(data.get("diagnostic_timeout")),
+          read_timeout_s: Number(data.get("diagnostic_read_timeout")),
+          line_terminator: data.get("diagnostic_terminator") || null,
+          framing: data.get("diagnostic_framing") || null,
+          use_engineering_assumption_8n1: useEngineeringAssumption,
+        }),
+      });
+      setDiagnosticSession(result.session_id);
+      setDiagnostic(result);
+    } catch (reason) {
+      setDiagnostic({ error: reason instanceof Error ? reason.message : "Falha ao abrir porta" });
+    }
+  }
+
+  async function readDiagnostic() {
+    try {
+      setDiagnostic(await api("/hardware/serial-diagnostic/read", {
+        method: "POST",
+        body: JSON.stringify({ session_id: diagnosticSession, max_bytes: 4096 }),
+      }));
+    } catch (reason) {
+      setDiagnostic({ error: reason instanceof Error ? reason.message : "Falha ao ler bytes" });
+    }
+  }
+
+  async function closeDiagnostic() {
+    try {
+      setDiagnostic(await api("/hardware/serial-diagnostic/close", {
+        method: "POST",
+        body: JSON.stringify({ session_id: diagnosticSession }),
+      }));
+      setDiagnosticSession("");
+    } catch (reason) {
+      setDiagnostic({ error: reason instanceof Error ? reason.message : "Falha ao fechar porta" });
     }
   }
 
@@ -219,6 +317,12 @@ export default function DevicesDiscoveryPage() {
                     <span>{item.suggested_device} · não confirmado</span>
                   </div>
                 )}
+                {item.association_status === "ambiguous" && (
+                  <div className="association-note identity-ambiguous">
+                    <strong>Identidade ambígua</strong>
+                    <span>VID/PID identifica apenas o conversor. Confirme manualmente esta porta.</span>
+                  </div>
+                )}
                 {item.association ? (
                   <div className="association-note"><Link2 /><span>Associada a <strong>{item.association.device_name}</strong> por {item.association.matched_by}</span></div>
                 ) : user?.role !== "viewer" ? (
@@ -236,6 +340,39 @@ export default function DevicesDiscoveryPage() {
         )}
       </Panel>
 
+      {user?.role === "admin" && (
+        <Panel title="Diagnóstico serial avançado" kicker="READ-ONLY · NENHUM COMANDO É ENVIADO">
+          <div className="safety-notice">Informe os parâmetros observados no software ou manual. Campos desconhecidos não são preenchidos automaticamente. Feche Instrument V1.8.7 ou Power Meter Series se estiverem usando a porta.</div>
+          <form className="serial-diagnostic-form" onSubmit={openDiagnostic}>
+            <label className="field"><span>Porta</span><select name="diagnostic_port" required defaultValue=""><option value="">Selecionar…</option>{discoveries.map((item) => <option key={item.port} value={item.port}>{item.port} · {item.description}</option>)}</select></label>
+            <label className="field"><span>Baud rate</span><input name="diagnostic_baud" type="number" min="300" required placeholder="AT4532: 19200" /></label>
+            <div className="serial-diagnostic-mode"><strong>Modo A — Parâmetros confirmados</strong><span>Selecione os três valores somente se foram confirmados no instrumento, software ou manual.</span></div>
+            <label className="field"><span>Data bits</span><select name="diagnostic_data_bits" value={diagnosticDataBits} disabled={useEngineeringAssumption} onChange={(event) => setDiagnosticDataBits(event.target.value)}><option value="">Não confirmado</option>{[5, 6, 7, 8].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+            <label className="field"><span>Parity</span><select name="diagnostic_parity" value={diagnosticParity} disabled={useEngineeringAssumption} onChange={(event) => setDiagnosticParity(event.target.value)}><option value="">Não confirmada</option><option value="N">None (N)</option><option value="E">Even (E)</option><option value="O">Odd (O)</option><option value="M">Mark (M)</option><option value="S">Space (S)</option></select></label>
+            <label className="field"><span>Stop bits</span><select name="diagnostic_stop_bits" value={diagnosticStopBits} disabled={useEngineeringAssumption} onChange={(event) => setDiagnosticStopBits(event.target.value)}><option value="">Não confirmado</option><option value="1">1</option><option value="1.5">1,5</option><option value="2">2</option></select></label>
+            <label className="field"><span>Timeout do diagnóstico (s)</span><input name="diagnostic_timeout" type="number" step="0.05" min="0.05" max="30" required /><small>Não é o intervalo de aquisição do AT4532.</small></label>
+            <label className="field"><span>Read timeout do diagnóstico (s)</span><input name="diagnostic_read_timeout" type="number" step="0.05" min="0.05" max="30" required /><small>Não altera o intervalo esperado de 3 s.</small></label>
+            <label className="field"><span>Terminador informado</span><input name="diagnostic_terminator" placeholder="Opcional; apenas registro" /></label>
+            <label className="field"><span>Framing informado</span><input name="diagnostic_framing" placeholder="Opcional; não interpretado" /></label>
+            <label className="serial-diagnostic-assumption"><input type="checkbox" checked={useEngineeringAssumption} onChange={(event) => setUseEngineeringAssumption(event.target.checked)} /><span><strong>Modo B — Teste exploratório com padrão serial</strong>Usar 8 data bits, sem paridade e 1 stop bit apenas como hipótese técnica</span></label>
+            {useEngineeringAssumption && <div className="safety-notice danger">8-N-1 NÃO FOI CONFIRMADO PARA ESTE INSTRUMENTO.</div>}
+            <button className="button primary" disabled={Boolean(diagnosticSession) || (!confirmedSerialParameters && !useEngineeringAssumption)}>Abrir porta em modo read-only</button>
+          </form>
+          {diagnostic?.loading && <Spinner label="Abrindo porta serial" />}
+          {diagnostic?.error && <ErrorNotice message={diagnostic.error} />}
+          {diagnostic && !diagnostic.loading && !diagnostic.error && (
+            <div className="serial-diagnostic-result">
+              <div className="inline-actions"><Badge tone={diagnostic.port_open ? "success" : "neutral"}>{diagnostic.port_open ? "Porta aberta" : "Porta fechada"}</Badge><span>{diagnostic.bytes_received ?? 0} byte(s) · {diagnostic.elapsed_ms ?? 0} ms</span>{diagnostic.timeout && <Badge tone="warning">Timeout sem dados</Badge>}</div>
+              {diagnostic.parameters_source && <div className="serial-parameter-source"><strong>Origem dos parâmetros:</strong> {diagnostic.parameters_source === "engineering_assumption" ? "Hipótese de engenharia" : "Confirmados pelo usuário"} · validação física: {diagnostic.physical_validation}{diagnostic.parameters && <span> · {diagnostic.parameters.data_bits}-{diagnostic.parameters.parity}-{diagnostic.parameters.stop_bits}</span>}</div>}
+              {diagnostic.parameters_source === "engineering_assumption" && <div className="safety-notice danger">8-N-1 NÃO FOI CONFIRMADO PARA ESTE INSTRUMENTO. Estes valores não foram salvos como configuração homologada.</div>}
+              <div className="serial-raw-grid"><div><strong>HEX</strong><pre>{diagnostic.raw_hex || "Nenhum byte recebido"}</pre></div><div><strong>ASCII seguro</strong><pre>{diagnostic.raw_ascii || "Nenhum byte recebido"}</pre></div></div>
+              {diagnostic.errors?.map((item: any) => <ErrorNotice key={item.code} message={`${item.code}: ${item.message}`} />)}
+              <div className="inline-actions">{diagnosticSession && <><button className="button secondary" onClick={() => void readDiagnostic()}>Ler até 4096 bytes</button><button className="button ghost" onClick={() => void closeDiagnostic()}>Fechar porta</button></>}</div>
+            </div>
+          )}
+        </Panel>
+      )}
+
       <div className="device-grid">
         {devices.map((device) => {
           const status = statuses[device.id] ?? { connected: false };
@@ -250,11 +387,15 @@ export default function DevicesDiscoveryPage() {
               <div className="device-specs">
                 <div><span>PROTOCOLO</span><strong>{device.protocol}</strong></div>
                 <div><span>PORTA</span><strong>{device.port || "Virtual"}</strong></div>
-                <div><span>BAUD RATE</span><strong>{device.baud_rate.toLocaleString("pt-BR")}</strong></div>
+                <div><span>BAUD RATE</span><strong>{device.baud_rate?.toLocaleString("pt-BR") || "Não confirmado"}</strong></div>
                 <div><span>ÚLTIMA CONEXÃO</span><strong>{formatDate(device.last_connected_at)}</strong></div>
               </div>
               <div className="device-actions">
-                <button className="button secondary" onClick={() => void testConnection(device.id)}><FlaskConical /> Testar em etapas</button>
+                {device.protocol === "at4532_serial" || device.protocol === "gpm8213_serial" ? <>
+                  <button className="button secondary" onClick={() => void testConnection(device, "identity")}><FlaskConical /> Testar identificação</button>
+                  <button className="button secondary" onClick={() => void testConnection(device, "read")}><FlaskConical /> Testar leitura</button>
+                  <button className="button secondary" onClick={() => void testConnection(device, "full")}><FlaskConical /> Executar teste completo</button>
+                </> : <button className="button secondary" onClick={() => void testConnection(device, "full")}><FlaskConical /> Testar em etapas</button>}
                 {user?.role !== "viewer" && <button className="button ghost" onClick={() => void toggleConnection(device)}><PlugZap /> {status.connected ? "Desconectar" : "Conectar"}</button>}
                 {user?.role === "admin" && <button className="button ghost danger" onClick={() => void removeDevice(device)}><Trash2 /> Remover</button>}
               </div>
@@ -275,6 +416,24 @@ export default function DevicesDiscoveryPage() {
                   </div>
                 ))}
               </div>
+              <div className="safety-notice">Serão enviados somente comandos documentados oficialmente pelo fabricante. Validação física permanece pendente até a resposta do instrumento real.</div>
+              {test.transactions?.map((transaction: any, index: number) => (
+                <div className="serial-diagnostic-result" key={`${transaction.command_name}-${index}`}>
+                  <div className="inline-actions"><Badge tone="success">vendor_documented</Badge><strong>{transaction.command_name}</strong><span>{transaction.elapsed_ms} ms · {transaction.bytes_received} byte(s)</span></div>
+                  <p className="hint">Fonte: {transaction.source} · {transaction.section}</p>
+                  <div className="serial-raw-grid"><div><strong>TX ASCII · {transaction.timestamp_tx}</strong><pre>{transaction.tx_ascii}</pre><strong>TX HEX</strong><pre>{transaction.tx_hex}</pre></div><div><strong>RX ASCII · {transaction.timestamp_rx}</strong><pre>{transaction.rx_ascii || "Sem resposta esperada"}</pre><strong>RX HEX</strong><pre>{transaction.rx_hex || "—"}</pre></div></div>
+                  {transaction.parsed?.parsed_values && <div className="serial-diagnostic-result">
+                    <strong>Comparação GPM-8213 / PowerMeterSeries</strong>
+                    <p className="hint">NUMBER solicitado/reportado: {transaction.parsed.number_requested} / {transaction.parsed.number_reported}</p>
+                    <p className="hint">HEADER solicitado: {transaction.parsed.headers_requested?.join(", ")}</p>
+                    <p className="hint">HEADER reportado: {transaction.parsed.headers_reported?.join(", ")}</p>
+                    <div className="device-meta">{Object.entries(transaction.parsed.parsed_values).map(([label, value]) => <div key={label}><span>{label}</span><strong>{value == null ? "NAN / indisponível" : String(value)}</strong></div>)}</div>
+                    <strong>Valores raw por HEADER reportado</strong><pre>{JSON.stringify(transaction.parsed.raw_values, null, 2)}</pre>
+                  </div>}
+                  {transaction.parsed && Object.keys(transaction.parsed).length > 0 && <div><strong>Parser / resultado normalizado</strong><pre>{JSON.stringify(transaction.parsed, null, 2)}</pre></div>}
+                </div>
+              ))}
+              {test.device_id && <button className="button secondary" onClick={() => void download(`/devices/${test.device_id}/diagnostic-export`, `ThermoPower-diagnostic-${test.device_id}.zip`)}>Exportar diagnóstico completo</button>}
               <p className="hint">Resultado automatizado; homologação física: pendente.</p>
             </>
           )}
@@ -293,7 +452,14 @@ export default function DevicesDiscoveryPage() {
               <label className="field"><span>Conexão</span><select name="connection"><option value="simulator">Simulador</option><option value="serial">Serial / USB</option></select></label>
               <label className="field"><span>Protocolo</span><select name="protocol"><option value="simulator">Simulador</option><option value="at4532_serial">AT4532 (pendente de homologação)</option><option value="gpm8213_serial">GPM-8213 (pendente de homologação)</option><option value="serial_json">Serial JSON</option><option value="serial_csv">Serial CSV (não homologado)</option></select></label>
               <label className="field"><span>Porta detectada</span><select name="port"><option value="">Virtual / selecionar depois</option>{discoveries.map((item) => <option key={item.port} value={item.port}>{item.port} · {item.description}</option>)}</select></label>
-              <label className="field"><span>Baud rate</span><select name="baud" defaultValue="115200"><option>9600</option><option>19200</option><option>57600</option><option>115200</option></select></label>
+              <label className="field"><span>Baud rate</span><select name="baud" defaultValue=""><option value="">Não confirmado (AT4532 usa 19200)</option><option>9600</option><option>19200</option><option>57600</option><option>115200</option></select></label>
+              <label className="field"><span>Data bits</span><select name="data_bits" defaultValue=""><option value="">Não confirmado</option>{[5, 6, 7, 8].map((value) => <option key={value}>{value}</option>)}</select></label>
+              <label className="field"><span>Parity</span><select name="parity" defaultValue=""><option value="">Não confirmada</option><option value="N">N</option><option value="E">E</option><option value="O">O</option><option value="M">M</option><option value="S">S</option></select></label>
+              <label className="field"><span>Stop bits</span><select name="stop_bits" defaultValue=""><option value="">Não confirmado</option><option value="1">1</option><option value="1.5">1,5</option><option value="2">2</option></select></label>
+              <label className="field"><span>Timeout (s)</span><input name="timeout" type="number" min="0.05" max="30" step="0.05" /></label>
+              <label className="field"><span>Read timeout (s)</span><input name="read_timeout" type="number" min="0.05" max="30" step="0.05" /></label>
+              <label className="field"><span>Terminador</span><input name="terminator" placeholder="Não confirmado" /></label>
+              <label className="field"><span>Framing</span><input name="framing" placeholder="Não confirmado" /></label>
             </div>
             <p className="hint"><Cable /> A seleção da porta não confirma o protocolo do instrumento.</p>
             <div className="modal-actions"><button type="button" className="button ghost" onClick={() => setShowCreate(false)}>Cancelar</button><button className="button primary"><Save /> Salvar</button></div>

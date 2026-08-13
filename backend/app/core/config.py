@@ -3,10 +3,12 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.version import APPLICATION_VERSION
+
 
 class Settings(BaseSettings):
     app_name: str = "ThermoPower Monitor API"
-    app_version: str = "0.4.0-beta"
+    app_version: str = APPLICATION_VERSION
     environment: str = "development"
     debug: bool = False
     database_url: str = "sqlite:///./thermopower.db"

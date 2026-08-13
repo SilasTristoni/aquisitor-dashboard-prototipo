@@ -1,6 +1,11 @@
-# ThermoPower Monitor
+# ThermoPower Monitor 0.5.2-physical-alpha
 
 Plataforma full-stack para aquisição industrial combinada: até 32 temperaturas pelo Applent AT4532 e grandezas elétricas pelo GW Instek GPM-8213. As sessões são rastreáveis, aceitam uma ou as duas fontes, sincronizam timestamps e mantêm o protótipo original em `legacy/`.
+
+> Build física de engenharia: os protocolos SCPI oficiais do AT4532 e GPM-8213 estão
+> implementados para o próximo ensaio. Não há homologação física nem comandos inferidos.
+> Consulte [fontes e lacunas](docs/PHYSICAL_PROTOCOL_GAPS.md) e
+> [roteiro de bancada](docs/PHYSICAL_ENGINEERING_TEST.md).
 
 ## Funcionalidades entregues
 
@@ -19,7 +24,8 @@ Plataforma full-stack para aquisição industrial combinada: até 32 temperatura
 - relatórios por intervalo de data/hora atravessando múltiplas sessões, com estatísticas sobre
   todos os dados e gráficos Matplotlib reais em PDF/PNG/JPEG;
 - descoberta USB/COM pelo backend, associação por metadados reais e diagnóstico em etapas;
-- assistente de primeiro uso e estratégia de pacote Windows 0.4.0-beta com PyInstaller/Inno;
+- probe SCPI documentado com confirmação pré-TX, TX/RX ao vivo e exportação diagnóstica ZIP;
+- assistente de primeiro uso e build Windows de engenharia com PyInstaller;
 - comparação de sessões, visão executiva e diagnóstico do sistema;
 - simulador configurável com oito cenários;
 - adaptadores `SimulatorAdapter`, `SerialJsonAdapter`, `SerialCsvAdapter` e `MockFailureAdapter`;
@@ -69,9 +75,9 @@ Acesse `http://localhost:5173`. A API estará em `http://localhost:8000` e o Swa
 
 No Windows, use `iniciar-windows.bat` na raiz. Na primeira execução ele cria o ambiente virtual, instala dependências, aplica migrações, abre backend e frontend e acessa `http://127.0.0.1:5173`. Se falhar, execute `diagnostico-windows.bat` e envie a saída ao suporte.
 
-Para compilar o instalador beta sem exigir Python/Node no computador de destino, consulte
-[Pacote de homologação Windows](docs/WINDOWS_TEST_PACKAGE.md) e execute
-`scripts\build-windows.ps1` em um host Windows com Inno Setup 6.
+Para gerar a build física de engenharia (sem instalador e sem release final), execute
+`scripts\build-windows-engineering.ps1`. Depois, execute
+`scripts\smoke-windows-package.ps1` e siga o [roteiro de bancada](docs/PHYSICAL_ENGINEERING_TEST.md).
 
 ### Importação AT4532 + GPM-8213
 

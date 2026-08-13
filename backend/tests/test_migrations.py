@@ -50,7 +50,7 @@ def test_upgrade_accepts_schema_precreated_by_sqlalchemy(tmp_path):
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            "0004_cleanup_orphan_session_data"
+            "0006_documented_physical_protocols"
         )
         assert "session_devices" in inspect(connection).get_table_names()
         assert connection.scalar(text("SELECT count(*) FROM session_devices")) == 0
