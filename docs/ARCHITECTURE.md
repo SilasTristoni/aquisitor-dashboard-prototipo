@@ -8,6 +8,18 @@ Pontos positivos preservados: identidade azul industrial, dashboard direto, norm
 
 O fluxo integrado é `adapter/importer → TemperatureReading|ElectricalReading → tabelas independentes → sincronização por vizinho temporal → API/gráfico/exportação`. A associação `session_devices` permite que apenas uma fonte exista sem fabricar valores para a outra.
 
+Na aquisição física combinada, GPM-8213 e AT4532 possuem tarefas independentes (~1 s e ~3 s).
+Eventos carregam `device_id`, protocolo e papel da fonte. A dashboard une pontos pelos timestamps
+originais somente para visualização; a persistência mantém uma amostra por leitura real, sem
+replicar a última temperatura nos ciclos elétricos. Falha ou reconexão de um adapter não pausa o
+outro.
+
+Para o AT4532, identidade e capacidade funcional são estados distintos. Um timeout de `*IDN?`
+permanece `unconfirmed`; somente a associação manual exata, com parâmetros seriais documentados,
+autoriza tentar `SYST:UNIT CEL` e `FETCH?`. O runtime só passa a `verified_by_measurement` após
+uma resposta de 32 posições com ao menos um canal numérico. VID/PID isolado nunca autoriza esse
+caminho.
+
 Problemas que impedem uso comercial:
 
 - ausência de autenticação, autorização, persistência e auditoria;

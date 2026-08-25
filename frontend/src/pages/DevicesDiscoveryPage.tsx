@@ -411,7 +411,7 @@ export default function DevicesDiscoveryPage() {
               <div className="test-steps">
                 {test.stages?.map((stage: any) => (
                   <div key={stage.key}>
-                    <Badge tone={stage.status === "passed" ? "success" : stage.status === "failed" ? "danger" : "neutral"}>{stage.status === "passed" ? "OK" : stage.status === "failed" ? "Falha" : "Não executado"}</Badge>
+                    <Badge tone={stage.status === "passed" ? "success" : stage.status === "warning" ? "warning" : stage.status === "failed" ? "danger" : "neutral"}>{stage.status === "passed" ? "OK" : stage.status === "warning" ? "ATENÇÃO" : stage.status === "failed" ? "Falha" : "Não executado"}</Badge>
                     <span>{stage.label}</span><small>{stage.message}</small>
                   </div>
                 ))}
@@ -419,9 +419,10 @@ export default function DevicesDiscoveryPage() {
               <div className="safety-notice">Serão enviados somente comandos documentados oficialmente pelo fabricante. Validação física permanece pendente até a resposta do instrumento real.</div>
               {test.transactions?.map((transaction: any, index: number) => (
                 <div className="serial-diagnostic-result" key={`${transaction.command_name}-${index}`}>
-                  <div className="inline-actions"><Badge tone="success">vendor_documented</Badge><strong>{transaction.command_name}</strong><span>{transaction.elapsed_ms} ms · {transaction.bytes_received} byte(s)</span></div>
+                  <div className="inline-actions"><Badge tone={transaction.error ? "danger" : "success"}>vendor_documented</Badge><strong>{transaction.command_name}</strong><span>{transaction.elapsed_ms} ms · {transaction.bytes_received} byte(s) · {transaction.observed_terminator ?? "terminador não observado"} · {transaction.frame_count ?? 0} frame(s)</span></div>
                   <p className="hint">Fonte: {transaction.source} · {transaction.section}</p>
-                  <div className="serial-raw-grid"><div><strong>TX ASCII · {transaction.timestamp_tx}</strong><pre>{transaction.tx_ascii}</pre><strong>TX HEX</strong><pre>{transaction.tx_hex}</pre></div><div><strong>RX ASCII · {transaction.timestamp_rx}</strong><pre>{transaction.rx_ascii || "Sem resposta esperada"}</pre><strong>RX HEX</strong><pre>{transaction.rx_hex || "—"}</pre></div></div>
+                  <div className="serial-raw-grid"><div><strong>TX ASCII · {transaction.timestamp_tx}</strong><pre>{transaction.tx_ascii}</pre><strong>TX HEX</strong><pre>{transaction.tx_hex}</pre></div><div><strong>RX ASCII · {transaction.timestamp_rx}</strong><pre>{transaction.rx_ascii || (transaction.error ? "Nenhum byte recebido" : "Sem resposta esperada")}</pre><strong>RX HEX</strong><pre>{transaction.rx_hex || "—"}</pre></div></div>
+                  {transaction.error && <ErrorNotice message={`${transaction.error.code}: ${transaction.error.message}`} />}
                   {transaction.parsed?.parsed_values && <div className="serial-diagnostic-result">
                     <strong>Comparação GPM-8213 / PowerMeterSeries</strong>
                     <p className="hint">NUMBER solicitado/reportado: {transaction.parsed.number_requested} / {transaction.parsed.number_reported}</p>
@@ -430,6 +431,13 @@ export default function DevicesDiscoveryPage() {
                     <div className="device-meta">{Object.entries(transaction.parsed.parsed_values).map(([label, value]) => <div key={label}><span>{label}</span><strong>{value == null ? "NAN / indisponível" : String(value)}</strong></div>)}</div>
                     <strong>Valores raw por HEADER reportado</strong><pre>{JSON.stringify(transaction.parsed.raw_values, null, 2)}</pre>
                   </div>}
+                  {transaction.parsed?.valid_channel_results && <div className="serial-diagnostic-result">
+                    <strong>Leitura AT4532 por canal</strong>
+                    <p className="hint">Canais solicitados/recebidos: {transaction.parsed.channel_count_requested} / {transaction.parsed.channel_count_received} · válidos: {transaction.parsed.valid_channels} · indisponíveis: {transaction.parsed.unavailable_channels}</p>
+                    <div className="device-meta">{Object.entries(transaction.parsed.valid_channel_results).map(([channel, result]: [string, any]) => <div key={channel}><span>{channel}</span><strong>{result.temperature_c == null ? `Indisponível (${result.raw_token ?? "sem token"})` : `${result.temperature_c} °C`}</strong><small>{result.quality}</small></div>)}</div>
+                    {transaction.parsed.unknown_tokens?.length > 0 && <><strong>Tokens ainda não documentados</strong><pre>{JSON.stringify(transaction.parsed.unknown_tokens, null, 2)}</pre></>}
+                  </div>}
+                  {transaction.parsed?.channels && <div className="serial-diagnostic-result"><strong>CH01–CH32 · valor, qualidade e token raw</strong><div className="device-meta">{transaction.parsed.channels.map((channel: any) => <div key={channel.channel}><span>{channel.channel}</span><strong>{channel.temperature_c == null ? "—" : `${channel.temperature_c} °C`}</strong><small>{channel.quality} · raw: {channel.raw_token ?? "não recebido"}</small></div>)}</div></div>}
                   {transaction.parsed && Object.keys(transaction.parsed).length > 0 && <div><strong>Parser / resultado normalizado</strong><pre>{JSON.stringify(transaction.parsed, null, 2)}</pre></div>}
                 </div>
               ))}

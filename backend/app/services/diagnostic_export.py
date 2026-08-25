@@ -19,7 +19,27 @@ from app.models.entities import Device
 
 
 def _json_bytes(value: Any) -> bytes:
-    return json.dumps(value, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+    return json.dumps(_sanitize_value(value), ensure_ascii=False, indent=2, default=str).encode(
+        "utf-8"
+    )
+
+
+def _sanitize_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: "[redacted]"
+            if any(
+                marker in str(key).casefold()
+                for marker in ("password", "senha", "token", "secret", "jwt")
+            )
+            else _sanitize_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_value(item) for item in value]
+    if isinstance(value, str):
+        return _sanitized_text(value)
+    return value
 
 
 def _sanitized_text(value: str) -> str:
@@ -68,20 +88,28 @@ def _summary_pdf(lines: list[str]) -> bytes:
 
 
 def create_diagnostic_zip(
-    device: Device, probe: dict[str, Any], discoveries: list[dict[str, Any]]
+    device: Device,
+    probe: dict[str, Any],
+    discoveries: list[dict[str, Any]],
+    *,
+    integration: dict[str, Any] | None = None,
+    devices: list[Device] | None = None,
 ) -> bytes:
     now = datetime.now(UTC).isoformat()
-    device_data = {
-        "id": device.id,
-        "name": device.name,
-        "manufacturer": device.manufacturer,
-        "model": device.model,
-        "serial_number": device.serial_number,
-        "port": device.port,
-        "baud_rate": device.baud_rate,
-        "protocol": device.protocol,
-        "metadata": device.metadata_json,
-    }
+    def device_dict(item: Device) -> dict[str, Any]:
+        return {
+            "id": item.id,
+            "name": item.name,
+            "manufacturer": item.manufacturer,
+            "model": item.model,
+            "serial_number": item.serial_number,
+            "port": item.port,
+            "baud_rate": item.baud_rate,
+            "protocol": item.protocol,
+            "metadata": item.metadata_json,
+        }
+
+    device_data = device_dict(device)
     relevant = [item for item in discoveries if item.get("port") == device.port]
     summary_lines = [
         f"ThermoPower Monitor {APPLICATION_VERSION}",
@@ -124,7 +152,9 @@ def create_diagnostic_zip(
                 for item in relevant
             ]
         ),
-        "devices.json": _json_bytes([device_data]),
+        "devices.json": _json_bytes(
+            [device_dict(item) for item in devices] if devices else [device_data]
+        ),
         "associations.json": _json_bytes(
             [
                 {"port": item.get("port"), "association": item.get("association")}
@@ -133,6 +163,7 @@ def create_diagnostic_zip(
         ),
         "serial-parameters.json": _json_bytes(probe.get("serial_parameters", {})),
         "protocol-results.json": _json_bytes(probe),
+        "integration-status.json": _json_bytes(integration or {"status": "not_available"}),
         "recent-log.txt": _recent_log().encode("utf-8"),
         "README.txt": (
             "Pacote de diagnóstico de engenharia. Não contém senhas, JWT, banco de dados "

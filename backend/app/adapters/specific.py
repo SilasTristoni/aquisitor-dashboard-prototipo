@@ -87,6 +87,7 @@ class At4532Protocol:
         response_terminator=b"\n",
         source=AT4532_MANUAL_URL,
         section="9.1 e 9.5.5",
+        expected_response_type="identity_response",
         purpose="Identificar modelo, revisão, número de série e fabricante.",
     )
     temperatures = DocumentedCommand(
@@ -95,6 +96,7 @@ class At4532Protocol:
         response_terminator=b"\n",
         source=AT4532_MANUAL_URL,
         section="9.1 e 9.5.3.1",
+        expected_response_type="temperature_measurement",
         purpose="Consultar os valores dos canais de temperatura.",
     )
     celsius = DocumentedCommand(
@@ -196,12 +198,33 @@ def _single_ascii_line(payload: bytes, terminator: bytes) -> str:
     if not payload.endswith(terminator):
         raise ProtocolResponseError("Resposta parcial: terminador oficial não recebido.")
     body = payload[: -len(terminator)]
+    # The guide specifies LF. Some serial stacks expose a preceding CR; accept
+    # that transport variation without accepting additional frames.
+    if terminator == b"\n" and body.endswith(b"\r"):
+        body = body[:-1]
     if b"\r" in body or b"\n" in body:
         raise ProtocolResponseError("Foram recebidos múltiplos frames em uma única resposta.")
+    if any(byte < 0x20 and byte != 0x09 for byte in body):
+        raise ProtocolResponseError("Resposta contém caractere de controle inválido.")
     try:
         return body.decode("ascii").strip()
     except UnicodeDecodeError as exc:
         raise ProtocolResponseError("Resposta não é ASCII, como exige o protocolo.") from exc
+
+
+def _wire_diagnostics(payload: bytes) -> dict[str, Any]:
+    if payload.endswith(b"\r\n"):
+        terminator = "CRLF (0x0D 0x0A)"
+    elif payload.endswith(b"\n"):
+        terminator = "LF (0x0A)"
+    elif payload.endswith(b"\r"):
+        terminator = "CR (0x0D)"
+    else:
+        terminator = "none"
+    frame_count = payload.count(b"\n")
+    if payload and not payload.endswith(b"\n"):
+        frame_count += 1
+    return {"observed_terminator": terminator, "frame_count": frame_count}
 
 
 class At4532Parser:
@@ -216,17 +239,30 @@ class At4532Parser:
             "manufacturer": fields[3],
         }
 
-    def parse(self, payload: bytes) -> Sequence[float]:
-        line = _single_ascii_line(payload, b"\n")
-        fields = [field.strip() for field in line.split(",")]
-        if not 1 <= len(fields) <= 32 or any(not field for field in fields):
-            raise ProtocolResponseError("FETCH? deve retornar entre 1 e 32 campos numéricos.")
+    def classify(self, payload: bytes) -> str:
         try:
-            values = [float(field) for field in fields]
-        except ValueError as exc:
-            raise ProtocolResponseError("FETCH? contém um campo não numérico.") from exc
-        if any(not math.isfinite(value) for value in values):
-            raise ProtocolResponseError("FETCH? contém valor não finito.")
+            self.parse_identity(payload)
+            return "identity_response"
+        except ProtocolResponseError:
+            pass
+        try:
+            self.parse(payload)
+            return "temperature_measurement"
+        except ProtocolResponseError:
+            return "unknown_response"
+
+    def parse(self, payload: bytes) -> Sequence[float | None]:
+        line = _single_ascii_line(payload, b"\n")
+        fields = line.split(",")
+        if not 1 <= len(fields) <= 32:
+            raise ProtocolResponseError("FETCH? deve retornar entre 1 e 32 campos.")
+        values: list[float | None] = []
+        for field in fields:
+            try:
+                value = float(field.strip())
+            except ValueError:
+                value = None
+            values.append(value if value is not None and math.isfinite(value) else None)
         return values
 
 
@@ -346,35 +382,90 @@ class Gpm8213Parser:
 
 
 class At4532Normalizer:
-    def normalize(self, values: Sequence[float], raw_payload: bytes | None = None) -> DeviceReading:
+    def normalize(
+        self, values: Sequence[float | None], raw_payload: bytes | None = None
+    ) -> DeviceReading:
         if not 1 <= len(values) <= 32:
             raise ValueError("O AT4532 deve fornecer de 1 a 32 canais decodificados.")
         temperatures: list[float | None] = []
         qualities: list[str] = []
-        for value in values:
-            if -200 <= value <= 1800:
-                temperatures.append(float(value))
-                qualities.append("good")
+        raw_tokens: list[str] = []
+        if raw_payload:
+            try:
+                candidate_tokens = _single_ascii_line(raw_payload, b"\n").split(",")
+                if len(candidate_tokens) == len(values):
+                    raw_tokens = candidate_tokens
+            except ProtocolResponseError:
+                pass
+        if not raw_tokens:
+            raw_tokens = ["" if value is None else str(value) for value in values]
+
+        channels: list[dict[str, Any]] = []
+        unknown_tokens: list[dict[str, Any]] = []
+        for index, (value, raw_token) in enumerate(zip(values, raw_tokens, strict=True), 1):
+            if value is None:
+                normalized = None
+                quality = "unknown_unavailable"
+                unknown_tokens.append({"channel": f"CH{index:02d}", "raw_token": raw_token})
+            elif -200 <= value <= 1800:
+                normalized = float(value)
+                quality = "good"
             else:
                 # The AT45xx manual does not define the open-sensor sentinel.
-                temperatures.append(None)
-                qualities.append("invalid_out_of_range")
+                normalized = None
+                quality = "invalid_out_of_range"
+            temperatures.append(normalized)
+            qualities.append(quality)
+            channels.append(
+                {
+                    "channel": f"CH{index:02d}",
+                    "position": index,
+                    "raw_token": raw_token,
+                    "temperature_c": normalized,
+                    "quality": quality,
+                }
+            )
         missing = 32 - len(temperatures)
         temperatures.extend([None] * missing)
         qualities.extend(["missing"] * missing)
+        for index in range(len(channels) + 1, 33):
+            channels.append(
+                {
+                    "channel": f"CH{index:02d}",
+                    "position": index,
+                    "raw_token": None,
+                    "temperature_c": None,
+                    "quality": "missing",
+                }
+            )
+        valid_channels = sum(value is not None for value in temperatures)
         return DeviceReading(
-            raw_power=0,
+            raw_power=None,
             raw_power_unit="W",
-            power_w=0,
+            power_w=None,
             temperatures_c=temperatures,
             channel_quality=qualities,
-            quality="missing" if any(value is None for value in temperatures) else "good",
+            quality="good" if valid_channels else "unavailable",
             raw_payload={
                 "response_ascii": raw_payload.decode("ascii", "backslashreplace")
                 if raw_payload
                 else "",
                 "response_hex": raw_payload.hex(" ").upper() if raw_payload else "",
+                "channel_count_requested": 32,
+                "channel_count_received": len(values),
+                "token_count": len(raw_tokens),
+                "tokens": raw_tokens,
+                "valid_channels": valid_channels,
+                "unavailable_channels": 32 - valid_channels,
+                "channels": channels,
+                "valid_channel_results": {
+                    channel["channel"]: channel
+                    for channel in channels
+                    if channel["temperature_c"] is not None
+                },
+                "unknown_tokens": unknown_tokens,
                 "open_sensor_encoding": "protocol_documentation_required",
+                **_wire_diagnostics(raw_payload or b""),
             },
         )
 
@@ -438,6 +529,9 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
         self._connected_at = 0.0
         self._read_count = 0
         self.serial_open_boundary: dict[str, Any] = {}
+        self.identity_status = "not_attempted"
+        self.protocol_status = "not_verified"
+        self.identity_error: dict[str, Any] | None = None
 
     def _configuration(self) -> SerialTransportConfiguration:
         raise NotImplementedError
@@ -451,17 +545,54 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
         if not self.transport:
             raise SerialTransportError("disconnected", "O equipamento foi desconectado.")
         timestamp = datetime.now(UTC)
+        transaction_started = monotonic()
         previous_command = (
             self.transactions[-1]["command_name"] if self.transactions else None
         )
         logger.info("protocol TX equipment=%s command=%s", self.equipment, command.name)
-        if expect_response:
-            response, elapsed_ms = await self.transport.query(
-                command.request, command.response_terminator
+        try:
+            if expect_response:
+                response, elapsed_ms = await self.transport.query(
+                    command.request, command.response_terminator
+                )
+            else:
+                _, elapsed_ms = await self.transport.write(command.request)
+                response = b""
+        except SerialTransportError as exc:
+            elapsed_ms = (monotonic() - transaction_started) * 1000
+            boundary = dict(getattr(self.transport, "last_query_boundary", {}))
+            transaction = {
+                "command_name": command.name,
+                "vendor_documented": True,
+                "source": command.source,
+                "section": command.section,
+                "tx_ascii": command.request.decode("ascii")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n"),
+                "tx_hex": command.request.hex(" ").upper(),
+                "timestamp_tx": timestamp.isoformat(),
+                "rx_ascii": "",
+                "rx_hex": "",
+                "timestamp_rx": datetime.now(UTC).isoformat(),
+                "elapsed_ms": round(elapsed_ms, 3),
+                "bytes_received": 0,
+                "previous_command": previous_command,
+                "transaction_boundary": boundary,
+                "expected_for_command": command.expected_response_type,
+                "actual_response_type": "no_response",
+                "observed_terminator": "none",
+                "frame_count": 0,
+                "error": {"code": exc.code, "message": str(exc)},
+            }
+            self.transactions.append(transaction)
+            logger.warning(
+                "protocol timeout/error equipment=%s command=%s code=%s elapsed_ms=%.2f",
+                self.equipment,
+                command.name,
+                exc.code,
+                elapsed_ms,
             )
-        else:
-            _, elapsed_ms = await self.transport.write(command.request)
-            response = b""
+            raise
         logger.info(
             "protocol RX equipment=%s command=%s length=%s elapsed_ms=%.2f",
             self.equipment,
@@ -487,6 +618,7 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
             "elapsed_ms": round(elapsed_ms, 3),
             "bytes_received": len(response),
             "previous_command": previous_command,
+            **_wire_diagnostics(response),
         }
         if expect_response:
             boundary = dict(getattr(self.transport, "last_query_boundary", {}))
@@ -553,14 +685,35 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
             elapsed_ms,
         )
         try:
-            payload = await self._transaction(self.protocol.identity, expect_response=True)
-            self._identity = self.parser.parse_identity(payload)
-            logger.info("parser success equipment=%s command=identity", self.equipment)
+            self._identity = {}
+            self.identity_status = "not_attempted"
+            self.protocol_status = "not_verified"
+            self.identity_error = None
+            try:
+                payload = await self._transaction(self.protocol.identity, expect_response=True)
+                self._identity = self.parser.parse_identity(payload)
+                self.identity_status = "confirmed"
+                self.protocol_status = "identity_verified"
+                logger.info("parser success equipment=%s command=identity", self.equipment)
+            except SerialTransportError as exc:
+                self.identity_status = "unconfirmed"
+                self.identity_error = {"code": exc.code, "message": str(exc)}
+                if not await self._continue_after_identity_error(exc):
+                    raise
+                logger.warning(
+                    "identity unconfirmed; documented measurement verification allowed "
+                    "equipment=%s port=%s",
+                    self.equipment,
+                    self.port,
+                )
             await self._after_identity()
         except Exception:
             logger.exception("parser/protocol error equipment=%s command=identity", self.equipment)
             await self.disconnect()
             raise
+
+    async def _continue_after_identity_error(self, exc: SerialTransportError) -> bool:
+        return False
 
     async def _after_identity(self) -> None:
         return None
@@ -657,6 +810,9 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
                 "baud_rate": self.baud_rate,
                 "expected_interval_seconds": self.expected_interval_seconds,
                 "protocol_status": "vendor_documented",
+                "connection_protocol_status": self.protocol_status,
+                "identity_status": self.identity_status,
+                "identity_error": self.identity_error,
                 "physical_validation": "pending",
                 "source": self.protocol.identity.source,
             },
@@ -671,6 +827,20 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
     protocol = At4532Protocol()
     parser = At4532Parser()
     normalizer = At4532Normalizer()
+
+    def __init__(
+        self,
+        port: str | None,
+        baud_rate: int | None,
+        transport: SerialTransport | None = None,
+        *,
+        allow_identity_fallback: bool = False,
+        association_source: str | None = None,
+    ) -> None:
+        super().__init__(port, baud_rate, transport)
+        self.allow_identity_fallback = allow_identity_fallback
+        self.association_source = association_source
+        self._primed_reading: DeviceReading | None = None
 
     def _configuration(self) -> SerialTransportConfiguration:
         if self.baud_rate != 19200:
@@ -690,18 +860,67 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
     def _transport(self, configuration: SerialTransportConfiguration) -> SerialTransport:
         return At4532SerialTransport(configuration)
 
+    def _response_type(self, payload: bytes) -> str | None:
+        return self.parser.classify(payload)
+
+    async def _continue_after_identity_error(self, exc: SerialTransportError) -> bool:
+        return self.allow_identity_fallback and exc.code == "protocol_timeout"
+
     def _normalize_payload(self, payload: bytes) -> DeviceReading:
         return self.normalizer.normalize(self.parser.parse(payload), payload)
 
     async def _after_identity(self) -> None:
+        self._primed_reading = None
         await self._transaction(self.protocol.celsius, expect_response=False)
 
-    async def _read_once(self) -> DeviceReading:
+        if self.identity_status == "unconfirmed":
+            reading = await self._query_reading()
+            received = reading.raw_payload["channel_count_received"]
+            valid = reading.raw_payload["valid_channels"]
+            if received != 32 or valid < 1:
+                raise ProtocolResponseError(
+                    "Fallback de identidade exige FETCH? válido com 32 canais e ao menos "
+                    "uma temperatura numérica."
+                )
+            self.protocol_status = "verified_by_measurement"
+            self._primed_reading = reading
+
+    async def _query_reading(self) -> DeviceReading:
         payload = await self._transaction(self.protocol.temperatures, expect_response=True)
         reading = self._normalize_payload(payload)
-        self.transactions[-1]["parsed"] = reading.model_dump(mode="json")
+        self.transactions[-1]["parsed"] = {
+            "channel_count_requested": 32,
+            "channel_count_received": reading.raw_payload["channel_count_received"],
+            "token_count": reading.raw_payload["token_count"],
+            "tokens": reading.raw_payload["tokens"],
+            "valid_channels": reading.raw_payload["valid_channels"],
+            "unavailable_channels": reading.raw_payload["unavailable_channels"],
+            "channels": reading.raw_payload["channels"],
+            "valid_channel_results": reading.raw_payload["valid_channel_results"],
+            "unknown_tokens": reading.raw_payload["unknown_tokens"],
+            "observed_terminator": reading.raw_payload["observed_terminator"],
+            "frame_count": reading.raw_payload["frame_count"],
+            "normalized_reading": reading.model_dump(mode="json"),
+        }
         logger.info("parser success equipment=%s command=temperatures", self.equipment)
         return reading
+
+    async def _read_once(self) -> DeviceReading:
+        if self._primed_reading is not None:
+            reading = self._primed_reading
+            self._primed_reading = None
+            return reading
+        return await self._query_reading()
+
+    async def get_device_information(self) -> DeviceInformation:
+        information = await super().get_device_information()
+        information.capabilities.update(
+            {
+                "identity_fallback_allowed": self.allow_identity_fallback,
+                "association_source": self.association_source,
+            }
+        )
+        return information
 
 
 class Gpm8213UsbSerialAdapter(_DocumentedProtocolAdapter):

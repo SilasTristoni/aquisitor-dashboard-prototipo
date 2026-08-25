@@ -1,9 +1,10 @@
-# ThermoPower Monitor 0.5.2-physical-alpha
+# ThermoPower Monitor 0.5.4-physical-alpha
 
 Plataforma full-stack para aquisição industrial combinada: até 32 temperaturas pelo Applent AT4532 e grandezas elétricas pelo GW Instek GPM-8213. As sessões são rastreáveis, aceitam uma ou as duas fontes, sincronizam timestamps e mantêm o protótipo original em `legacy/`.
 
-> Build física de engenharia: os protocolos SCPI oficiais do AT4532 e GPM-8213 estão
-> implementados para o próximo ensaio. Não há homologação física nem comandos inferidos.
+> Build física de engenharia: o GPM-8213 está validado fisicamente; o AT4532 permanece
+> pendente de validação por `FETCH?`. O timeout de `*IDN?` só é não bloqueante para a associação
+> manual exata e o protocolo precisa ser comprovado por uma leitura válida de 32 canais.
 > Consulte [fontes e lacunas](docs/PHYSICAL_PROTOCOL_GAPS.md) e
 > [roteiro de bancada](docs/PHYSICAL_ENGINEERING_TEST.md).
 

@@ -19,6 +19,8 @@ Principais grupos:
 - `/measurements` e `/measurements/series`;
 - `/sessions/{id}/synchronized-series` com `grid_ms`, `tolerance_ms`, `channels` e `max_points`;
 - `/imports/gpm8213/preview`, `/imports/at4532/preview` e `/imports/session`;
+- `/acquisition/combined-status`: estado, identidade/protocolo, última leitura, contagem e erro
+  independentes das fontes física elétrica e térmica;
 - `/alert-rules`, `/alerts`, `/alerts/{id}/acknowledge`;
 - `/events`, `/reports` e `/reports/sessions/{id}.{tipo}`;
 - `POST /reports/period/preview`, `/reports/period/pdf`,

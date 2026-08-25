@@ -1,6 +1,6 @@
 # AT4532 — protocolo físico de engenharia
 
-Status: `vendor_documented`, com `physical_validation = pending`. Consulta documental: 2026-08-11.
+Status: `vendor_documented`, com `physical_validation = pending`. Revisão documental: 2026-08-25.
 
 ## Decisão
 
@@ -45,6 +45,14 @@ seções 8.1–8.4 e 9.1–9.5, páginas impressas 24–30.
 - Erros: timeout, frame parcial, não-ASCII, contagem errada, modelo inesperado
 - Fonte: User's Guide Rev.A6, seção 9.5.5, p.30
 
+Evidência física de 2026-08-25: na associação manual COM5, `*IDN?` terminou em timeout com
+zero bytes. Isso não é identidade confirmada. Nos modos de leitura/completo, a build de engenharia
+pode continuar exclusivamente quando a porta atual coincide com a associação manual persistida e
+19200/8-N-1 coincide com os parâmetros documentados. Nesse caso, `SYST:UNIT CEL` e `FETCH?`
+continuam; a conexão somente é aceita como `verified_by_measurement` se `FETCH?` produzir 32
+posições interpretáveis e ao menos uma temperatura numérica. Portas candidatas por VID/PID não
+recebem esse fallback.
+
 ### Temperaturas multicanal
 
 - Nome funcional: `temperatures`
@@ -55,8 +63,11 @@ seções 8.1–8.4 e 9.1–9.5, páginas impressas 24–30.
 - Exemplo RX oficial: `+1.00000e-05, +1.00000e-05, +1.00000e-05\n`
 - Campos: de 1 a 32 números ASCII separados por vírgula; a quantidade acompanha os canais
 - Unidade: unidade configurada no instrumento; a integração exige Celsius no ensaio
-- Parser: número finito, frame único e LF obrigatório; normalizador completa até 32 posições
-- Erros: timeout, parcial, múltiplos frames, campo vazio/não numérico, mais de 32 campos
+- Parser: frame único, LF obrigatório, CR anterior ao LF tolerado e até 32 posições inequívocas
+- Campos numéricos: positivos, negativos, zero, decimais e notação científica finita
+- Campo ainda desconhecido: preservado integralmente como `unknown_unavailable` somente no canal;
+  não invalida valores numéricos dos outros canais
+- Erros de frame: timeout, parcial, múltiplos frames, controle não ASCII ou mais de 32 campos
 - Fonte: User's Guide Rev.A6, seção 9.5.3.1, p.30
 
 ### Unidade Celsius
@@ -75,3 +86,12 @@ canal desligado ou overflow. Por isso nenhum número é traduzido arbitrariament
 `open_sensor`. Valores fora da faixa publicada de -200 °C a 1800 °C são preservados no raw e
 marcados `invalid_out_of_range`; a distinção `open_sensor` depende da resposta física ou de
 documentação oficial adicional. MODBUS, checksum e registradores não foram implementados.
+
+O texto `Open` foi observado na exportação do Instrument V1.8.7 para CH01–CH24, mas ainda não no
+raw SCPI. Portanto continua preservado como token desconhecido, sem ser declarado sentinela do
+protocolo. Zero permanece uma temperatura legítima.
+
+O diagnóstico registra TX/RX ASCII e HEX, timestamps, latência, classificação, raw `FETCH?`,
+quantidade recebida, terminador, quantidade de frames, tokens, valor/qualidade individual de CH01
+a CH32 e erro/timeout. Canais válidos são destacados dinamicamente, sem fixar quais ponteiras
+devem estar conectadas.

@@ -443,7 +443,7 @@ async def run_documented_protocol_probe(
 
 
 @router.get("/devices/{device_id}/diagnostic-export")
-def export_complete_diagnostic(
+async def export_complete_diagnostic(
     device_id: int,
     db: Db,
     _: User = Depends(require_roles("admin", "operator")),
@@ -458,7 +458,21 @@ def export_complete_diagnostic(
             detail="Execute primeiro o Teste de Protocolo Documentado para incluir TX/RX.",
         )
     discoveries = usb_discovery_service.discover(db, _active_device_ports(db))
-    payload = create_diagnostic_zip(device, probe, discoveries)
+    physical_devices = list(
+        db.scalars(
+            select(Device).where(
+                Device.protocol.in_(["at4532_serial", "gpm8213_serial"])
+            )
+        )
+    )
+    integration = await acquisition_service.integration_snapshot()
+    payload = create_diagnostic_zip(
+        device,
+        probe,
+        discoveries,
+        integration=integration,
+        devices=physical_devices,
+    )
     filename = f"ThermoPower-diagnostic-{device.model or device.id}.zip"
     return StreamingResponse(
         io.BytesIO(payload),
@@ -476,18 +490,17 @@ async def test_device_connection(
     device = db.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Equipamento não encontrado")
-    usb = (device.metadata_json or {}).get("usb", {})
-    identity_confirmed = bool(device.serial_number or usb.get("manual_confirmed"))
     stages = [
         {"key": "usb", "label": "USB detectado", "status": "passed" if device.port else "failed"},
         {
             "key": "identity",
             "label": "Identidade",
-            "status": "passed" if identity_confirmed else "failed",
-            "message": ("Identidade confirmada" if identity_confirmed else "Identidade ambígua"),
+            "status": "pending",
+            "message": "Aguardando resposta de identidade.",
         },
         {"key": "port", "label": "Porta", "status": "passed" if device.port else "failed"},
         {"key": "protocol", "label": "Protocolo", "status": "pending"},
+        {"key": "configuration", "label": "Configuração", "status": "pending"},
         {"key": "reading", "label": "Leitura", "status": "pending"},
         {"key": "acquisition", "label": "Aquisição", "status": "pending"},
     ]
@@ -501,18 +514,27 @@ async def test_device_connection(
             await asyncio.sleep(0.1)
         info = await runtime.adapter.get_device_information()
         adapter_status = await runtime.adapter.get_status()
+        identity_status = info.capabilities.get("identity_status")
+        stages[1]["status"] = "passed" if identity_status == "confirmed" else "warning"
+        stages[1]["message"] = (
+            "Identidade confirmada pelo instrumento."
+            if identity_status == "confirmed"
+            else "*IDN? sem resposta; protocolo comprovado por FETCH? documentado."
+        )
+        stages[4]["status"] = "passed"
+        stages[4]["message"] = "Configuração documentada transmitida."
         received = runtime.latest is not None
-        stages[4]["status"] = "passed" if received else "failed"
-        stages[5]["status"] = "passed" if received else "not_run"
+        stages[5]["status"] = "passed" if received else "failed"
+        stages[6]["status"] = "passed" if received else "not_run"
         if not received:
-            stages[4]["message"] = (
+            stages[5]["message"] = (
                 "Formato recebido não reconhecido."
                 if adapter_status.read_errors
                 else "Instrumento não respondeu."
             )
         else:
-            stages[4]["message"] = "Leitura recebida."
-            stages[5]["message"] = "Comunicação estabelecida."
+            stages[5]["message"] = "Leitura recebida."
+            stages[6]["message"] = "Comunicação estabelecida."
         return {
             "port_open": adapter_status.connected,
             "data_received": received,
@@ -533,6 +555,9 @@ async def test_device_connection(
             if isinstance(exc, ProtocolDocumentationRequired)
             else str(exc)
         )
+        if stages[1]["status"] == "pending":
+            stages[1]["status"] = "failed"
+            stages[1]["message"] = str(exc)
         for stage in stages[4:]:
             stage["status"] = "not_run"
         return {
@@ -1516,6 +1541,11 @@ async def diagnostics(db: Db, _: CurrentUser) -> dict:
         "uptime_seconds": (datetime.now(UTC) - acquisition_service.started_at).total_seconds(),
         "environment": settings.environment,
     }
+
+
+@router.get("/acquisition/combined-status")
+async def combined_acquisition_status(_: CurrentUser) -> dict:
+    return await acquisition_service.integration_snapshot()
 
 
 @router.get("/simulator/scenarios")

@@ -42,7 +42,12 @@ export type Reading = {
   raw_power_unit: string;
   power_w: number | null;
   temperatures_c: Array<number | null>;
+  channel_quality?: string[];
   quality: string;
+  device_name?: string;
+  device_protocol?: string;
+  source_role?: "temperature" | "electrical" | "combined";
+  raw_payload?: Record<string, unknown>;
 };
 
 export type Channel = {

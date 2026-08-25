@@ -162,6 +162,12 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); box-sh
 .chart-actions button { height: 27px; padding: 0 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-soft); color: var(--muted); font-size: 8px; display: flex; align-items: center; gap: 5px; }
 .chart-actions button svg { width: 11px; }
 .dashboard-bottom { display: grid; grid-template-columns: 2fr .8fr; gap: 13px; }
+.combined-source-status { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:13px 0; }
+.source-status { display:flex; align-items:center; gap:11px; padding:13px; border:1px solid var(--border); border-radius:12px; background:var(--surface); }
+.source-status > div { display:grid; gap:3px; flex:1; min-width:0; }
+.source-status > div > span,.source-status small { color:var(--muted); font-size:7px; }
+.source-status strong { font-size:10px; }
+.combined-chart { min-height:330px; }
 .dashboard-bottom .panel + .panel { margin-top: 0; }
 .heatmap { display: grid; grid-template-columns: repeat(8, 1fr); gap: 7px; }
 .heat-cell { min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-soft); }
@@ -170,6 +176,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); box-sh
 .heat-cell.warning { border-color: #f3d89e; background: #fff8e7; color: #915d00; }
 .heat-cell.critical { border-color: #f1bdc2; background: #fff0f1; color: #c83343; }
 .heat-cell.missing { opacity: .6; }
+.heat-cell.reference-channel { outline:2px solid var(--primary); outline-offset:-2px; }
 .segmented { margin-bottom: 13px; padding: 3px; border-radius: 8px; background: var(--surface-soft); display: grid; grid-template-columns: repeat(5,1fr); gap: 2px; }
 .segmented button { min-height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 8px; font-weight: 750; }
 .segmented button.active { background: var(--surface); color: var(--primary); box-shadow: 0 2px 8px rgba(20,30,55,.08); }
@@ -453,7 +460,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary) 2.5%, var(--surfa
   .page-actions > .button { flex:1; }
   .compact-field { flex:1; }
   .compact-field select { min-width:0; }
-  .charts-grid,.dashboard-bottom,.report-layout,.diagnostic-grid,.import-grid,.serial-diagnostic-form,.serial-raw-grid { grid-template-columns:1fr; }
+  .charts-grid,.dashboard-bottom,.combined-source-status,.report-layout,.diagnostic-grid,.import-grid,.serial-diagnostic-form,.serial-raw-grid { grid-template-columns:1fr; }
   .charts-grid .panel + .panel,.dashboard-bottom .panel + .panel,.report-layout .panel + .panel,.diagnostic-grid .panel + .panel { margin-top:0; }
   .status-strip { flex-direction:column; }
   .status-facts { width:100%; }

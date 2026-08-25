@@ -77,6 +77,11 @@ try {
     if (-not $At4532 -or $At4532.baud_rate -ne 19200) {
         throw "AT4532 ausente ou sem baud rate 19200."
     }
+    if ($At4532.port -ne "COM5" -or
+        -not $At4532.metadata.usb.manual_confirmed -or
+        $At4532.metadata.usb.confirmed_port -ne "COM5") {
+        throw "A associacao manual COM5 do AT4532 nao foi preservada."
+    }
     if (-not $Gpm8213 -or $Gpm8213.serial_number -ne "GES913349") {
         throw "GPM-8213 ausente ou sem o serial USB confirmado."
     }
@@ -89,6 +94,8 @@ try {
     if (-not $DiagnosticRoute) { throw "A API de diagnostico serial read-only nao foi empacotada." }
     $ProtocolProbeRoute = $OpenApi.paths.PSObject.Properties.Name -contains "/api/v1/devices/{device_id}/protocol-probe"
     if (-not $ProtocolProbeRoute) { throw "A API de protocolo documentado nao foi empacotada." }
+    $CombinedStatusRoute = $OpenApi.paths.PSObject.Properties.Name -contains "/api/v1/acquisition/combined-status"
+    if (-not $CombinedStatusRoute) { throw "O status da aquisicao combinada nao foi empacotado." }
     $DiagnosticOpenSchema = $OpenApi.components.schemas.SerialDiagnosticOpenRequest
     $EngineeringConsent = $DiagnosticOpenSchema.properties.PSObject.Properties.Name -contains "use_engineering_assumption_8n1"
     if (-not $EngineeringConsent) { throw "O consentimento explicito para a hipotese 8-N-1 nao foi empacotado." }
@@ -118,8 +125,10 @@ try {
         LoginUser = $Login.user.email
         UiCredentialsMatch = $true
         At4532BaudRate = $At4532.baud_rate
+        At4532ManualPort = $At4532.metadata.usb.confirmed_port
         GpmSerial = $Gpm8213.serial_number
         DocumentedProtocolProbe = $ProtocolProbeRoute
+        CombinedAcquisitionStatus = $CombinedStatusRoute
         DiagnosticReadOnlyRoute = $DiagnosticRoute
         Engineering8N1Consent = $EngineeringConsent
         FrontendVersion = $ExpectedVersion

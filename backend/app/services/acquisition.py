@@ -32,6 +32,7 @@ from app.models.entities import (
     TemperatureSample,
 )
 from app.schemas.contracts import SimulatorConfigInput
+from app.services.device_policy import at4532_identity_fallback_policy
 from app.services.usb_discovery import usb_discovery_service
 from app.services.websocket import websocket_hub
 
@@ -51,6 +52,9 @@ def _compare(value: float, operator: str, threshold: float) -> bool:
 @dataclass
 class DeviceRuntime:
     adapter: DeviceAdapter
+    device_name: str = ""
+    protocol: str = ""
+    source_role: str = "combined"
     task: asyncio.Task | None = None
     session_id: int | None = None
     paused: bool = False
@@ -58,6 +62,8 @@ class DeviceRuntime:
     last_flush: float = field(default_factory=monotonic)
     last_alerts: dict[tuple[int, int | None], float] = field(default_factory=dict)
     latest: DeviceReading | None = None
+    sample_count: int = 0
+    last_error: str | None = None
 
 
 class AcquisitionService:
@@ -79,7 +85,13 @@ class AcquisitionService:
         if device.protocol == "mock_failure":
             return MockFailureAdapter()
         if device.protocol == "at4532_serial":
-            return At4532Adapter(device.port, device.baud_rate)
+            policy = at4532_identity_fallback_policy(device)
+            return At4532Adapter(
+                device.port,
+                device.baud_rate,
+                allow_identity_fallback=policy.allowed,
+                association_source=policy.association_source,
+            )
         if device.protocol == "gpm8213_serial":
             return Gpm8213Adapter(device.port, device.baud_rate)
         raise ValueError(f"Protocolo não suportado: {device.protocol}")
@@ -110,7 +122,19 @@ class AcquisitionService:
                 )
             )
             db.commit()
-        runtime = DeviceRuntime(adapter=adapter)
+        source_role = (
+            "temperature"
+            if device.protocol == "at4532_serial"
+            else "electrical"
+            if device.protocol == "gpm8213_serial"
+            else "combined"
+        )
+        runtime = DeviceRuntime(
+            adapter=adapter,
+            device_name=device.name,
+            protocol=device.protocol,
+            source_role=source_role,
+        )
         self.runtimes[device_id] = runtime
         runtime.task = asyncio.create_task(self._read_loop(device_id, runtime))
         await websocket_hub.publish("device.status", {"device_id": device_id, "state": "connected"})
@@ -190,23 +214,98 @@ class AcquisitionService:
         if not runtime:
             return {"device_id": device_id, "state": "disconnected", "connected": False}
         status = await runtime.adapter.get_status()
+        latest = runtime.latest.model_dump(mode="json") if runtime.latest else None
+        last_message_at = status.last_message_at
+        age_seconds = (
+            max((datetime.now(UTC) - last_message_at).total_seconds(), 0)
+            if last_message_at
+            else None
+        )
+        valid_channels = (
+            sum(value is not None for value in runtime.latest.temperatures_c)
+            if runtime.latest
+            else 0
+        )
         return {
             "device_id": device_id,
             **status.model_dump(mode="json"),
+            "device_name": runtime.device_name,
+            "protocol": runtime.protocol,
+            "source_role": runtime.source_role,
             "session_id": runtime.session_id,
             "paused": runtime.paused,
             "buffered_measurements": len(runtime.buffer),
+            "sample_count": runtime.sample_count,
+            "last_reading_age_seconds": age_seconds,
+            "valid_channels": valid_channels,
+            "channel_count": len(runtime.latest.temperatures_c) if runtime.latest else 0,
+            "latest_reading": latest,
+            "last_error": runtime.last_error,
+            "identity_status": getattr(runtime.adapter, "identity_status", "not_applicable"),
+            "protocol_status": getattr(runtime.adapter, "protocol_status", "not_verified"),
         }
 
     async def all_statuses(self) -> list[dict]:
         return [await self.status(device_id) for device_id in self.runtimes]
 
+    async def integration_snapshot(self) -> dict:
+        with SessionLocal() as db:
+            devices = list(
+                db.scalars(
+                    select(Device).where(
+                        Device.active.is_(True),
+                        Device.protocol.in_(["at4532_serial", "gpm8213_serial"]),
+                    )
+                )
+            )
+            configured = [
+                {
+                    "id": device.id,
+                    "name": device.name,
+                    "protocol": device.protocol,
+                    "port": device.port,
+                    "baud_rate": device.baud_rate,
+                }
+                for device in devices
+            ]
+        statuses = []
+        for device in configured:
+            status = await self.status(device["id"])
+            status.update({key: value for key, value in device.items() if key not in status})
+            status.setdefault(
+                "source_role",
+                "temperature" if device["protocol"] == "at4532_serial" else "electrical",
+            )
+            statuses.append(status)
+        return {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "devices": statuses,
+            "sample_counts": {
+                str(status["device_id"]): status.get("sample_count", 0) for status in statuses
+            },
+            "errors": {
+                str(status["device_id"]): status.get("last_error")
+                for status in statuses
+                if status.get("last_error")
+            },
+        }
+
     async def _read_loop(self, device_id: int, runtime: DeviceRuntime) -> None:
         try:
             async for reading in runtime.adapter.start_reading():
                 runtime.latest = reading
+                runtime.sample_count += 1
+                runtime.last_error = None
                 payload = reading.model_dump(mode="json")
-                payload.update({"device_id": device_id, "session_id": runtime.session_id})
+                payload.update(
+                    {
+                        "device_id": device_id,
+                        "device_name": runtime.device_name,
+                        "device_protocol": runtime.protocol,
+                        "source_role": runtime.source_role,
+                        "session_id": runtime.session_id,
+                    }
+                )
                 await websocket_hub.publish("measurement.created", payload)
                 if runtime.session_id and not runtime.paused:
                     runtime.buffer.append(reading)
@@ -219,6 +318,7 @@ class AcquisitionService:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            runtime.last_error = f"{type(exc).__name__}: {exc}"
             logger.exception("Acquisition loop failed for device %s", device_id)
             with SessionLocal() as db:
                 db.add(

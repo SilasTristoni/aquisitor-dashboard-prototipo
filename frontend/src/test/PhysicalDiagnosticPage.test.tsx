@@ -52,9 +52,10 @@ vi.mock("../api", async () => {
       if (path === "/devices/1/protocol-probe") {
         return {
           device_id: 1,
-          result: "passed",
+          result: "passed_with_warning",
           physical_validation: "pending",
           stages: [
+            { key: "identity", label: "Identidade", status: "warning", message: "*IDN? não respondeu; validação funcional continuará" },
             { key: "protocol", label: "Protocolo", status: "passed", message: "Resposta validada" },
           ],
           transactions: [{
@@ -110,6 +111,8 @@ test("envia protocolo oficial somente após confirmação explícita", async () 
   expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("*IDN?"));
   expect((await screen.findAllByText("vendor_documented")).length).toBe(2);
   expect(screen.getByText("*IDN?\\n")).toBeInTheDocument();
+  expect(screen.getByText("ATENÇÃO")).toBeInTheDocument();
+  expect(screen.getByText(/validação funcional continuará/)).toBeInTheDocument();
   expect(screen.getByText("Comparação GPM-8213 / PowerMeterSeries")).toBeInTheDocument();
   expect(screen.getByText(/HEADER reportado: U, I, P, S, FU, LAMBDA, Q, FI/)).toBeInTheDocument();
   expect(screen.getAllByText("-9.5985").length).toBeGreaterThan(0);

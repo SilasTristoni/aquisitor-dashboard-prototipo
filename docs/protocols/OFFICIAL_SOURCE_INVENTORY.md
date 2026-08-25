@@ -1,6 +1,6 @@
-# Inventário de fontes oficiais — 0.5.2-physical-alpha
+# Inventário de fontes oficiais — 0.5.4-physical-alpha
 
-Consulta: 2026-08-11. Arquivos de terceiros ficam em `reference-input/vendor-official/`, que é
+Consulta original: 2026-08-11. Revisão das seções AT4532 8.1–9.5: 2026-08-25. Arquivos de terceiros ficam em `reference-input/vendor-official/`, que é
 ignorado pelo Git; não são redistribuídos na build.
 
 | Arquivo | Origem oficial | SHA-256 |

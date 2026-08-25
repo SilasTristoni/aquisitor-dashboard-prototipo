@@ -33,6 +33,7 @@ from app.adapters.transports import (
 from app.core.database import SessionLocal
 from app.models.entities import Device, ElectricalSample, TemperatureSample
 from app.services.acquisition import acquisition_service
+from app.services.device_policy import at4532_identity_fallback_policy
 from app.services.diagnostic_export import create_diagnostic_zip
 from app.services.protocol_probe import ProtocolProbeService, protocol_probe_service
 from app.services.serial_diagnostic import (
@@ -127,6 +128,8 @@ def test_at4532_normalizer_preserves_32_channels_and_marks_undocumented_sentinel
     assert reading.channel_quality[7] == "invalid_out_of_range"
     assert reading.raw_payload["open_sensor_encoding"] == "protocol_documentation_required"
     assert reading.temperatures_c[0] == 1.0
+    assert reading.power_w is None
+    assert reading.quality == "good"
 
 
 @pytest.mark.parametrize(
@@ -164,10 +167,81 @@ def test_at4532_parser_accepts_documented_fetch_scientific_ascii(count):
     assert parsed[0] == -12.5
 
 
-@pytest.mark.parametrize("payload", [b"1.0", b"1.0\x00\n", b"1.0\n2.0\n", b"1,,2\n"])
+@pytest.mark.parametrize("payload", [b"1.0", b"1.0\x00\n", b"1.0\n2.0\n"])
 def test_at4532_parser_rejects_partial_multiple_and_malformed_frames(payload):
     with pytest.raises(ProtocolResponseError):
         At4532Parser().parse(payload)
+
+
+def test_at4532_preserves_unknown_channels_without_losing_valid_readings():
+    tokens = ["UNPROVEN_OPEN_TOKEN"] * 32
+    tokens[5] = "70.1"
+    tokens[8] = "69.8"
+    tokens[12] = "70.4"
+    payload = (", ".join(tokens) + "\r\n").encode("ascii")
+
+    parser = At4532Parser()
+    reading = At4532Normalizer().normalize(parser.parse(payload), payload)
+
+    assert parser.classify(payload) == "temperature_measurement"
+    assert reading.temperatures_c[5] == 70.1
+    assert reading.temperatures_c[8] == 69.8
+    assert reading.temperatures_c[12] == 70.4
+    assert sum(value is not None for value in reading.temperatures_c) == 3
+    assert reading.channel_quality[0] == "unknown_unavailable"
+    assert reading.channel_quality[5] == "good"
+    assert reading.raw_payload["channel_count_received"] == 32
+    assert reading.raw_payload["valid_channels"] == 3
+    assert reading.raw_payload["unavailable_channels"] == 29
+    assert reading.raw_payload["valid_channel_results"]["CH06"]["temperature_c"] == 70.1
+    assert reading.raw_payload["unknown_tokens"][0]["raw_token"] == "UNPROVEN_OPEN_TOKEN"
+
+
+def test_at4532_zero_negative_and_scientific_values_remain_real_temperatures():
+    payload = b"0, -12.5, +7.01e1, UNKNOWN\n"
+    reading = At4532Normalizer().normalize(At4532Parser().parse(payload), payload)
+    assert reading.temperatures_c[:4] == [0.0, -12.5, 70.1, None]
+    assert reading.channel_quality[:4] == ["good", "good", "good", "unknown_unavailable"]
+
+
+def _at4532_export_shape_payload(values: list[float]) -> bytes:
+    tokens = ["Open"] * 24 + [str(value) for value in values]
+    return (",".join(tokens) + "\r\n").encode("ascii")
+
+
+def test_at4532_maps_export_shape_ch25_through_ch32_without_off_by_one():
+    payload = _at4532_export_shape_payload([23.2, 23.7, 23.8, 26.5, 35.6, 28.1, 24.4, 21.9])
+    reading = At4532Normalizer().normalize(At4532Parser().parse(payload), payload)
+
+    assert reading.temperatures_c[:24] == [None] * 24
+    assert reading.temperatures_c[24:] == [23.2, 23.7, 23.8, 26.5, 35.6, 28.1, 24.4, 21.9]
+    assert reading.channel_quality[:24] == ["unknown_unavailable"] * 24
+    assert reading.channel_quality[24:] == ["good"] * 8
+    assert reading.raw_payload["channels"][24]["channel"] == "CH25"
+    assert reading.raw_payload["channels"][24]["temperature_c"] == 23.2
+    assert reading.raw_payload["channels"][31]["channel"] == "CH32"
+    assert reading.raw_payload["valid_channels"] == 8
+    assert reading.raw_payload["unavailable_channels"] == 24
+    assert reading.raw_payload["token_count"] == 32
+    assert reading.raw_payload["observed_terminator"] == "CRLF (0x0D 0x0A)"
+    assert reading.raw_payload["frame_count"] == 1
+    assert reading.raw_payload["unknown_tokens"][0]["raw_token"] == "Open"
+    assert reading.raw_payload["open_sensor_encoding"] == "protocol_documentation_required"
+
+
+def test_at4532_heating_series_changes_only_ch29():
+    readings = [
+        At4532Normalizer().normalize(
+            At4532Parser().parse(payload), payload
+        )
+        for payload in (
+            _at4532_export_shape_payload([23.2, 23.7, 23.8, 26.5, value, 28.1, 24.4, 21.9])
+            for value in (25.0, 27.0, 31.0)
+        )
+    ]
+    assert [reading.temperatures_c[28] for reading in readings] == [25.0, 27.0, 31.0]
+    for index in (*range(24), 24, 25, 26, 27, 29, 30, 31):
+        assert len({reading.temperatures_c[index] for reading in readings}) == 1
 
 
 def test_gpm8213_parser_accepts_documented_identity_and_eight_numeric_items():
@@ -391,6 +465,171 @@ async def test_at4532_adapter_runs_documented_transport_protocol_parser_normaliz
 
 
 @pytest.mark.asyncio
+async def test_at4532_adapter_keeps_unknown_channel_tokens_and_complete_tx_rx_diagnostic():
+    tokens = ["UNDOCUMENTED"] * 32
+    tokens[5], tokens[8], tokens[12] = "70.1", "69.8", "70.4"
+    fetch = (",".join(tokens) + "\r\n").encode("ascii")
+    transport = FakeVendorTransport([b"AT4532,A6,SN123,Applent\r\n", fetch])
+    adapter = At4532SerialAdapter("COM5", 19200, transport=transport)
+
+    await adapter.connect()
+    reading = await adapter.read_once()
+    await adapter.disconnect()
+
+    assert reading.temperatures_c[5] == 70.1
+    transaction = adapter.transactions[-1]
+    assert transaction["actual_response_type"] == "temperature_measurement"
+    assert transaction["expected_for_command"] == "temperature_measurement"
+    assert transaction["tx_ascii"] == "FETCH?\\n"
+    assert transaction["rx_ascii"].endswith("\\r\\n")
+    assert transaction["tx_hex"] == "46 45 54 43 48 3F 0A"
+    assert transaction["rx_hex"] == fetch.hex(" ").upper()
+    assert transaction["timestamp_tx"]
+    assert transaction["timestamp_rx"]
+    assert transaction["elapsed_ms"] >= 0
+    assert transaction["parsed"]["valid_channels"] == 3
+    assert transaction["parsed"]["unavailable_channels"] == 29
+
+
+def _manual_at4532_device(port: str = "COM5", confirmed_port: str = "COM5") -> SimpleNamespace:
+    return SimpleNamespace(
+        id=4532,
+        protocol="at4532_serial",
+        model="AT4532",
+        port=port,
+        baud_rate=19200,
+        metadata_json={
+            "usb": {"manual_confirmed": True, "confirmed_port": confirmed_port},
+            "serial": {"data_bits": 8, "parity": "N", "stop_bits": 1},
+        },
+    )
+
+
+def test_at4532_identity_fallback_requires_exact_manual_port_and_serial_parameters():
+    assert at4532_identity_fallback_policy(_manual_at4532_device()).allowed is True
+    unknown_port = at4532_identity_fallback_policy(
+        _manual_at4532_device(port="COM2", confirmed_port="COM5")
+    )
+    assert unknown_port.allowed is False
+    assert unknown_port.reason == "manual_port_not_confirmed"
+    unconfirmed = _manual_at4532_device()
+    unconfirmed.metadata_json["usb"]["manual_confirmed"] = False
+    assert at4532_identity_fallback_policy(unconfirmed).allowed is False
+    wrong_framing = _manual_at4532_device()
+    wrong_framing.metadata_json["serial"]["data_bits"] = 7
+    assert at4532_identity_fallback_policy(wrong_framing).reason == "serial_parameters_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_at4532_manual_com5_fallback_verifies_measurement_after_identity_timeout():
+    fetch = _at4532_export_shape_payload([23.2, 23.7, 23.8, 26.5, 35.6, 28.1, 24.4, 21.9])
+    transport = FakeVendorTransport(
+        [SerialTransportError("protocol_timeout", "Instrumento não respondeu ao comando."), fetch]
+    )
+    adapter = At4532SerialAdapter(
+        "COM5",
+        19200,
+        transport=transport,
+        allow_identity_fallback=True,
+        association_source="manual_port",
+    )
+
+    await adapter.connect()
+    reading = await adapter.read_once()
+    information = await adapter.get_device_information()
+    await adapter.disconnect()
+
+    assert transport.requests == [b"*IDN?\n", b"SYST:UNIT CEL\n", b"FETCH?\n"]
+    assert adapter.identity_status == "unconfirmed"
+    assert adapter.protocol_status == "verified_by_measurement"
+    assert reading.temperatures_c[24] == 23.2
+    assert information.capabilities["identity_status"] == "unconfirmed"
+    assert information.capabilities["association_source"] == "manual_port"
+    identity_transaction = adapter.transactions[0]
+    assert identity_transaction["bytes_received"] == 0
+    assert identity_transaction["actual_response_type"] == "no_response"
+    assert identity_transaction["error"]["code"] == "protocol_timeout"
+    assert identity_transaction["tx_hex"] == "2A 49 44 4E 3F 0A"
+
+
+@pytest.mark.asyncio
+async def test_at4532_identity_timeout_does_not_fallback_without_manual_authorization():
+    transport = FakeVendorTransport(
+        [SerialTransportError("protocol_timeout", "Instrumento não respondeu ao comando.")]
+    )
+    adapter = At4532SerialAdapter("COM2", 19200, transport=transport)
+    with pytest.raises(SerialTransportError) as caught:
+        await adapter.connect()
+    assert caught.value.code == "protocol_timeout"
+    assert transport.requests == [b"*IDN?\n"]
+    assert adapter.identity_status == "unconfirmed"
+    assert adapter.protocol_status == "not_verified"
+
+
+@pytest.mark.asyncio
+async def test_at4532_full_probe_reaches_fetch_and_acquisition_after_identity_timeout(
+    monkeypatch,
+):
+    first = _at4532_export_shape_payload([23.2, 23.7, 23.8, 26.5, 25.0, 28.1, 24.4, 21.9])
+    second = _at4532_export_shape_payload([23.2, 23.7, 23.8, 26.5, 27.0, 28.1, 24.4, 21.9])
+    transport = FakeVendorTransport(
+        [
+            SerialTransportError("protocol_timeout", "Instrumento não respondeu ao comando."),
+            first,
+            second,
+        ]
+    )
+
+    def adapter_factory(port, baud_rate, **kwargs):
+        return At4532SerialAdapter(port, baud_rate, transport=transport, **kwargs)
+
+    async def no_delay(_):
+        return None
+
+    monkeypatch.setattr("app.services.protocol_probe.At4532SerialAdapter", adapter_factory)
+    monkeypatch.setattr("app.services.protocol_probe.asyncio.sleep", no_delay)
+    report = await ProtocolProbeService().run(_manual_at4532_device(), "full")
+
+    statuses = {stage["key"]: stage["status"] for stage in report["stages"]}
+    assert statuses == {
+        "usb": "passed",
+        "identity": "warning",
+        "port": "passed",
+        "protocol": "passed",
+        "configuration": "passed",
+        "reading": "passed",
+        "acquisition": "passed",
+    }
+    assert report["result"] == "passed_with_warning"
+    assert report["identity_status"] == "unconfirmed"
+    assert report["protocol_status"] == "verified_by_measurement"
+    assert report["identity_fallback_policy"]["allowed"] is True
+    assert transport.requests.count(b"FETCH?\n") == 2
+    assert report["readings"][0]["temperatures_c"][28] == 25.0
+    assert report["readings"][1]["temperatures_c"][28] == 27.0
+
+
+@pytest.mark.asyncio
+async def test_at4532_unknown_com_probe_stops_after_identity_timeout(monkeypatch):
+    transport = FakeVendorTransport(
+        [SerialTransportError("protocol_timeout", "Instrumento não respondeu ao comando.")]
+    )
+
+    def adapter_factory(port, baud_rate, **kwargs):
+        assert kwargs["allow_identity_fallback"] is False
+        return At4532SerialAdapter(port, baud_rate, transport=transport, **kwargs)
+
+    monkeypatch.setattr("app.services.protocol_probe.At4532SerialAdapter", adapter_factory)
+    report = await ProtocolProbeService().run(
+        _manual_at4532_device(port="COM2", confirmed_port="COM5"), "read"
+    )
+
+    assert report["result"] == "failed"
+    assert report["identity_fallback_policy"]["allowed"] is False
+    assert transport.requests == [b"*IDN?\n"]
+
+
+@pytest.mark.asyncio
 async def test_gpm_adapter_configures_and_reads_documented_numeric_items():
     transport = FakeVendorTransport(
         [
@@ -541,9 +780,9 @@ class FakePollingAdapter:
         while self.reading:
             if self.role == "temperature":
                 yield DeviceReading(
-                    raw_power=0,
+                    raw_power=None,
                     raw_power_unit="W",
-                    power_w=0,
+                    power_w=None,
                     temperatures_c=[21.5] * 32,
                     channel_quality=["good"] * 32,
                     raw_payload={"fixture": "official_fetch_shape"},
@@ -593,10 +832,13 @@ def test_dual_physical_pipeline_publishes_and_persists_independently(
         lambda device: adapters[device.id],
     )
     events: list[str] = []
+    measurement_payloads: list[dict[str, Any]] = []
     original_publish = websocket_hub.publish
 
     async def capture(event, payload):
         events.append(event)
+        if event == "measurement.created":
+            measurement_payloads.append(payload)
         await original_publish(event, payload)
 
     monkeypatch.setattr(websocket_hub, "publish", capture)
@@ -624,6 +866,26 @@ def test_dual_physical_pipeline_publishes_and_persists_independently(
         )
         assert db.scalar(select(ElectricalSample).where(ElectricalSample.session_id == session_id))
     assert "measurement.created" in events
+    assert {payload["source_role"] for payload in measurement_payloads} == {
+        "temperature",
+        "electrical",
+    }
+    temperature_payloads = [
+        payload for payload in measurement_payloads if payload["source_role"] == "temperature"
+    ]
+    electrical_payloads = [
+        payload for payload in measurement_payloads if payload["source_role"] == "electrical"
+    ]
+    assert all(payload["power_w"] is None for payload in temperature_payloads)
+    assert all(payload["temperatures_c"] == [] for payload in electrical_payloads)
+    assert len({payload["timestamp"] for payload in temperature_payloads}) == len(
+        temperature_payloads
+    )
+
+    snapshot = client.get("/api/v1/acquisition/combined-status", headers=auth_headers)
+    assert snapshot.status_code == 200
+    roles = {item["source_role"] for item in snapshot.json()["devices"]}
+    assert {"temperature", "electrical"} <= roles
 
 
 def test_same_vid_pid_on_com2_and_com5_is_ambiguous(client):
@@ -866,7 +1128,7 @@ def test_engineering_version_is_consistent_in_health_and_frontend(client):
     frontend = json.loads((repository / "frontend" / "package.json").read_text("utf-8"))
     response = client.get("/health")
 
-    assert expected == "0.5.2-physical-alpha"
+    assert expected == "0.5.4-physical-alpha"
     assert response.status_code == 200
     assert response.json()["version"] == expected
     assert frontend["version"] == expected
@@ -979,7 +1241,7 @@ def test_complete_diagnostic_export_contains_required_sanitized_files(
     log_path = runtime / "logs" / "thermopower.log"
     log_path.parent.mkdir(parents=True)
     log_path.write_text(
-        "startup version=0.5.2-physical-alpha\n"
+        "startup version=0.5.4-physical-alpha\n"
         "COM open port=COM3\n"
         "protocol TX command=query_headers\n"
         "response classification actual=header_list\n"
@@ -997,6 +1259,17 @@ def test_complete_diagnostic_export_contains_required_sanitized_files(
                 "serial_parameters": {"data_bits": 8, "parity": "N", "stop_bits": 1},
             },
             [],
+            integration={
+                "devices": [
+                    {
+                        "device_id": device.id,
+                        "sample_count": 2,
+                        "last_error": None,
+                        "latest_reading": {"raw_payload": {"response_ascii": "UNKNOWN,70.1"}},
+                    }
+                ],
+                "token": "must-not-leak",
+            },
         )
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         names = set(archive.namelist())
@@ -1012,14 +1285,18 @@ def test_complete_diagnostic_export_contains_required_sanitized_files(
             "associations.json",
             "serial-parameters.json",
             "protocol-results.json",
+            "integration-status.json",
             "recent-log.txt",
             "README.txt",
             "SHA256SUMS.txt",
         } <= names
         assert archive.read("summary.pdf").startswith(b"%PDF")
-        assert b"0.5.2-physical-alpha" in archive.read("application-version.txt")
+        assert b"0.5.4-physical-alpha" in archive.read("application-version.txt")
         recent_log = archive.read("recent-log.txt").decode("utf-8")
         assert "COM open port=COM3" in recent_log
         assert "response classification actual=header_list" in recent_log
         assert "must-not-leak" not in recent_log
         assert "password=[redacted]" in recent_log
+        integration = json.loads(archive.read("integration-status.json"))
+        assert integration["devices"][0]["sample_count"] == 2
+        assert integration["token"] == "[redacted]"
