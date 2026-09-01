@@ -7,25 +7,40 @@ $Version = (Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot "VERSION.tx
 $Python = Join-Path $RepositoryRoot ".venv\Scripts\python.exe"
 $EngineeringRoot = Join-Path $RepositoryRoot "engineering\ThermoPower-$Version"
 $EngineeringZip = "$EngineeringRoot.zip"
+$StagingRoot = Join-Path $RepositoryRoot "dist\ThermoPowerMonitor"
+$ValidatedZip = Join-Path $RepositoryRoot "dist\ThermoPower-$Version.validated.zip"
 
-if ($Version -ne "0.5.4-physical-alpha") {
-    throw "Este script aceita somente a versao de engenharia 0.5.4-physical-alpha."
+if ($Version -ne "0.5.5-physical-alpha") {
+    throw "Este script aceita somente a versao de engenharia 0.5.5-physical-alpha."
 }
 if (-not (Test-Path -LiteralPath $Python)) { throw "Ambiente .venv ausente." }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw "npm nao encontrado." }
 
 if (-not $SkipDependencyInstall) {
     & $Python -m pip install -r (Join-Path $RepositoryRoot "backend\requirements.txt") "pyinstaller==6.15.0"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Push-Location (Join-Path $RepositoryRoot "frontend")
-    try { npm ci } finally { Pop-Location }
+    try {
+        npm ci
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+    finally { Pop-Location }
 }
 
 Push-Location (Join-Path $RepositoryRoot "backend")
 try {
     & $Python -m ruff check . --no-cache
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    & $Python -m pytest -p no:cacheprovider
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $PhysicalRegressionOutput = @()
+    & $Python -m pytest -p no:cacheprovider -m physical_regression_fixtures |
+        Tee-Object -Variable PhysicalRegressionOutput | ForEach-Object { Write-Host $_ }
+    $PhysicalRegressionExitCode = $LASTEXITCODE
+    if ($PhysicalRegressionExitCode -ne 0) { exit $PhysicalRegressionExitCode }
+    $BackendTestOutput = @()
+    & $Python -m pytest -p no:cacheprovider |
+        Tee-Object -Variable BackendTestOutput | ForEach-Object { Write-Host $_ }
+    $BackendTestExitCode = $LASTEXITCODE
+    if ($BackendTestExitCode -ne 0) { exit $BackendTestExitCode }
     & $Python -m alembic upgrade head
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $Python -m alembic check
@@ -42,7 +57,7 @@ try {
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         $DockerResult = "passed"
     } else {
-        $DockerResult = "not available on build host (not a 0.5.4 protocol gate)"
+        $DockerResult = "not available on build host (optional gate)"
         Write-Warning "docker nao encontrado; docker compose config nao executado."
     }
 }
@@ -54,8 +69,11 @@ try {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     npm run typecheck
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    npm test -- --run
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $FrontendTestOutput = @()
+    npm test -- --run |
+        Tee-Object -Variable FrontendTestOutput | ForEach-Object { Write-Host $_ }
+    $FrontendTestExitCode = $LASTEXITCODE
+    if ($FrontendTestExitCode -ne 0) { exit $FrontendTestExitCode }
     npm run build
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
@@ -68,31 +86,37 @@ try {
 }
 finally { Pop-Location }
 
+if (-not (Test-Path -LiteralPath (Join-Path $StagingRoot "ThermoPowerMonitor.exe") -PathType Leaf)) {
+    throw "Executavel PyInstaller ausente no staging da build."
+}
+$Smoke = & (Join-Path $RepositoryRoot "scripts\smoke-windows-package.ps1") `
+    -Executable (Join-Path $StagingRoot "ThermoPowerMonitor.exe") | Out-String
+
 $ResolvedEngineeringParent = [IO.Path]::GetFullPath((Split-Path $EngineeringRoot -Parent))
-if (-not $ResolvedEngineeringParent.StartsWith($RepositoryRoot, [StringComparison]::OrdinalIgnoreCase)) {
+$ExpectedEngineeringParent = [IO.Path]::GetFullPath((Join-Path $RepositoryRoot "engineering"))
+if (-not $ResolvedEngineeringParent.Equals(
+    $ExpectedEngineeringParent,
+    [StringComparison]::OrdinalIgnoreCase
+)) {
     throw "Destino de engenharia fora do repositorio."
 }
-if (Test-Path -LiteralPath $EngineeringRoot) {
-    Remove-Item -LiteralPath $EngineeringRoot -Recurse -Force
-}
-# dist is a generated staging directory. Move it to avoid requiring a second full copy of
-# the PyInstaller bundle on constrained engineering workstations.
-Move-Item -LiteralPath (Join-Path $RepositoryRoot "dist\ThermoPowerMonitor") -Destination $EngineeringRoot
-Set-Content -LiteralPath (Join-Path $EngineeringRoot "ENGINEERING-BUILD.txt") -Encoding utf8 -Value @(
+Set-Content -LiteralPath (Join-Path $StagingRoot "ENGINEERING-BUILD.txt") -Encoding utf8 -Value @(
     "ThermoPower $Version",
     "BUILD DE ENGENHARIA - NAO DISTRIBUIR COMO BETA",
     "GPM-8213: integracao fisica validada no firmware V1.05.",
-    "AT4532: validacao fisica pendente; IDN timeout permanece warning e nao e mascarado.",
-    "Fallback: somente associacao manual exata + 19200/8-N-1 + FETCH valido com 32 canais.",
+    "AT4532: FETCH fisico TCP-32/CP936 suportado; IDN timeout permanece warning.",
+    "Fallback: somente associacao manual exata + 19200/8-N-1 + medicao estrutural valida.",
     "Dashboard/sessao: fontes eletrica e termica simultaneas com ciclos independentes.",
     "Use o Teste de Protocolo Documentado somente apos fechar o software do fabricante."
 )
-Set-Content -LiteralPath (Join-Path $EngineeringRoot "PROTOCOL-SOURCES.txt") -Encoding utf8 -Value @(
+Set-Content -LiteralPath (Join-Path $StagingRoot "PROTOCOL-SOURCES.txt") -Encoding utf8 -Value @(
     "AT4532 User's Guide Rev.A6:",
     "https://www.anbai.cn/app_file/products/AT4532/ug_en_AT4532.pdf",
-    "SCPI: *IDN?, SYST:UNIT CEL e FETCH?; LF; 8-N-1; 19200 confirmado na bancada LAB.",
+    "SCPI: *IDN?, SYST:UNIT CEL e FETCH?; LF; 8-N-1; 19200 confirmado no equipamento.",
     "Evidencia fisica: *IDN? em COM5 retornou 0 bytes; identidade permanece unconfirmed.",
-    "Open foi observado no XLSX oficial, ainda nao confirmado no raw FETCH?.",
+    "FETCH fisico: frame TCP-32 com byte A1 E6 para Celsius, decodificado estritamente em CP936.",
+    "Open|K|Celsius foi confirmado no RX para CH01-CH24; CH25-CH32 foram numericos.",
+    "Campos posteriores ao bloco primario de 32 canais permanecem auxiliares sem semantica.",
     "",
     "GPM-8213 User Manual G_20230828:",
     "https://www.gwinstek.com/en-US/download/downloadFile/11551",
@@ -101,43 +125,187 @@ Set-Content -LiteralPath (Join-Path $EngineeringRoot "PROTOCOL-SOURCES.txt") -En
     "HEADER fisico V1.05: Urms,Irms,P,S,fU,PF,Q,fI.",
     "",
     "GPM-8213 physical_validation: passed.",
-    "AT4532 physical_validation: pending."
+    "AT4532 protocol_status: verified_by_measurement quando a estrutura e a leitura forem validas.",
+    "AT4532 identity_status: unconfirmed enquanto *IDN? permanecer sem resposta."
 )
-$Smoke = & (Join-Path $RepositoryRoot "scripts\smoke-windows-package.ps1") `
-    -Executable (Join-Path $EngineeringRoot "ThermoPowerMonitor.exe") | Out-String
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-Set-Content -LiteralPath (Join-Path $EngineeringRoot "TEST-RESULTS.txt") -Encoding utf8 -Value @(
+Set-Content -LiteralPath (Join-Path $StagingRoot "TEST-RESULTS.txt") -Encoding utf8 -Value @(
     "ThermoPower $Version",
     "Ruff: passed",
-    "Pytest: 82 passed",
-    "GPM V1.05 / stale response / NUMBER? / HEADER? / VALUE?: passed",
-    "GPM fragmented and multiple buffered responses: passed",
-    "AT IDN timeout + manual COM5 + FETCH 32 channels: passed",
+    "Physical regression fixtures gate: passed",
+    "Pytest completo: passed",
+    "GPM V1.05 / NUMBER abreviado / HEADER / VALUE / NAN: passed",
+    "GPM fragmented, stale e multiple buffered responses: passed",
+    "AT IDN timeout + manual COM5 + TCP-32 CP936 32 channels: passed",
     "AT unknown COM fallback rejection: passed",
     "AT CH25-CH32 mapping and CH29 heating series: passed",
+    "Combined and partial-source acquisition: passed",
     "Runtime diagnostic log export: passed",
     "Alembic upgrade/check: passed",
     "pip check: passed",
     "ESLint: passed",
     "Typecheck: passed",
-    "Frontend tests: 11 passed",
+    "Frontend tests: passed",
     "Vite build: passed",
     "docker compose config: $DockerResult",
     "Packaged executable smoke: passed",
     "",
-    $Smoke.Trim()
+    $Smoke.Trim(),
+    "",
+    "Physical pytest summary:",
+    ($PhysicalRegressionOutput | Select-Object -Last 3 | Out-String).Trim(),
+    "",
+    "Backend pytest summary:",
+    ($BackendTestOutput | Select-Object -Last 3 | Out-String).Trim(),
+    "",
+    "Frontend test summary:",
+    ($FrontendTestOutput | Select-Object -Last 8 | Out-String).Trim()
 )
-$HashFiles = Get-ChildItem -LiteralPath $EngineeringRoot -File | Where-Object { $_.Name -ne "SHA256SUMS.txt" }
-$HashLines = foreach ($File in $HashFiles) {
+$RequiredPackagePaths = @(
+    "ThermoPowerMonitor.exe",
+    "_internal",
+    "ENGINEERING-BUILD.txt",
+    "PROTOCOL-SOURCES.txt",
+    "TEST-RESULTS.txt"
+)
+foreach ($RelativePath in $RequiredPackagePaths) {
+    $RequiredPath = Join-Path $StagingRoot $RelativePath
+    $RequiredPathType = if ($RelativePath -eq "_internal") { "Container" } else { "Leaf" }
+    if (-not (Test-Path -LiteralPath $RequiredPath -PathType $RequiredPathType)) {
+        throw "Conteudo obrigatorio ausente da engineering build: $RelativePath"
+    }
+}
+$ManifestPath = Join-Path $StagingRoot "SHA256SUMS.txt"
+$HashFiles = Get-ChildItem -LiteralPath $StagingRoot -File -Recurse |
+    Where-Object { $_.FullName -ne $ManifestPath } |
+    Sort-Object FullName
+$HashEntries = foreach ($File in $HashFiles) {
     $Hash = Get-FileHash -Algorithm SHA256 -LiteralPath $File.FullName
-    "$($Hash.Hash)  $($File.Name)"
+    $RelativePath = $File.FullName.Substring($StagingRoot.Length).TrimStart("\").Replace("\", "/")
+    [pscustomobject]@{ Hash = $Hash.Hash; RelativePath = $RelativePath }
 }
-Set-Content -LiteralPath (Join-Path $EngineeringRoot "SHA256SUMS.txt") -Encoding ascii -Value $HashLines
-if (Test-Path -LiteralPath $EngineeringZip) {
-    Remove-Item -LiteralPath $EngineeringZip -Force
+$HashLines = $HashEntries | ForEach-Object { "$($_.Hash)  $($_.RelativePath)" }
+Set-Content -LiteralPath $ManifestPath -Encoding ascii -Value $HashLines
+foreach ($Entry in $HashEntries) {
+    $FilePath = Join-Path $StagingRoot $Entry.RelativePath.Replace("/", "\")
+    $VerifiedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $FilePath).Hash
+    if ($VerifiedHash -ne $Entry.Hash) {
+        throw "Falha ao verificar SHA256 de $($Entry.RelativePath)."
+    }
 }
-Compress-Archive -Path (Join-Path $EngineeringRoot "*") -DestinationPath $EngineeringZip -CompressionLevel Optimal
-$ZipHash = Get-FileHash -Algorithm SHA256 -LiteralPath $EngineeringZip
+if (Test-Path -LiteralPath $ValidatedZip) {
+    Remove-Item -LiteralPath $ValidatedZip -Force
+}
+Compress-Archive -Path (Join-Path $StagingRoot "*") -DestinationPath $ValidatedZip -CompressionLevel Optimal
+$ZipVerificationRoot = Join-Path ([IO.Path]::GetTempPath()) `
+    ("thermopower-zip-verification-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $ZipVerificationRoot | Out-Null
+try {
+    Expand-Archive -LiteralPath $ValidatedZip -DestinationPath $ZipVerificationRoot
+    $ExtractedManifest = Join-Path $ZipVerificationRoot "SHA256SUMS.txt"
+    if (-not (Test-Path -LiteralPath $ExtractedManifest -PathType Leaf)) {
+        throw "SHA256SUMS.txt ausente do ZIP."
+    }
+    $OriginalManifestHash = (
+        Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $StagingRoot "SHA256SUMS.txt")
+    ).Hash
+    $ExtractedManifestHash = (
+        Get-FileHash -Algorithm SHA256 -LiteralPath $ExtractedManifest
+    ).Hash
+    if ($OriginalManifestHash -ne $ExtractedManifestHash) {
+        throw "SHA256SUMS.txt divergiu apos extrair o ZIP."
+    }
+    $ExtractedFiles = Get-ChildItem -LiteralPath $ZipVerificationRoot -File -Recurse |
+        Where-Object { $_.FullName -ne $ExtractedManifest }
+    if ($ExtractedFiles.Count -ne $HashEntries.Count) {
+        throw "O ZIP nao contem exatamente o conjunto de arquivos do manifesto."
+    }
+    foreach ($Entry in $HashEntries) {
+        $ExtractedPath = Join-Path $ZipVerificationRoot $Entry.RelativePath.Replace("/", "\")
+        if (-not (Test-Path -LiteralPath $ExtractedPath -PathType Leaf)) {
+            throw "Arquivo ausente no ZIP: $($Entry.RelativePath)."
+        }
+        $ExtractedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ExtractedPath).Hash
+        if ($ExtractedHash -ne $Entry.Hash) {
+            throw "SHA256 divergente apos extrair o ZIP: $($Entry.RelativePath)."
+        }
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $ZipVerificationRoot) {
+        Remove-Item -LiteralPath $ZipVerificationRoot -Recurse -Force
+    }
+}
+$ValidatedZipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ValidatedZip).Hash
+
+# Promote only the fully assembled, hashed, extracted and reverified package. Older versioned
+# engineering builds are never touched. An existing package for this exact version is moved to
+# same-volume backups and restored if either promotion or the final byte verification fails.
+$PromotionId = [guid]::NewGuid().ToString("N")
+$PreviousEngineeringRoot = "$EngineeringRoot.previous-$PromotionId"
+$PreviousEngineeringZip = "$EngineeringZip.previous-$PromotionId"
+$FolderBackedUp = $false
+$ZipBackedUp = $false
+$FolderPromoted = $false
+$ZipPromoted = $false
+try {
+    if (Test-Path -LiteralPath $EngineeringRoot) {
+        Move-Item -LiteralPath $EngineeringRoot -Destination $PreviousEngineeringRoot
+        $FolderBackedUp = $true
+    }
+    if (Test-Path -LiteralPath $EngineeringZip) {
+        Move-Item -LiteralPath $EngineeringZip -Destination $PreviousEngineeringZip
+        $ZipBackedUp = $true
+    }
+    Move-Item -LiteralPath $StagingRoot -Destination $EngineeringRoot
+    $FolderPromoted = $true
+    Move-Item -LiteralPath $ValidatedZip -Destination $EngineeringZip
+    $ZipPromoted = $true
+
+    $FinalManifestHash = (
+        Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $EngineeringRoot "SHA256SUMS.txt")
+    ).Hash
+    if ($FinalManifestHash -ne $OriginalManifestHash) {
+        throw "SHA256SUMS.txt divergiu durante a promocao final."
+    }
+    foreach ($Entry in $HashEntries) {
+        $FinalPath = Join-Path $EngineeringRoot $Entry.RelativePath.Replace("/", "\")
+        $FinalHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $FinalPath).Hash
+        if ($FinalHash -ne $Entry.Hash) {
+            throw "SHA256 divergente apos promocao final: $($Entry.RelativePath)."
+        }
+    }
+    $ZipHash = Get-FileHash -Algorithm SHA256 -LiteralPath $EngineeringZip
+    if ($ZipHash.Hash -ne $ValidatedZipHash) {
+        throw "SHA256 do ZIP divergiu durante a promocao final."
+    }
+}
+catch {
+    $PromotionFailure = $_
+    try {
+        if ($ZipPromoted -and (Test-Path -LiteralPath $EngineeringZip)) {
+            Move-Item -LiteralPath $EngineeringZip -Destination $ValidatedZip
+        }
+        if ($FolderPromoted -and (Test-Path -LiteralPath $EngineeringRoot)) {
+            Move-Item -LiteralPath $EngineeringRoot -Destination $StagingRoot
+        }
+        if ($ZipBackedUp -and (Test-Path -LiteralPath $PreviousEngineeringZip)) {
+            Move-Item -LiteralPath $PreviousEngineeringZip -Destination $EngineeringZip
+        }
+        if ($FolderBackedUp -and (Test-Path -LiteralPath $PreviousEngineeringRoot)) {
+            Move-Item -LiteralPath $PreviousEngineeringRoot -Destination $EngineeringRoot
+        }
+    }
+    catch {
+        throw "Falha na promocao e no rollback da engineering build: $PromotionFailure / $_"
+    }
+    throw $PromotionFailure
+}
+if ($FolderBackedUp -and (Test-Path -LiteralPath $PreviousEngineeringRoot)) {
+    Remove-Item -LiteralPath $PreviousEngineeringRoot -Recurse -Force
+}
+if ($ZipBackedUp -and (Test-Path -LiteralPath $PreviousEngineeringZip)) {
+    Remove-Item -LiteralPath $PreviousEngineeringZip -Force
+}
 Write-Host "Build de engenharia concluida: $EngineeringRoot"
 Write-Host "ZIP de engenharia: $EngineeringZip"
 Write-Host "SHA256 ZIP: $($ZipHash.Hash)"

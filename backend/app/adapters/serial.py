@@ -68,7 +68,7 @@ class SerialJsonAdapter(DeviceAdapter):
                 continue
             try:
                 reading = self.parse_message(line)
-                self.last_message_at = reading.timestamp
+                self.last_message_at = reading.received_timestamp
                 self.message_count += 1
                 yield reading
             except (ValueError, KeyError, json.JSONDecodeError, UnicodeDecodeError):

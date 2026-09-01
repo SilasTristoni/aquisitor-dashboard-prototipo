@@ -11,11 +11,10 @@ vi.mock("recharts", () => {
 });
 const now = Date.now();
 const temperatures = Array<number | null>(32).fill(null);
-[23.2, 23.7, 23.8, 26.5, 35.6, 28.1, 24.4, 21.9].forEach((value, index) => { temperatures[index + 24] = value; });
+[21.79, 21.62, 21.38, 21.34, 21.57, 21.71, 21.90, 22.19].forEach((value, index) => { temperatures[index + 24] = value; });
 vi.mock("../hooks/useLive", () => ({ useLive: () => ({ connection: "connected", lastAlert: null, setReadings: vi.fn(), readings: [
-  { timestamp: new Date(now - 2000).toISOString(), device_id: 2, source_role: "electrical", raw_power: 17.7, raw_power_unit: "W", power_w: 17.7, temperatures_c: [], quality: "good" },
-  { timestamp: new Date(now - 1000).toISOString(), device_id: 2, source_role: "electrical", raw_power: 17.9, raw_power_unit: "W", power_w: 17.9, temperatures_c: [], quality: "good" },
-  { timestamp: new Date(now - 1500).toISOString(), device_id: 1, source_role: "temperature", raw_power: null, raw_power_unit: "W", power_w: null, temperatures_c: temperatures, channel_quality: temperatures.map((value) => value == null ? "unknown_unavailable" : "good"), quality: "good" },
+  { timestamp: new Date(now - 1000).toISOString(), device_id: 2, source_role: "electrical", raw_power: 17.688, raw_power_unit: "W", power_w: 17.688, temperatures_c: [], quality: "missing" },
+  { timestamp: new Date(now - 1500).toISOString(), device_id: 1, source_role: "temperature", raw_power: null, raw_power_unit: "W", power_w: null, temperatures_c: temperatures, channel_quality: temperatures.map((value) => value == null ? "open_sensor" : "good"), quality: "good" },
 ] }) }));
 vi.mock("../api", async () => {
   const actual = await vi.importActual<any>("../api");
@@ -33,9 +32,11 @@ vi.mock("../api", async () => {
 test("combina potência do GPM e temperatura do AT sem fabricar zero", async () => {
   render(<DashboardPage/>);
   expect(await screen.findAllByText("AT4532 LAB")).not.toHaveLength(0);
-  expect(screen.getAllByText("17.9 W").length).toBeGreaterThanOrEqual(1);
-  expect(screen.getByText("23.2°")).toBeInTheDocument();
-  expect(screen.getByText("35.6 °C")).toBeInTheDocument();
+  expect(screen.getAllByText("17.7 W").length).toBeGreaterThanOrEqual(1);
+  expect(screen.getByText("21.8°")).toBeInTheDocument();
+  expect(screen.getByText("21.7 °C")).toBeInTheDocument();
+  expect(screen.getByText("22.2 °C")).toBeInTheDocument();
+  expect(screen.getByText("8 canais com leitura")).toBeInTheDocument();
   expect(screen.getByText("CH32")).toBeInTheDocument();
   expect(screen.queryByText("0.0 °C")).not.toBeInTheDocument();
   expect(screen.getByText("WebSocket conectado")).toBeInTheDocument();

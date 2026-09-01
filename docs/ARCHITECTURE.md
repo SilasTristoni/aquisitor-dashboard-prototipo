@@ -55,7 +55,9 @@ O backend é a autoridade sobre autenticação, dispositivo, sessão, aquisiçã
 - **API stateless com JWT:** simples para SPA e preparada para implantação distribuída. Token curto e identidade/role validados em cada rota.
 - **SQLAlchemy 2 + Alembic:** portabilidade SQLite/PostgreSQL, migrations auditáveis e consultas parametrizadas.
 - **Adaptadores assíncronos:** o protocolo físico não contamina regras de negócio. O contrato retorna um payload canônico validado.
-- **Um worker de aquisição por dispositivo:** evita leituras duplicadas. A primeira entrega limita execução local a um processo; produção multi-instância exigirá coordenação externa.
+- **Um worker de aquisição por dispositivo:** locks assíncronos por `device_id` serializam
+  conexão/desconexão e evitam tasks ou portas COM órfãs em solicitações concorrentes. A primeira
+  entrega limita execução local a um processo; produção multi-instância exigirá coordenação externa.
 - **WebSocket tipado:** envelopes possuem `type`, `timestamp` e `payload`; filas limitadas evitam crescimento causado por cliente lento.
 - **Agregação no backend:** endpoints de séries aceitam janela e limite de pontos. Listagens usam paginação por página.
 - **Estatística incremental:** contagem, soma, mínimo e máximo são atualizados durante aquisição; análises mais caras são calculadas sob demanda no backend.
@@ -78,7 +80,12 @@ Medições possuem índices por sessão/tempo. Aquisição usa lotes curtos e o 
 
 ## Limites arquiteturais atuais
 
-- Protocolo, driver, identificadores, framing e tolerâncias do equipamento real são desconhecidos.
-- Serial é validável somente com porta e amostras reais.
+- O GPM-8213 foi validado fisicamente com firmware V1.05; alterações futuras continuam sujeitas
+  ao gate de fixtures físicas para preservar a abreviação SCPI observada.
+- O `FETCH?` do AT4532 foi confirmado como frame `TCP-32` em CP936, com 32 posições primárias.
+  A semântica dos 34 campos auxiliares permanece desconhecida e eles são preservados apenas como
+  raw. A identidade por `*IDN?` permanece `unconfirmed` no equipamento observado.
+- A build é de engenharia: valores, estabilidade, driver/firmware e comportamento prolongado
+  ainda exigem homologação no computador e nos instrumentos da cliente.
 - Alta disponibilidade e múltiplos workers exigirão Redis/filas ou locking distribuído.
 - Assinatura digital, trilha regulatória e requisitos metrológicos dependem do mercado de destino.

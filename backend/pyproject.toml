@@ -2,6 +2,9 @@
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "physical_regression_fixtures: mandatory hardware-derived engineering-build gate",
+]
 
 [tool.ruff]
 line-length = 100

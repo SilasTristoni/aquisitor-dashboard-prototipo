@@ -1,7 +1,6 @@
 # GPM-8213 — protocolo físico de engenharia
 
-Status: `vendor_documented`. Identidade validada fisicamente em 2026-08-11; medição
-NUMERIC permanece com `physical_validation = pending`.
+Status: `vendor_documented`; identidade e cadeia NUMERIC validadas fisicamente no firmware V1.05.
 
 ## Evidência física recebida
 
@@ -13,6 +12,9 @@ NUMERIC permanece com `physical_validation = pending`.
   solicitada passou a ser `U,I,P,S,FU,LAMBDA,Q,FI`; `HEADER?` continua soberano.
 - O firmware V1.05 respondeu fisicamente `Urms,Irms,P,S,fU,PF,Q,fI`. O raw é preservado;
   internamente esses aliases são canonicalizados, sem exigir igualdade textual com o solicitado.
+- O mesmo firmware respondeu `:NUM:NORM:NUMB 8` a `:NUMERIC:NORMAL:NUMBER?`. O parser aceita
+  estritamente o valor puro, o caminho SCPI longo equivalente ou essa abreviação SCPI; texto
+  arbitrário terminado em número é rejeitado.
 - Uma resposta de identidade antiga chegou durante `VALUE?`; ela agora é classificada como
   `unexpected_response_type`/`possible_stale_response` antes do parser numérico.
 
@@ -56,7 +58,7 @@ Todos usam ASCII e TX terminado em `0D 0A`.
 |---|---|---|---|---|
 | Identidade | `*IDN?` | `GWINSTEK,GPM-8213,<serial>,<firmware>`; 4 campos/modelo estrito | — | p.75 |
 | Quantidade | `:NUMERIC:NORMAL:NUMBER 8` | comando set, sem RX esperado | — | p.97 |
-| Verificar quantidade | `:NUMERIC:NORMAL:NUMBER?` | 1–34; aceita valor ou eco SCPI e exige resultado 8 | — | p.97 |
+| Verificar quantidade | `:NUMERIC:NORMAL:NUMBER?` | 1–34; aceita valor ou eco semântico longo/abreviado e exige 8 | — | p.97 |
 | Vrms | `:NUMERIC:NORMAL:ITEM1 U` | item 1 da resposta NR3 | V | p.97–99 |
 | Irms | `:NUMERIC:NORMAL:ITEM2 I` | item 2 | A | p.97–99 |
 | P | `:NUMERIC:NORMAL:ITEM3 P` | item 3 | W | p.97–99 |
@@ -77,9 +79,10 @@ então `VALUE?`. O parser associa `HEADER[i]` a `VALUE[i]`; não depende de posi
 não-ASCII, modelo diferente, valor infinito ou tipo incompatível são rejeitadas antes da
 normalização.
 
-Fixture física de referência do PowerMeterSeries: `U,I,P,S,FU,LAMBDA,Q,FI` com
-`126.86,2.0199,256.07,256.25,59.989,0.9993,-9.5985,59.988`. Ela protege especialmente
-contra inversão de frequência, fator de potência e potência reativa, preservando o sinal de VAR.
+Fixture física obrigatória V1.05: `127.58,0.24002,17.688,30.622,59.993,0.5776,24.997,NAN`
+sob `Urms,Irms,P,S,fU,PF,Q,fI`. Ela protege a sequência completa, o mapeamento de grandezas e o
+tratamento de `NAN`. A referência anterior do PowerMeterSeries continua coberta para preservar o
+sinal de VAR e prevenir inversão entre frequência, fator de potência e potência reativa.
 
 Aliases confirmados no RX V1.05: `Urms→voltage`, `Irms→current`, `P→power`,
 `S→apparent_power`, `fU→voltage_frequency`, `PF→power_factor`,
@@ -95,4 +98,4 @@ delay declarado como propriedade do instrumento; a serialização é política d
 O INF oficial associa `VID_2184&PID_0052` ao driver `usbser`. A aplicação localiza primeiro o
 serial `GES913349`, atualiza a COM atual e só então abre a porta. A consulta ocorre a cada ~1 s.
 Não há dependência permanente de COM3. Identidade/SCPI básico foram confirmados no firmware
-V1.05; quantidade, cabeçalhos e valores reais continuam pendentes do próximo ensaio.
+V1.05; quantidade, cabeçalhos e valores reais conhecidos fazem parte do gate de regressão física.

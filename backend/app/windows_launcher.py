@@ -58,7 +58,7 @@ def _configure_environment(runtime: Path, application: Path) -> None:
     for path in (data, logs, reports):
         path.mkdir(parents=True, exist_ok=True)
     os.environ["THERMOPOWER_APP_DATA_DIR"] = str(application.resolve())
-    os.environ.setdefault("THERMOPOWER_ENVIRONMENT", "windows-beta")
+    os.environ.setdefault("THERMOPOWER_ENVIRONMENT", "physical-alpha")
     database_url = f"sqlite:///{(data / 'thermopower.db').as_posix()}"
     os.environ.setdefault("THERMOPOWER_DATABASE_URL", database_url)
     os.environ.setdefault("THERMOPOWER_REPORT_OUTPUT_DIRECTORY", str(reports))

@@ -33,8 +33,24 @@ class RealSerialDiagnosticService:
     def __init__(self, serial_factory: Callable[..., Any] | None = None) -> None:
         self.serial_factory = serial_factory
         self.sessions: dict[str, DiagnosticSession] = {}
+        self.pending_close_transports: dict[str, list[SerialTransport]] = {}
         self.previously_opened_ports: set[str] = set()
         self._lock = asyncio.Lock()
+
+    async def _retry_pending_closes(self, port: str | None = None) -> bool:
+        keys = [port.casefold()] if port is not None else list(self.pending_close_transports)
+        for port_key in keys:
+            pending = self.pending_close_transports.get(port_key, [])
+            for transport in list(pending):
+                try:
+                    await transport.close()
+                except Exception:
+                    logger.exception("serial diagnostic close retry failed port=%s", port_key)
+                else:
+                    pending.remove(transport)
+            if not pending:
+                self.pending_close_transports.pop(port_key, None)
+        return not any(self.pending_close_transports.get(key) for key in keys)
 
     async def open(
         self,
@@ -44,6 +60,11 @@ class RealSerialDiagnosticService:
         physical_validation: str = "parameters_confirmed",
     ) -> dict[str, Any]:
         async with self._lock:
+            if not await self._retry_pending_closes(configuration.port):
+                raise SerialTransportError(
+                    "port_close_pending",
+                    "A porta do diagnóstico anterior ainda não pôde ser liberada.",
+                )
             if any(
                 session.transport.configuration.port.casefold() == configuration.port.casefold()
                 for session in self.sessions.values()
@@ -52,7 +73,18 @@ class RealSerialDiagnosticService:
                     "diagnostic_already_open", "A porta já está aberta neste diagnóstico."
                 )
             transport = SerialTransport(configuration, self.serial_factory)
-            elapsed_ms = await transport.open()
+            try:
+                elapsed_ms = await transport.open()
+            except Exception:
+                try:
+                    await transport.close()
+                except Exception:
+                    port_key = configuration.port.casefold()
+                    self.pending_close_transports.setdefault(port_key, []).append(transport)
+                    logger.exception(
+                        "serial diagnostic open cleanup failed port=%s", configuration.port
+                    )
+                raise
             identifier = uuid.uuid4().hex
             port_key = configuration.port.casefold()
             reconnect = port_key in self.previously_opened_ports
@@ -146,12 +178,13 @@ class RealSerialDiagnosticService:
 
     async def close(self, session_id: str) -> dict[str, Any]:
         async with self._lock:
-            session = self.sessions.pop(session_id, None)
-        if not session:
-            raise SerialTransportError(
-                "diagnostic_session_not_found", "Sessão de diagnóstico não encontrada."
-            )
-        await session.transport.close()
+            session = self.sessions.get(session_id)
+            if not session:
+                raise SerialTransportError(
+                    "diagnostic_session_not_found", "Sessão de diagnóstico não encontrada."
+                )
+            await session.transport.close()
+            self.sessions.pop(session_id, None)
         logger.info("serial diagnostic closed port=%s", session.transport.configuration.port)
         return {
             "session_id": session_id,
@@ -170,6 +203,7 @@ class RealSerialDiagnosticService:
                 await self.close(session_id)
             except SerialTransportError:
                 logger.exception("serial diagnostic shutdown failed session=%s", session_id)
+        await self._retry_pending_closes()
 
 
 def _safe_ascii(payload: bytes) -> str:

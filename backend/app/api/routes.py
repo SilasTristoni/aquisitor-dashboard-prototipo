@@ -68,13 +68,22 @@ from app.schemas.contracts import (
     SerialDiagnosticOpenRequest,
     SerialDiagnosticReadRequest,
     SessionCreate,
+    SessionStartResult,
     SimulatorConfigInput,
+    SourceConnectionRequest,
+    SourceConnectionResult,
     TokenResponse,
     UsbAssociationRequest,
     UserCreate,
     UserRead,
 )
 from app.services.acquisition import acquisition_service
+from app.services.device_policy import (
+    AT4532_PENDING_PROTOCOL_STATUS,
+    at4532_has_current_measurement_verification,
+    invalidate_stale_at4532_verification,
+    mark_at4532_verified_by_measurement,
+)
 from app.services.diagnostic_export import create_diagnostic_zip
 from app.services.imports import create_import_session
 from app.services.period_documents import (
@@ -95,6 +104,51 @@ router = APIRouter(prefix="/api/v1")
 settings = get_settings()
 Db = Annotated[Session, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
+_AT4532_SERVER_METADATA_FIELDS = {
+    "physical_validation",
+    "protocol_status",
+    "protocol_verified_at",
+    "protocol_verification",
+    "usb",
+}
+
+
+def _device_input_metadata(payload: DeviceInput) -> dict:
+    metadata = dict(payload.metadata)
+    if payload.protocol == "at4532_serial":
+        for field in _AT4532_SERVER_METADATA_FIELDS:
+            metadata.pop(field, None)
+        metadata.pop("serial", None)
+        metadata["protocol_status"] = AT4532_PENDING_PROTOCOL_STATUS
+        metadata["physical_validation"] = "pending"
+    if payload.serial_settings is not None:
+        metadata["serial"] = payload.serial_settings.model_dump()
+    return metadata
+
+
+def _source_protocol_error(role: str, device: Device) -> str | None:
+    if role == "electrical" and device.protocol == "at4532_serial":
+        return "O AT4532 não pode ser usado como fonte elétrica."
+    if role == "thermal" and device.protocol == "gpm8213_serial":
+        return "O GPM-8213 não pode ser usado como fonte térmica."
+    return None
+
+
+def _source_failure(device_id: int, message: str) -> dict:
+    return {
+        "device_id": device_id,
+        "requested": True,
+        "success": False,
+        "status": "error",
+        "error": message,
+        "runtime_status": None,
+    }
+
+
+def _update_connection_overall(result: dict) -> dict:
+    successes = sum(result[role]["success"] for role in ("electrical", "thermal"))
+    result["overall"] = "both" if successes == 2 else "partial" if successes else "none"
+    return result
 
 
 async def _safe_upload(upload: UploadFile, extension: str) -> bytes:
@@ -226,9 +280,7 @@ def list_devices(db: Db, _: CurrentUser) -> list[dict]:
 
 @router.post("/devices", status_code=201)
 def create_device(payload: DeviceInput, db: Db, _: User = Depends(require_roles("admin"))) -> dict:
-    metadata = dict(payload.metadata)
-    if payload.serial_settings is not None:
-        metadata["serial"] = payload.serial_settings.model_dump()
+    metadata = _device_input_metadata(payload)
     device = Device(
         name=payload.name,
         manufacturer=payload.manufacturer,
@@ -366,12 +418,35 @@ def update_device(
     device = db.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+    current_metadata = dict(device.metadata_json or {})
+    preserved_at4532_metadata = {}
+    if device.protocol == "at4532_serial":
+        for field in ("usb", "physical_validation"):
+            if field in current_metadata:
+                value = current_metadata[field]
+                preserved_at4532_metadata[field] = dict(value) if isinstance(value, dict) else value
+        if payload.serial_settings is None and "serial" in current_metadata:
+            preserved_at4532_metadata["serial"] = dict(current_metadata["serial"])
+    preserved_verification = {}
+    if (
+        device.protocol == "at4532_serial"
+        and at4532_has_current_measurement_verification(device)
+    ):
+        preserved_verification = {
+            field: current_metadata[field]
+            for field in _AT4532_SERVER_METADATA_FIELDS
+            if field in current_metadata
+        }
     for field, value in payload.model_dump(exclude={"metadata", "serial_settings"}).items():
         setattr(device, field, value)
-    metadata = dict(payload.metadata)
-    if payload.serial_settings is not None:
-        metadata["serial"] = payload.serial_settings.model_dump()
+    metadata = _device_input_metadata(payload)
+    if payload.protocol == "at4532_serial":
+        metadata.update(preserved_at4532_metadata)
+        if preserved_verification:
+            metadata.update(preserved_verification)
     device.metadata_json = metadata
+    if payload.protocol == "at4532_serial":
+        invalidate_stale_at4532_verification(device)
     db.commit()
     db.refresh(device)
     return _device_dict(device)
@@ -410,6 +485,40 @@ async def connect_device(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.post("/devices/connect-sources")
+async def connect_device_sources(
+    payload: SourceConnectionRequest,
+    db: Db,
+    _: User = Depends(require_roles("admin", "operator")),
+) -> SourceConnectionResult:
+    valid_ids: dict[str, int | None] = {"electrical": None, "thermal": None}
+    failures: dict[str, dict] = {}
+    requested_ids = {
+        "electrical": payload.electrical_device_id,
+        "thermal": payload.thermal_device_id,
+    }
+    for role, device_id in requested_ids.items():
+        if device_id is None:
+            continue
+        device = db.get(Device, device_id)
+        if not device or not device.active:
+            failures[role] = _source_failure(
+                device_id, "Equipamento não encontrado ou inativo."
+            )
+            continue
+        if protocol_error := _source_protocol_error(role, device):
+            failures[role] = _source_failure(device_id, protocol_error)
+            continue
+        valid_ids[role] = device_id
+
+    result = await acquisition_service.connect_sources(
+        electrical_device_id=valid_ids["electrical"],
+        thermal_device_id=valid_ids["thermal"],
+    )
+    result.update(failures)
+    return SourceConnectionResult.model_validate(_update_connection_overall(result))
+
+
 @router.post("/devices/{device_id}/disconnect", status_code=204)
 async def disconnect_device(
     device_id: int, _: User = Depends(require_roles("admin", "operator"))
@@ -437,7 +546,17 @@ async def run_documented_protocol_probe(
         usb_discovery_service.discover(db, _active_device_ports(db))
         db.refresh(device)
     try:
-        return await protocol_probe_service.run(device, payload.mode)
+        report = await protocol_probe_service.run(device, payload.mode)
+        if (
+            device.protocol == "at4532_serial"
+            and report.get("result") in {"passed", "passed_with_warning"}
+            and report.get("transport_closed") is True
+            and report.get("protocol_status") == "verified_by_measurement"
+            and report.get("readings")
+        ):
+            mark_at4532_verified_by_measurement(device, report["timestamp"])
+            db.commit()
+        return report
     except (ValueError, RuntimeError, ConnectionError, OSError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -796,7 +915,7 @@ def list_sessions(
 @router.post("/sessions", status_code=201)
 async def start_session(
     payload: SessionCreate, db: Db, user: User = Depends(require_roles("admin", "operator"))
-) -> dict:
+) -> SessionStartResult:
     roles: list[tuple[str, int]] = []
     if payload.temperature_device_id:
         roles.append(("temperature", payload.temperature_device_id))
@@ -805,12 +924,23 @@ async def start_session(
     if payload.device_id and not roles:
         roles.append(("combined", payload.device_id))
     devices: list[tuple[str, Device]] = []
+    preflight_failures: dict[str, dict] = {}
     for role, device_id in roles:
         device = db.get(Device, device_id)
         if not device or not device.active:
-            raise HTTPException(
-                status_code=404, detail=f"Equipamento {role} não encontrado ou inativo"
+            if role == "combined":
+                raise HTTPException(
+                    status_code=404, detail=f"Equipamento {role} não encontrado ou inativo"
+                )
+            result_role = "thermal" if role == "temperature" else role
+            preflight_failures[result_role] = _source_failure(
+                device_id, "Equipamento não encontrado ou inativo."
             )
+            continue
+        result_role = "thermal" if role == "temperature" else role
+        if role != "combined" and (protocol_error := _source_protocol_error(result_role, device)):
+            preflight_failures[result_role] = _source_failure(device_id, protocol_error)
+            continue
         active = db.scalar(
             select(MeasurementSession)
             .outerjoin(SessionDevice, SessionDevice.session_id == MeasurementSession.id)
@@ -822,10 +952,23 @@ async def start_session(
             )
         )
         if active:
-            raise HTTPException(
-                status_code=409, detail=f"Já existe uma sessão ativa para {device.name}"
+            if role == "combined":
+                raise HTTPException(
+                    status_code=409, detail=f"Já existe uma sessão ativa para {device.name}"
+                )
+            preflight_failures[result_role] = _source_failure(
+                device_id, f"Já existe uma sessão ativa para {device.name}."
             )
+            continue
         devices.append((role, device))
+    if not devices:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Nenhuma fonte solicitada está disponível para iniciar a sessão.",
+                "sources": preflight_failures,
+            },
+        )
     primary_device = devices[0][1]
     values = payload.model_dump(
         exclude={"device_id", "temperature_device_id", "electrical_device_id"}
@@ -873,24 +1016,126 @@ async def start_session(
     )
     db.commit()
     db.refresh(session)
-    attached_device_ids: list[int] = []
-    try:
-        for _, device in devices:
-            await acquisition_service.attach_session(device.id, session.id)
-            attached_device_ids.append(device.id)
-    except Exception:
-        for device_id in attached_device_ids:
-            await acquisition_service.detach_session(device_id)
+    if payload.device_id and not (
+        payload.temperature_device_id or payload.electrical_device_id
+    ):
+        device_id = payload.device_id
+        try:
+            await acquisition_service.attach_session(device_id, session.id)
+            runtime_status = await acquisition_service.status(device_id)
+            source_result = {
+                "device_id": device_id,
+                "requested": True,
+                "success": bool(runtime_status.get("connected")),
+                "status": "connected" if runtime_status.get("connected") else "error",
+                "error": None
+                if runtime_status.get("connected")
+                else "A fonte nao permaneceu conectada.",
+                "runtime_status": runtime_status,
+            }
+        except Exception as exc:
+            source_result = {
+                "device_id": device_id,
+                "requested": True,
+                "success": False,
+                "status": "error",
+                "error": str(exc),
+                "runtime_status": None,
+            }
+        connection = {
+            "electrical": dict(source_result),
+            "thermal": dict(source_result),
+            "overall": "both" if source_result["success"] else "none",
+        }
+    else:
+        connection = await acquisition_service.attach_session_sources(
+            session_id=session.id,
+            electrical_device_id=next(
+                (device.id for role, device in devices if role == "electrical"), None
+            ),
+            thermal_device_id=next(
+                (device.id for role, device in devices if role == "temperature"), None
+            ),
+        )
+        connection.update(preflight_failures)
+        _update_connection_overall(connection)
+
+    successful_device_ids = [
+        source["device_id"]
+        for role in ("electrical", "thermal")
+        if (source := connection[role])["success"]
+    ]
+    if connection["overall"] != "both" and not payload.device_id:
+        failed_roles = []
+        if connection["electrical"]["requested"] and not connection["electrical"]["success"]:
+            failed_roles.append("electrical")
+        if connection["thermal"]["requested"] and not connection["thermal"]["success"]:
+            failed_roles.append("temperature")
+        if failed_roles:
+            removable_failed_roles = []
+            for role in failed_roles:
+                result_role = "thermal" if role == "temperature" else role
+                failed_device_id = connection[result_role]["device_id"]
+                runtime = acquisition_service.runtimes.get(failed_device_id)
+                if runtime is None or runtime.session_id != session.id:
+                    removable_failed_roles.append(role)
+            db.execute(
+                delete(SessionDevice).where(
+                    SessionDevice.session_id == session.id,
+                    SessionDevice.role.in_(removable_failed_roles),
+                )
+            )
+            if "temperature" in removable_failed_roles:
+                db.execute(
+                    delete(SessionChannelConfiguration).where(
+                        SessionChannelConfiguration.session_id == session.id
+                    )
+                )
+    if successful_device_ids:
+        session.device_id = successful_device_ids[0]
+        requested_failures = any(
+            source["requested"] and not source["success"]
+            for source in (connection["electrical"], connection["thermal"])
+        )
+        if requested_failures:
+            db.add(
+                SystemEvent(
+                    session_id=session.id,
+                    device_id=session.device_id,
+                    level="warning",
+                    category="session_partial",
+                    message="Sessao iniciada com uma unica fonte disponivel",
+                    details={"connection": connection},
+                )
+            )
+    else:
         session.status = "failed"
         session.ended_at = datetime.now(UTC)
-        db.commit()
-        raise
-    return {
+        db.add(
+            SystemEvent(
+                session_id=session.id,
+                device_id=session.device_id,
+                level="error",
+                category="session_failed",
+                message="Nenhuma fonte pode ser anexada a sessao",
+                details={"connection": connection},
+            )
+        )
+    db.commit()
+    db.refresh(session)
+    return SessionStartResult.model_validate({
         "id": session.id,
+        "device_id": session.device_id,
         "status": session.status,
         "started_at": session.started_at,
-        "devices": [{"role": role, "device": _device_dict(device)} for role, device in devices],
-    }
+        "devices": [
+            {"role": role, "device": _device_dict(device)}
+            for role, device in devices
+            if role == "combined"
+            or connection["thermal" if role == "temperature" else role]["success"]
+        ],
+        "connection": connection,
+    })
 
 
 @router.get("/sessions/{session_id}")
@@ -943,27 +1188,100 @@ async def _transition(session_id: int, target: str, db: Session) -> MeasurementS
         raise HTTPException(
             status_code=409, detail=f"Transição {session.status} → {target} não permitida"
         )
-    session.status = target
+    previous_status = session.status
     device_ids = _session_device_ids(db, session)
+    source_errors: list[dict] = []
+    successful_device_ids: list[int] = []
     if target == "paused":
         for device_id in device_ids:
-            await acquisition_service.pause_session(device_id)
+            try:
+                await acquisition_service.pause_session(device_id)
+                successful_device_ids.append(device_id)
+            except Exception as exc:
+                source_errors.append(
+                    {"device_id": device_id, "operation": target, "error": str(exc)}
+                )
+        if source_errors:
+            for device_id in successful_device_ids:
+                try:
+                    await acquisition_service.resume_session(device_id, session.id)
+                except Exception as exc:
+                    source_errors.append(
+                        {
+                            "device_id": device_id,
+                            "operation": "pause_rollback",
+                            "error": str(exc),
+                        }
+                    )
+            session.status = previous_status
+        else:
+            session.status = target
     elif target == "running":
         for device_id in device_ids:
-            await acquisition_service.resume_session(device_id, session.id)
+            try:
+                await acquisition_service.resume_session(device_id, session.id)
+                successful_device_ids.append(device_id)
+            except Exception as exc:
+                source_errors.append(
+                    {"device_id": device_id, "operation": target, "error": str(exc)}
+                )
+        session.status = target if successful_device_ids else previous_status
     else:
-        session.ended_at = datetime.now(UTC)
         for device_id in device_ids:
-            await acquisition_service.detach_session(device_id)
+            try:
+                await acquisition_service.detach_session(device_id)
+                successful_device_ids.append(device_id)
+            except Exception as exc:
+                source_errors.append(
+                    {"device_id": device_id, "operation": target, "error": str(exc)}
+                )
+        if source_errors:
+            for device_id in successful_device_ids:
+                try:
+                    await acquisition_service.attach_session(device_id, session.id)
+                except Exception as exc:
+                    source_errors.append(
+                        {
+                            "device_id": device_id,
+                            "operation": f"{target}_rollback",
+                            "error": str(exc),
+                        }
+                    )
+            session.status = previous_status
+            session.ended_at = None
+        else:
+            session.status = target
+            session.ended_at = datetime.now(UTC)
+    for source_error in source_errors:
+        db.add(
+            SystemEvent(
+                session_id=session.id,
+                device_id=source_error["device_id"],
+                level="error",
+                category="session_source_error",
+                message=f"Falha isolada da fonte durante {target}",
+                details=source_error,
+            )
+        )
     db.add(
         SystemEvent(
             session_id=session.id,
             device_id=session.device_id,
-            category=f"session_{target}",
-            message=f"Sessão alterada para {target}",
+            category=f"session_{target}"
+            if session.status == target
+            else f"session_{target}_failed",
+            message=f"Sessão alterada para {session.status}",
         )
     )
     db.commit()
+    if session.status != target:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": f"A transição para {target} não foi concluída.",
+                "source_errors": source_errors,
+            },
+        )
     return session
 
 

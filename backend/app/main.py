@@ -16,7 +16,10 @@ from app.core.database import Base, SessionLocal, engine
 from app.core.security import hash_password
 from app.models.entities import AlertRule, ChannelConfiguration, Device, User
 from app.services.acquisition import acquisition_service
+from app.services.device_policy import invalidate_stale_at4532_verification
+from app.services.protocol_probe import protocol_probe_service
 from app.services.serial_diagnostic import real_serial_diagnostic_service
+from app.services.usb_discovery import usb_discovery_service
 
 settings = get_settings()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -105,7 +108,7 @@ def seed_database() -> None:
                         "timeout_s": 1,
                         "read_timeout_s": 2,
                         "line_terminator": "LF (0x0A)",
-                        "framing": "SCPI ASCII",
+                        "framing": "SCPI ASCII TX; ASCII simple or TCP-32 CP936 RX",
                         "parameters_source": "vendor_documented",
                     },
                     "expected_interval_ms": 3000,
@@ -128,6 +131,11 @@ def seed_database() -> None:
                     )
                 )
         at_metadata = dict(at4532.metadata_json or {})
+        at_protocol_status = (
+            "verified_by_measurement"
+            if at_metadata.get("protocol_status") == "verified_by_measurement"
+            else "vendor_documented_physical_validation_pending"
+        )
         at_metadata.update(
             {
                 "serial": {
@@ -137,17 +145,18 @@ def seed_database() -> None:
                     "timeout_s": 1,
                     "read_timeout_s": 2,
                     "line_terminator": "LF (0x0A)",
-                    "framing": "SCPI ASCII",
+                    "framing": "SCPI ASCII TX; ASCII simple or TCP-32 CP936 RX",
                     "parameters_source": "vendor_documented",
                 },
                 "expected_interval_ms": 3000,
                 "channel_count": 32,
-                "protocol_status": "vendor_documented_physical_validation_pending",
+                "protocol_status": at_protocol_status,
                 "physical_validation": "pending",
             }
         )
         at4532.metadata_json = at_metadata
         at4532.baud_rate = 19200
+        invalidate_stale_at4532_verification(at4532)
         gpm8213 = db.scalar(select(Device).where(Device.serial_number == "GES913349"))
         if not gpm8213:
             gpm8213 = Device(
@@ -213,9 +222,17 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(engine)
     seed_database()
     yield
+    usb_discovery_service.shutdown()
+    await protocol_probe_service.shutdown()
     await real_serial_diagnostic_service.shutdown()
     for device_id in list(acquisition_service.runtimes):
-        await acquisition_service.disconnect(device_id)
+        try:
+            await acquisition_service.disconnect(device_id)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "shutdown failed for acquisition device_id=%s", device_id
+            )
+    acquisition_service.last_connection_results.clear()
     logging.getLogger(__name__).info("shutdown complete")
     for handler in logging.getLogger().handlers:
         handler.flush()

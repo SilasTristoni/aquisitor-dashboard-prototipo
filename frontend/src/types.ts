@@ -36,6 +36,8 @@ export type Session = {
 export type PageResult<T> = { items: T[]; page: number; page_size: number; total: number; pages: number };
 export type Reading = {
   timestamp: string;
+  device_timestamp?: string | null;
+  received_timestamp?: string;
   device_id: number;
   session_id?: number;
   raw_power: number | null;
@@ -48,6 +50,45 @@ export type Reading = {
   device_protocol?: string;
   source_role?: "temperature" | "electrical" | "combined";
   raw_payload?: Record<string, unknown>;
+  ambient_temperature_c?: number | null;
+};
+
+export type RuntimeStatus = {
+  device_id: number;
+  state: string;
+  connected: boolean;
+  reading?: boolean;
+  last_message_at?: string;
+  messages_per_second?: number;
+  sample_count?: number;
+  valid_channels?: number;
+  last_error?: string | null;
+  identity_status?: string;
+  protocol_status?: string;
+};
+
+export type SourceConnectionOutcome = {
+  device_id: number | null;
+  requested: boolean;
+  success: boolean;
+  status: "connected" | "error" | "not_requested";
+  error: string | null;
+  runtime_status: RuntimeStatus | null;
+};
+
+export type SourceConnectionResult = {
+  electrical: SourceConnectionOutcome;
+  thermal: SourceConnectionOutcome;
+  overall: "both" | "partial" | "none";
+};
+
+export type SessionStartResult = {
+  id: number;
+  device_id: number;
+  status: string;
+  started_at: string;
+  devices: Array<{ role: string; device: Device }>;
+  connection: SourceConnectionResult;
 };
 
 export type Channel = {

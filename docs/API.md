@@ -11,6 +11,9 @@ Principais grupos:
 - `/auth/login`, `/auth/me`;
 - `/users`;
 - `/devices`, `/devices/{id}/connect|disconnect|test|status`;
+- `POST /devices/connect-sources` conecta as fontes elétrica e térmica de forma independente e
+  retorna `electrical`, `thermal` e `overall` (`both`, `partial` ou `none`), sem desfazer uma
+  conexão saudável quando a outra falha;
 - `/device-ports` (compatibilidade) e `/hardware/discovery` para enumerar portas, metadados,
   associação, disponibilidade e incerteza de identificação;
 - `POST /hardware/discovery/associate` para vincular uma porta atualmente descoberta;
@@ -32,6 +35,17 @@ Principais grupos:
 ## WebSocket
 
 Envelopes possuem `type`, `timestamp` e `payload`. Tipos atuais: `connection.ready`, `heartbeat`, `measurement.created`, `device.status`, `session.status` e `alert.created`. O cliente reconecta com backoff; o servidor mantém filas limitadas e remove o ponto mais antigo para clientes lentos.
+
+## Conexão e sessão com fontes independentes
+
+`POST /devices/connect-sources` aceita `electrical_device_id` e `thermal_device_id`. Cada fonte
+tem resultado próprio com `requested`, `success`, `status`, `error` e `runtime_status`; uma falha
+não executa rollback da outra e os dois IDs devem ser distintos. O início de sessão aplica a mesma
+política: remove o vínculo malsucedido somente depois de desfazer seu attach com segurança e
+devolve o objeto `connection`. Se um flush/fechamento falhar, o runtime e o vínculo são retidos para
+uma nova tentativa sem perder o buffer. A sessão fica
+`running` com uma ou duas fontes e fica `failed` somente quando nenhuma fonte solicitada pode ser
+anexada. Os timestamps e as quantidades de amostras permanecem independentes.
 
 ## Paginação e séries
 

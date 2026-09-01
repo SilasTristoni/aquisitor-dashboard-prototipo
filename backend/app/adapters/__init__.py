@@ -3,7 +3,9 @@ from app.adapters.serial import SerialCsvAdapter, SerialJsonAdapter
 from app.adapters.simulator import MockFailureAdapter, SimulatorAdapter
 from app.adapters.specific import (
     At4532Adapter,
+    At4532ChannelToken,
     At4532Normalizer,
+    At4532ParsedFrame,
     At4532Parser,
     At4532Protocol,
     At4532SerialAdapter,
@@ -29,7 +31,9 @@ __all__ = [
     "DeviceReading",
     "DeviceStatus",
     "At4532Adapter",
+    "At4532ChannelToken",
     "At4532Normalizer",
+    "At4532ParsedFrame",
     "At4532Parser",
     "At4532SerialAdapter",
     "At4532SerialTransport",

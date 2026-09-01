@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.entities import Device
+from app.services.device_policy import invalidate_stale_at4532_verification
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,28 @@ class UsbDeviceDiscoveryService:
     ) -> None:
         self.port_provider = port_provider or list_ports.comports
         self.serial_factory = serial_factory or serial.Serial
+        self.pending_close_connections: dict[str, list[Any]] = {}
+
+    def _retry_pending_closes(self, port: str | None = None) -> bool:
+        keys = [port.casefold()] if port is not None else list(self.pending_close_connections)
+        for port_key in keys:
+            pending = self.pending_close_connections.get(port_key, [])
+            for connection in list(pending):
+                try:
+                    if getattr(connection, "is_open", False):
+                        connection.close()
+                    if getattr(connection, "is_open", False):
+                        raise OSError("serial connection remained open")
+                except Exception:
+                    logger.exception("USB discovery close retry failed port=%s", port_key)
+                else:
+                    pending.remove(connection)
+            if not pending:
+                self.pending_close_connections.pop(port_key, None)
+        return not any(self.pending_close_connections.get(key) for key in keys)
+
+    def shutdown(self) -> None:
+        self._retry_pending_closes()
 
     def discover(self, db: Session, busy_ports: set[str] | None = None) -> list[dict[str, Any]]:
         busy_ports = {port.casefold() for port in (busy_ports or set())}
@@ -108,6 +131,8 @@ class UsbDeviceDiscoveryService:
                     item["port"],
                 )
                 device.port = item["port"]
+                if device.protocol == "at4532_serial":
+                    invalidate_stale_at4532_verification(device)
                 changed = True
         if changed:
             db.commit()
@@ -146,6 +171,8 @@ class UsbDeviceDiscoveryService:
         device.port = port
         device.connection_type = "serial"
         device.metadata_json = metadata
+        if device.protocol == "at4532_serial":
+            invalidate_stale_at4532_verification(device)
         db.commit()
         db.refresh(device)
         logger.info("usb association confirmed device_id=%s port=%s", device.id, port)
@@ -209,23 +236,46 @@ class UsbDeviceDiscoveryService:
             return "driver_missing", "A porta não foi enumerada corretamente."
         if port.casefold() in busy_ports:
             return "port_busy", "Porta em uso por uma aquisição ativa do ThermoPower."
+        if not self._retry_pending_closes(port):
+            return (
+                "port_busy",
+                "A porta ainda aguarda liberação de uma descoberta anterior.",
+            )
         connection = None
+        result = ("unavailable", "Não foi possível verificar a porta.")
         try:
             connection = self.serial_factory(port=port, timeout=0, write_timeout=0)
-            return "available", "Porta aberta e fechada sem envio de comandos."
+            result = ("available", "Porta aberta e fechada sem envio de comandos.")
         except (serial.SerialException, PermissionError, OSError) as exc:
             message = str(exc).lower()
             if any(
                 token in message for token in ("access", "permission", "denied", "busy", "used")
             ):
-                return (
+                result = (
                     "port_busy",
                     "Porta ocupada pelo software do fabricante. Feche-o antes de continuar.",
                 )
-            return "unavailable", "Não foi possível abrir a porta; verifique driver e conexão."
+            else:
+                result = (
+                    "unavailable",
+                    "Não foi possível abrir a porta; verifique driver e conexão.",
+                )
         finally:
             if connection is not None and getattr(connection, "is_open", False):
-                connection.close()
+                try:
+                    connection.close()
+                    if getattr(connection, "is_open", False):
+                        raise OSError("serial connection remained open")
+                except Exception:
+                    self.pending_close_connections.setdefault(port.casefold(), []).append(
+                        connection
+                    )
+                    logger.exception("USB discovery failed to close port=%s", port)
+                    result = (
+                        "unavailable",
+                        "A porta abriu, mas não pôde ser liberada; tente novamente.",
+                    )
+        return result
 
     @staticmethod
     def _suggestion(item: Any) -> dict[str, str | None]:

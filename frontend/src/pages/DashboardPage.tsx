@@ -4,7 +4,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { api, formatDuration } from "../api";
 import { ErrorNotice, Metric, PageHeader, Panel } from "../components/ui";
 import { useLive } from "../hooks/useLive";
-import type { Device, PageResult, Reading, Session } from "../types";
+import type { Device, PageResult, Reading, RuntimeStatus, Session, SessionStartResult, SourceConnectionResult } from "../types";
 import { buildCombinedView, numericStats, validTemperatures } from "../utils/combinedReadings";
 
 const windows = [
@@ -13,12 +13,7 @@ const windows = [
   { label: "Sessão", value: 0 },
 ];
 const channelColors = ["#ef4444", "#10b981", "#f59e0b", "#3b82f6", "#8b5cf6", "#ec4899", "#0891b2", "#65a30d"];
-
-type RuntimeStatus = {
-  device_id: number; state: string; connected: boolean; last_message_at?: string;
-  messages_per_second?: number; sample_count?: number; valid_channels?: number; last_error?: string;
-  identity_status?: string; protocol_status?: string;
-};
+type ActiveSession = Pick<Session, "id" | "device_id" | "status" | "started_at">;
 
 function elapsedLabel(timestamp: string | undefined, now: number) {
   if (!timestamp) return "sem leitura";
@@ -31,7 +26,7 @@ export default function DashboardPage() {
   const [electricalDeviceId, setElectricalDeviceId] = useState(0);
   const [temperatureDeviceId, setTemperatureDeviceId] = useState(0);
   const [statuses, setStatuses] = useState<Record<number, RuntimeStatus>>({});
-  const [activeSession, setActiveSession] = useState<Session | null>(null);
+  const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const [visualPaused, setVisualPaused] = useState(false);
   const [visualSnapshot, setVisualSnapshot] = useState<Reading[]>([]);
   const [windowSeconds, setWindowSeconds] = useState(300);
@@ -82,7 +77,7 @@ export default function DashboardPage() {
   const electricalDevice = devices.find((device) => device.id === electricalDeviceId);
   const temperatureDevice = devices.find((device) => device.id === temperatureDeviceId);
   const selectedIds = [...new Set([electricalDeviceId, temperatureDeviceId].filter(Boolean))];
-  const allConnected = selectedIds.length > 0 && selectedIds.every((id) => statuses[id]?.connected);
+  const allConnected = selectedIds.length > 0 && selectedIds.every((id) => statuses[id]?.connected && statuses[id]?.state !== "error");
 
   async function action(run: () => Promise<void>) {
     setBusy(true); setError("");
@@ -91,11 +86,37 @@ export default function DashboardPage() {
     finally { setBusy(false); }
   }
 
+  function applyConnectionStatuses(result: SourceConnectionResult) {
+    setStatuses((current) => {
+      const next = { ...current };
+      for (const source of [result.electrical, result.thermal]) {
+        if (!source.device_id) continue;
+        next[source.device_id] = source.runtime_status ?? {
+          device_id: source.device_id,
+          state: source.status,
+          connected: false,
+          last_error: source.error,
+        };
+      }
+      return next;
+    });
+  }
+
+  function requestedFailures(result: SourceConnectionResult) {
+    return [result.electrical, result.thermal].filter((source) => source.requested && !source.success);
+  }
+
   const connectAll = () => action(async () => {
-    const results = await Promise.allSettled(selectedIds.map((id) => api<RuntimeStatus>(`/devices/${id}/connect`, { method: "POST" })));
-    const failures = results.filter((result) => result.status === "rejected");
-    if (failures.length === results.length) throw new Error("Nenhuma fonte pôde ser conectada.");
-    if (failures.length) setError("Uma fonte falhou; a outra permanece disponível.");
+    const result = await api<SourceConnectionResult>("/devices/connect-sources", {
+      method: "POST",
+      body: JSON.stringify({
+        electrical_device_id: electricalDeviceId || undefined,
+        thermal_device_id: temperatureDeviceId || undefined,
+      }),
+    });
+    applyConnectionStatuses(result);
+    if (result.overall === "none") setError("Nenhuma fonte pôde ser conectada.");
+    else if (requestedFailures(result).length) setError("Uma fonte falhou; a outra permanece disponível.");
   });
   const disconnectOne = (deviceId: number) => action(async () => {
     await api(`/devices/${deviceId}/disconnect`, { method: "POST" });
@@ -107,10 +128,13 @@ export default function DashboardPage() {
       electrical_device_id: electricalDeviceId || undefined,
       temperature_device_id: temperatureDeviceId || undefined,
     };
-    const created = await api<any>("/sessions", { method: "POST", body: JSON.stringify({
+    const created = await api<SessionStartResult>("/sessions", { method: "POST", body: JSON.stringify({
       ...sources, name: `Ensaio combinado ${new Date().toLocaleDateString("pt-BR")}`, sample_interval_ms: 1000,
     }) });
-    setActiveSession({ ...created, device_id: electricalDeviceId || temperatureDeviceId } as Session);
+    applyConnectionStatuses(created.connection);
+    if (created.status === "failed") throw new Error("Nenhuma fonte está disponível para iniciar a sessão.");
+    if (requestedFailures(created.connection).length) setError("Sessão iniciada com a fonte disponível; a outra apresentou falha.");
+    setActiveSession(created);
   });
   const transition = (name: "pause" | "resume" | "finish") => action(async () => {
     const result = await api<any>(`/sessions/${activeSession!.id}/${name}`, { method: "POST" });
@@ -121,11 +145,12 @@ export default function DashboardPage() {
 
   const statusCard = (label: string, device: Device | undefined, reading: Reading | undefined) => {
     const status = device ? statuses[device.id] : undefined;
+    const sourceFailed = status?.state === "error" || Boolean(status?.last_error);
     const values = reading ? validTemperatures(reading) : [];
     return <div className="source-status">
-      <span className={`device-orb ${status?.connected ? "connected" : "disconnected"}`}><Radio /></span>
+      <span className={`device-orb ${status?.connected && !sourceFailed ? "connected" : "disconnected"}`}><Radio /></span>
       <div><span>{label}</span><strong>{device?.name ?? "Não selecionado"}</strong>
-        <small>{status?.connected ? "Conectado" : "Desconectado"} · {elapsedLabel(reading?.timestamp ?? status?.last_message_at, now)}</small>
+        <small>{sourceFailed ? "Falha nesta fonte" : status?.connected ? "Conectado" : "Desconectado"} · {elapsedLabel(reading?.timestamp ?? status?.last_message_at, now)}</small>
         {label === "AT4532" && <small>{values.length}/32 canais válidos</small>}
         {label === "AT4532" && <small>Identidade {status?.identity_status === "confirmed" ? "confirmada" : "não confirmada"} · protocolo {status?.protocol_status === "verified_by_measurement" ? "validado por medição" : status?.protocol_status ?? "pendente"}</small>}
         {label === "GPM-8213" && <small>{reading?.power_w == null ? "Potência indisponível" : `${reading.power_w.toFixed(1)} W`}</small>}

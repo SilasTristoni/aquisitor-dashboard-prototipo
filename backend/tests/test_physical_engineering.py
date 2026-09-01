@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import time
 import zipfile
 from pathlib import Path
@@ -964,7 +965,9 @@ def test_launcher_rejects_second_instance_and_writes_startup_log(tmp_path, monke
     before = set(logging.getLogger().handlers)
     application = tmp_path / "app"
     monkeypatch.setenv("THERMOPOWER_APP_DATA_DIR", str(application))
+    monkeypatch.delenv("THERMOPOWER_ENVIRONMENT", raising=False)
     _configure_environment(tmp_path, application)
+    assert os.environ["THERMOPOWER_ENVIRONMENT"] == "physical-alpha"
     added = [handler for handler in logging.getLogger().handlers if handler not in before]
     try:
         logging.getLogger("physical-test").info("startup diagnostic test")
@@ -1128,7 +1131,7 @@ def test_engineering_version_is_consistent_in_health_and_frontend(client):
     frontend = json.loads((repository / "frontend" / "package.json").read_text("utf-8"))
     response = client.get("/health")
 
-    assert expected == "0.5.4-physical-alpha"
+    assert expected == "0.5.5-physical-alpha"
     assert response.status_code == 200
     assert response.json()["version"] == expected
     assert frontend["version"] == expected
@@ -1241,7 +1244,7 @@ def test_complete_diagnostic_export_contains_required_sanitized_files(
     log_path = runtime / "logs" / "thermopower.log"
     log_path.parent.mkdir(parents=True)
     log_path.write_text(
-        "startup version=0.5.4-physical-alpha\n"
+        "startup version=0.5.5-physical-alpha\n"
         "COM open port=COM3\n"
         "protocol TX command=query_headers\n"
         "response classification actual=header_list\n"
@@ -1291,7 +1294,7 @@ def test_complete_diagnostic_export_contains_required_sanitized_files(
             "SHA256SUMS.txt",
         } <= names
         assert archive.read("summary.pdf").startswith(b"%PDF")
-        assert b"0.5.4-physical-alpha" in archive.read("application-version.txt")
+        assert b"0.5.5-physical-alpha" in archive.read("application-version.txt")
         recent_log = archive.read("recent-log.txt").decode("utf-8")
         assert "COM open port=COM3" in recent_log
         assert "response classification actual=header_list" in recent_log

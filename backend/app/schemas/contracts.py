@@ -91,7 +91,56 @@ class SessionCreate(BaseModel):
     def at_least_one_device(self) -> "SessionCreate":
         if not (self.device_id or self.temperature_device_id or self.electrical_device_id):
             raise ValueError("Selecione ao menos um equipamento")
+        if self.device_id and (self.temperature_device_id or self.electrical_device_id):
+            raise ValueError("Use device_id isoladamente ou selecione as fontes por papel")
+        if (
+            self.temperature_device_id
+            and self.electrical_device_id
+            and self.temperature_device_id == self.electrical_device_id
+        ):
+            raise ValueError("As fontes elétrica e térmica devem usar equipamentos distintos")
         return self
+
+
+class SourceConnectionRequest(BaseModel):
+    electrical_device_id: int | None = Field(default=None, gt=0)
+    thermal_device_id: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def at_least_one_source(self) -> "SourceConnectionRequest":
+        if not (self.electrical_device_id or self.thermal_device_id):
+            raise ValueError("Selecione ao menos uma fonte")
+        if (
+            self.electrical_device_id
+            and self.thermal_device_id
+            and self.electrical_device_id == self.thermal_device_id
+        ):
+            raise ValueError("As fontes elétrica e térmica devem usar equipamentos distintos")
+        return self
+
+
+class SourceConnectionOutcome(ApiModel):
+    device_id: int | None
+    requested: bool
+    success: bool
+    status: Literal["connected", "error", "not_requested"]
+    error: str | None
+    runtime_status: dict[str, Any] | None
+
+
+class SourceConnectionResult(ApiModel):
+    electrical: SourceConnectionOutcome
+    thermal: SourceConnectionOutcome
+    overall: Literal["both", "partial", "none"]
+
+
+class SessionStartResult(ApiModel):
+    id: int
+    device_id: int
+    status: str
+    started_at: datetime
+    devices: list[dict[str, Any]]
+    connection: SourceConnectionResult
 
 
 class ChannelInput(BaseModel):

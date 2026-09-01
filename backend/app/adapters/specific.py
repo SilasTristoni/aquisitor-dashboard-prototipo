@@ -1,7 +1,8 @@
-"""Vendor-documented AT4532 and GPM-8213 serial integrations.
+"""Reviewed AT4532 and GPM-8213 serial integrations.
 
-Physical validation remains pending until real instruments answer these documented queries.
-No undocumented fallback command or response sentinel is accepted here.
+Commands remain vendor documented. Response handling also covers the physically observed GPM
+SCPI abbreviation and the AT4532 TCP-32 CP936 frame without lossy decoding. Final homologation of
+values on the client instruments remains an explicit engineering step.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.adapters.base import DeviceAdapter, DeviceInformation, DeviceReading, DeviceStatus
 from app.adapters.transports import (
@@ -194,7 +196,7 @@ class Gpm8213Protocol:
             ) from exc
 
 
-def _single_ascii_line(payload: bytes, terminator: bytes) -> str:
+def _single_line_body(payload: bytes, terminator: bytes) -> bytes:
     if not payload.endswith(terminator):
         raise ProtocolResponseError("Resposta parcial: terminador oficial não recebido.")
     body = payload[: -len(terminator)]
@@ -206,6 +208,11 @@ def _single_ascii_line(payload: bytes, terminator: bytes) -> str:
         raise ProtocolResponseError("Foram recebidos múltiplos frames em uma única resposta.")
     if any(byte < 0x20 and byte != 0x09 for byte in body):
         raise ProtocolResponseError("Resposta contém caractere de controle inválido.")
+    return body
+
+
+def _single_ascii_line(payload: bytes, terminator: bytes) -> str:
+    body = _single_line_body(payload, terminator)
     try:
         return body.decode("ascii").strip()
     except UnicodeDecodeError as exc:
@@ -227,7 +234,72 @@ def _wire_diagnostics(payload: bytes) -> dict[str, Any]:
     return {"observed_terminator": terminator, "frame_count": frame_count}
 
 
+AT4532_CHANNEL_COUNT = 32
+AT4532_TCP32_FIELD_COUNT = 69
+AT4532_TCP32_CHANNEL_START = 3
+AT4532_DEVICE_TIMEZONE = ZoneInfo("America/Sao_Paulo")
+_AT4532_TCP32_TIMESTAMP = re.compile(r"T:(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})")
+
+
+@dataclass(frozen=True)
+class At4532ChannelToken:
+    position: int
+    raw_token: str
+    temperature_c: float | None
+    quality: str
+    thermocouple_type: str | None = None
+    unit: str | None = None
+
+
+@dataclass(frozen=True)
+class At4532ParsedFrame(Sequence[float | None]):
+    """Lossless, structurally validated representation of one AT4532 response frame."""
+
+    values: tuple[float | None, ...]
+    channels: tuple[At4532ChannelToken, ...]
+    raw_bytes: bytes
+    raw_text: str
+    wire_encoding: str
+    frame_type: str
+    field_count: int
+    metadata_fields_raw: tuple[str, ...] = ()
+    device_timestamp_raw: str | None = None
+    device_timestamp: datetime | None = None
+    ambient_temperature_raw: str | None = None
+    ambient_temperature_c: float | None = None
+    auxiliary_fields_raw: tuple[str, ...] = ()
+
+    def __len__(self) -> int:
+        return len(self.values)
+
+    def __getitem__(self, index: int | slice) -> float | None | tuple[float | None, ...]:
+        return self.values[index]
+
+    @property
+    def raw_hex(self) -> str:
+        return self.raw_bytes.hex(" ").upper()
+
+
 class At4532Parser:
+    @staticmethod
+    def decode_line(payload: bytes) -> tuple[str, str]:
+        """Decode strictly, allowing CP936 only for an unambiguous TCP-32 candidate."""
+
+        body = _single_line_body(payload, b"\n")
+        try:
+            return body.decode("ascii"), "ascii"
+        except UnicodeDecodeError as ascii_error:
+            if not body.startswith(b"TCP-32,"):
+                raise ProtocolResponseError(
+                    "Resposta simples do AT4532 deve usar ASCII estrito."
+                ) from ascii_error
+            try:
+                return body.decode("cp936"), "cp936"
+            except UnicodeDecodeError as cp936_error:
+                raise ProtocolResponseError(
+                    "Frame TCP-32 não pode ser decodificado estritamente como CP936."
+                ) from cp936_error
+
     def parse_identity(self, payload: bytes) -> dict[str, str]:
         fields = [field.strip() for field in _single_ascii_line(payload, b"\n").split(",")]
         if len(fields) != 4 or fields[0].casefold() != "at4532":
@@ -251,19 +323,149 @@ class At4532Parser:
         except ProtocolResponseError:
             return "unknown_response"
 
-    def parse(self, payload: bytes) -> Sequence[float | None]:
-        line = _single_ascii_line(payload, b"\n")
-        fields = line.split(",")
+    def parse(self, payload: bytes) -> At4532ParsedFrame:
+        line, wire_encoding = self.decode_line(payload)
+        if line.lstrip().startswith("TCP-32,"):
+            return self._parse_tcp32(payload, line, wire_encoding)
+        return self._parse_simple(payload, line, wire_encoding)
+
+    def _parse_simple(self, payload: bytes, line: str, wire_encoding: str) -> At4532ParsedFrame:
+        fields = line.strip().split(",")
         if not 1 <= len(fields) <= 32:
             raise ProtocolResponseError("FETCH? deve retornar entre 1 e 32 campos.")
         values: list[float | None] = []
-        for field in fields:
+        channels: list[At4532ChannelToken] = []
+        for position, field in enumerate(fields, 1):
+            raw_token = field
             try:
                 value = float(field.strip())
             except ValueError:
                 value = None
-            values.append(value if value is not None and math.isfinite(value) else None)
-        return values
+            normalized = value if value is not None and math.isfinite(value) else None
+            values.append(normalized)
+            channels.append(
+                At4532ChannelToken(
+                    position=position,
+                    raw_token=raw_token,
+                    temperature_c=normalized,
+                    quality="good" if normalized is not None else "unknown_unavailable",
+                )
+            )
+        if not any(value is not None for value in values):
+            raise ProtocolResponseError(
+                "FETCH? simples deve conter ao menos uma temperatura numérica finita."
+            )
+        return At4532ParsedFrame(
+            values=tuple(values),
+            channels=tuple(channels),
+            raw_bytes=payload,
+            raw_text=line,
+            wire_encoding=wire_encoding,
+            frame_type="simple",
+            field_count=len(fields),
+        )
+
+    def _parse_tcp32(self, payload: bytes, line: str, wire_encoding: str) -> At4532ParsedFrame:
+        fields = line.split(",")
+        if len(fields) != AT4532_TCP32_FIELD_COUNT:
+            raise ProtocolResponseError(
+                "Frame TCP-32 deve conter exatamente 69 campos conceituais."
+            )
+        if fields[0].strip() != "TCP-32":
+            raise ProtocolResponseError("Prefixo do frame TCP-32 inválido.")
+
+        device_timestamp_raw = fields[1].strip()
+        timestamp_match = _AT4532_TCP32_TIMESTAMP.fullmatch(device_timestamp_raw)
+        if not timestamp_match:
+            raise ProtocolResponseError("Timestamp estrutural do frame TCP-32 inválido.")
+        try:
+            local_timestamp = datetime.strptime(
+                timestamp_match.group(1), "%Y/%m/%d %H:%M:%S"
+            ).replace(tzinfo=AT4532_DEVICE_TIMEZONE)
+        except ValueError as exc:
+            raise ProtocolResponseError("Timestamp do frame TCP-32 não é uma data válida.") from exc
+        device_timestamp = local_timestamp.astimezone(UTC)
+
+        ambient_temperature_raw = fields[2].strip()
+        try:
+            ambient_temperature_c = float(ambient_temperature_raw)
+        except ValueError as exc:
+            raise ProtocolResponseError(
+                "Metadado ambiente do frame TCP-32 não é numérico."
+            ) from exc
+        if not math.isfinite(ambient_temperature_c):
+            raise ProtocolResponseError("Metadado ambiente do frame TCP-32 não é finito.")
+
+        primary_fields = fields[
+            AT4532_TCP32_CHANNEL_START : AT4532_TCP32_CHANNEL_START + AT4532_CHANNEL_COUNT
+        ]
+        if len(primary_fields) != AT4532_CHANNEL_COUNT:
+            raise ProtocolResponseError("Bloco primário TCP-32 não contém 32 canais.")
+
+        channels: list[At4532ChannelToken] = []
+        values: list[float | None] = []
+        valid_channels = 0
+        for position, raw_token in enumerate(primary_fields, 1):
+            token_fields = raw_token.split("|")
+            if len(token_fields) != 3:
+                raise ProtocolResponseError(
+                    f"Token TCP-32 CH{position:02d} não possui valor, tipo e unidade."
+                )
+            value_text, thermocouple_type, unit = (item.strip() for item in token_fields)
+            if thermocouple_type != "K":
+                raise ProtocolResponseError(
+                    f"Token TCP-32 CH{position:02d} não usa o tipo de termopar K comprovado."
+                )
+            if unit != "℃":
+                raise ProtocolResponseError(
+                    f"Token TCP-32 CH{position:02d} não informa a unidade Celsius comprovada."
+                )
+            if value_text.casefold() == "open":
+                value = None
+                quality = "open_sensor"
+            else:
+                try:
+                    value = float(value_text)
+                except ValueError as exc:
+                    raise ProtocolResponseError(
+                        f"Valor TCP-32 CH{position:02d} não é numérico nem Open."
+                    ) from exc
+                if not math.isfinite(value):
+                    raise ProtocolResponseError(f"Valor TCP-32 CH{position:02d} não é finito.")
+                quality = "good" if -200 <= value <= 1800 else "invalid_out_of_range"
+                if quality == "good":
+                    valid_channels += 1
+            values.append(value)
+            channels.append(
+                At4532ChannelToken(
+                    position=position,
+                    raw_token=raw_token,
+                    temperature_c=value,
+                    quality=quality,
+                    thermocouple_type=thermocouple_type,
+                    unit=unit,
+                )
+            )
+        if valid_channels < 1:
+            raise ProtocolResponseError(
+                "Frame TCP-32 deve conter ao menos uma temperatura numérica válida."
+            )
+
+        return At4532ParsedFrame(
+            values=tuple(values),
+            channels=tuple(channels),
+            raw_bytes=payload,
+            raw_text=line,
+            wire_encoding=wire_encoding,
+            frame_type="TCP-32",
+            field_count=len(fields),
+            metadata_fields_raw=tuple(fields[:AT4532_TCP32_CHANNEL_START]),
+            device_timestamp_raw=device_timestamp_raw,
+            device_timestamp=device_timestamp,
+            ambient_temperature_raw=ambient_temperature_raw,
+            ambient_temperature_c=ambient_temperature_c,
+            auxiliary_fields_raw=tuple(fields[AT4532_TCP32_CHANNEL_START + AT4532_CHANNEL_COUNT :]),
+        )
 
 
 class Gpm8213Parser:
@@ -327,7 +529,11 @@ class Gpm8213Parser:
 
     @staticmethod
     def _parse_count_text(line: str) -> int | None:
-        match = re.fullmatch(r"(?::NUMERIC:NORMAL:NUMBER\s+)?(\d+)", line, re.IGNORECASE)
+        match = re.fullmatch(
+            r"(?:(?::NUMERIC:NORMAL:NUMBER|:NUM:NORM:NUMB)\s+)?(\d+)",
+            line,
+            re.IGNORECASE,
+        )
         if not match:
             return None
         value = int(match.group(1))
@@ -357,9 +563,7 @@ class Gpm8213Parser:
             raise ProtocolResponseError("HEADER? retornou itens duplicados.")
         return canonical
 
-    def parse(
-        self, payload: bytes, headers: Sequence[str]
-    ) -> Mapping[str, float | None]:
+    def parse(self, payload: bytes, headers: Sequence[str]) -> Mapping[str, float | None]:
         line = _single_ascii_line(payload, b"\r\n")
         fields = [field.strip() for field in line.split(",")]
         if len(fields) != len(headers):
@@ -383,30 +587,59 @@ class Gpm8213Parser:
 
 class At4532Normalizer:
     def normalize(
-        self, values: Sequence[float | None], raw_payload: bytes | None = None
+        self,
+        values: At4532ParsedFrame | Sequence[float | None],
+        raw_payload: bytes | None = None,
     ) -> DeviceReading:
+        received_timestamp = datetime.now(UTC)
         if not 1 <= len(values) <= 32:
             raise ValueError("O AT4532 deve fornecer de 1 a 32 canais decodificados.")
+        parsed_frame = values if isinstance(values, At4532ParsedFrame) else None
+        if parsed_frame is not None:
+            raw_payload = parsed_frame.raw_bytes
+            source_channels = list(parsed_frame.channels)
+            raw_tokens = [channel.raw_token for channel in source_channels]
+        else:
+            source_channels = []
+            raw_tokens: list[str] = []
+            if raw_payload:
+                try:
+                    candidate_tokens = _single_ascii_line(raw_payload, b"\n").split(",")
+                    if len(candidate_tokens) == len(values):
+                        raw_tokens = candidate_tokens
+                except ProtocolResponseError:
+                    pass
+            if not raw_tokens:
+                raw_tokens = ["" if value is None else str(value) for value in values]
+            source_channels = [
+                At4532ChannelToken(
+                    position=index,
+                    raw_token=raw_token,
+                    temperature_c=value,
+                    quality="good" if value is not None else "unknown_unavailable",
+                )
+                for index, (value, raw_token) in enumerate(zip(values, raw_tokens, strict=True), 1)
+            ]
+
         temperatures: list[float | None] = []
         qualities: list[str] = []
-        raw_tokens: list[str] = []
-        if raw_payload:
-            try:
-                candidate_tokens = _single_ascii_line(raw_payload, b"\n").split(",")
-                if len(candidate_tokens) == len(values):
-                    raw_tokens = candidate_tokens
-            except ProtocolResponseError:
-                pass
-        if not raw_tokens:
-            raw_tokens = ["" if value is None else str(value) for value in values]
-
         channels: list[dict[str, Any]] = []
         unknown_tokens: list[dict[str, Any]] = []
-        for index, (value, raw_token) in enumerate(zip(values, raw_tokens, strict=True), 1):
+        open_channels: list[str] = []
+        for source_channel in source_channels:
+            index = source_channel.position
+            value = source_channel.temperature_c
+            channel_name = f"CH{index:02d}"
             if value is None:
                 normalized = None
-                quality = "unknown_unavailable"
-                unknown_tokens.append({"channel": f"CH{index:02d}", "raw_token": raw_token})
+                quality = source_channel.quality
+                if quality == "open_sensor":
+                    open_channels.append(channel_name)
+                else:
+                    quality = "unknown_unavailable"
+                    unknown_tokens.append(
+                        {"channel": channel_name, "raw_token": source_channel.raw_token}
+                    )
             elif -200 <= value <= 1800:
                 normalized = float(value)
                 quality = "good"
@@ -418,11 +651,13 @@ class At4532Normalizer:
             qualities.append(quality)
             channels.append(
                 {
-                    "channel": f"CH{index:02d}",
+                    "channel": channel_name,
                     "position": index,
-                    "raw_token": raw_token,
+                    "raw_token": source_channel.raw_token,
                     "temperature_c": normalized,
                     "quality": quality,
+                    "thermocouple_type": source_channel.thermocouple_type,
+                    "unit": source_channel.unit,
                 }
             )
         missing = 32 - len(temperatures)
@@ -436,37 +671,85 @@ class At4532Normalizer:
                     "raw_token": None,
                     "temperature_c": None,
                     "quality": "missing",
+                    "thermocouple_type": None,
+                    "unit": None,
                 }
             )
         valid_channels = sum(value is not None for value in temperatures)
+        payload = raw_payload or b""
+        if parsed_frame is not None:
+            response_text = payload.decode(parsed_frame.wire_encoding)
+            wire_encoding = parsed_frame.wire_encoding
+        else:
+            try:
+                response_text = payload.decode("ascii")
+                wire_encoding = "ascii"
+            except UnicodeDecodeError:
+                response_text = payload.decode("ascii", "backslashreplace")
+                wire_encoding = "undecodable"
+        raw_data = {
+            "response_ascii": response_text,
+            "response_text": response_text,
+            "response_bytes": list(payload),
+            "raw_bytes": list(payload),
+            "response_hex": payload.hex(" ").upper(),
+            "raw_hex": payload.hex(" ").upper(),
+            "wire_encoding": wire_encoding,
+            "frame_type": parsed_frame.frame_type if parsed_frame else "simple",
+            "total_fields": parsed_frame.field_count if parsed_frame else len(values),
+            "metadata_fields_raw": list(parsed_frame.metadata_fields_raw) if parsed_frame else [],
+            "device_timestamp_raw": parsed_frame.device_timestamp_raw if parsed_frame else None,
+            "device_timestamp_iso": parsed_frame.device_timestamp.isoformat()
+            if parsed_frame and parsed_frame.device_timestamp
+            else None,
+            "device_timestamp_timezone_assumption": "America/Sao_Paulo"
+            if parsed_frame and parsed_frame.device_timestamp
+            else None,
+            "ambient_temperature_raw": parsed_frame.ambient_temperature_raw
+            if parsed_frame
+            else None,
+            "ambient_temperature_c": parsed_frame.ambient_temperature_c if parsed_frame else None,
+            "primary_channel_fields_raw": raw_tokens,
+            "auxiliary_fields_raw": list(parsed_frame.auxiliary_fields_raw) if parsed_frame else [],
+            "channel_count_requested": 32,
+            "channel_count_received": len(values),
+            "token_count": len(raw_tokens),
+            "tokens": raw_tokens,
+            "valid_channels": valid_channels,
+            "unavailable_channels": 32 - valid_channels,
+            "open_channels": open_channels,
+            "channels": channels,
+            "valid_channel_results": {
+                channel["channel"]: channel
+                for channel in channels
+                if channel["temperature_c"] is not None
+            },
+            "unknown_tokens": unknown_tokens,
+            "open_sensor_encoding": (
+                "verified_tcp32_open_token"
+                if parsed_frame and parsed_frame.frame_type == "TCP-32"
+                else "protocol_documentation_required"
+            ),
+            **_wire_diagnostics(payload),
+        }
         return DeviceReading(
+            timestamp=(
+                parsed_frame.device_timestamp
+                if parsed_frame and parsed_frame.device_timestamp
+                else received_timestamp
+            ),
+            device_timestamp=(parsed_frame.device_timestamp if parsed_frame else None),
+            received_timestamp=received_timestamp,
             raw_power=None,
             raw_power_unit="W",
             power_w=None,
             temperatures_c=temperatures,
             channel_quality=qualities,
+            ambient_temperature_c=(
+                parsed_frame.ambient_temperature_c if parsed_frame else None
+            ),
             quality="good" if valid_channels else "unavailable",
-            raw_payload={
-                "response_ascii": raw_payload.decode("ascii", "backslashreplace")
-                if raw_payload
-                else "",
-                "response_hex": raw_payload.hex(" ").upper() if raw_payload else "",
-                "channel_count_requested": 32,
-                "channel_count_received": len(values),
-                "token_count": len(raw_tokens),
-                "tokens": raw_tokens,
-                "valid_channels": valid_channels,
-                "unavailable_channels": 32 - valid_channels,
-                "channels": channels,
-                "valid_channel_results": {
-                    channel["channel"]: channel
-                    for channel in channels
-                    if channel["temperature_c"] is not None
-                },
-                "unknown_tokens": unknown_tokens,
-                "open_sensor_encoding": "protocol_documentation_required",
-                **_wire_diagnostics(raw_payload or b""),
-            },
+            raw_payload=raw_data,
         )
 
 
@@ -477,12 +760,15 @@ class Gpm8213Normalizer:
         units: Mapping[str, str],
         raw_payload: Mapping[str, Any] | None = None,
     ) -> DeviceReading:
+        received_timestamp = datetime.now(UTC)
         power = values.get("power")
         raw_power_unit = units["power"]
         factor = {"mW": 0.001, "W": 1.0, "kW": 1000.0}.get(raw_power_unit)
         if factor is None:
             raise ProtocolResponseError(f"Unidade de potência inesperada: {raw_power_unit}")
         return DeviceReading(
+            timestamp=received_timestamp,
+            received_timestamp=received_timestamp,
             raw_power=float(power) if power is not None else None,
             raw_power_unit=raw_power_unit,
             power_w=float(power) * factor if power is not None else None,
@@ -546,9 +832,7 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
             raise SerialTransportError("disconnected", "O equipamento foi desconectado.")
         timestamp = datetime.now(UTC)
         transaction_started = monotonic()
-        previous_command = (
-            self.transactions[-1]["command_name"] if self.transactions else None
-        )
+        previous_command = self.transactions[-1]["command_name"] if self.transactions else None
         logger.info("protocol TX equipment=%s command=%s", self.equipment, command.name)
         try:
             if expect_response:
@@ -572,6 +856,7 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
                 "tx_hex": command.request.hex(" ").upper(),
                 "timestamp_tx": timestamp.isoformat(),
                 "rx_ascii": "",
+                "rx_bytes": [],
                 "rx_hex": "",
                 "timestamp_rx": datetime.now(UTC).isoformat(),
                 "elapsed_ms": round(elapsed_ms, 3),
@@ -605,20 +890,20 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
             "vendor_documented": True,
             "source": command.source,
             "section": command.section,
-            "tx_ascii": command.request.decode("ascii")
-            .replace("\r", "\\r")
-            .replace("\n", "\\n"),
+            "tx_ascii": command.request.decode("ascii").replace("\r", "\\r").replace("\n", "\\n"),
             "tx_hex": command.request.hex(" ").upper(),
             "timestamp_tx": timestamp.isoformat(),
             "rx_ascii": response.decode("ascii", "backslashreplace")
             .replace("\r", "\\r")
             .replace("\n", "\\n"),
+            "rx_bytes": list(response),
             "rx_hex": response.hex(" ").upper(),
             "timestamp_rx": datetime.now(UTC).isoformat(),
             "elapsed_ms": round(elapsed_ms, 3),
             "bytes_received": len(response),
             "previous_command": previous_command,
             **_wire_diagnostics(response),
+            **self._wire_response_diagnostics(response),
         }
         if expect_response:
             boundary = dict(getattr(self.transport, "last_query_boundary", {}))
@@ -626,6 +911,9 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
             actual_response_type = self._response_type(response)
             transaction["expected_for_command"] = command.expected_response_type
             transaction["actual_response_type"] = actual_response_type
+            parser_error = getattr(self, "_last_response_parser_error", None)
+            if parser_error:
+                transaction["parser_error"] = parser_error
             logger.info(
                 "response classification equipment=%s command=%s expected=%s actual=%s",
                 self.equipment,
@@ -666,6 +954,9 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
 
     def _response_type(self, payload: bytes) -> str | None:
         return None
+
+    def _wire_response_diagnostics(self, payload: bytes) -> dict[str, Any]:
+        return {}
 
     async def connect(self) -> None:
         if not self.port:
@@ -733,7 +1024,7 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
     async def read_once(self) -> DeviceReading:
         """Execute one documented query without starting the polling loop."""
         reading = await self._read_once()
-        self.last_message_at = reading.timestamp
+        self.last_message_at = reading.received_timestamp
         self._read_count += 1
         return reading
 
@@ -769,7 +1060,7 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
                     self.read_errors += 1
                     logger.exception("parser error equipment=%s", self.equipment)
                     raise
-                self.last_message_at = reading.timestamp
+                self.last_message_at = reading.received_timestamp
                 self._read_count += 1
                 yield reading
                 remaining = self.expected_interval_seconds - (monotonic() - started)
@@ -854,14 +1145,38 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             timeout_s=1,
             read_timeout_s=2,
             line_terminator="LF (0x0A)",
-            framing="SCPI ASCII",
+            framing="SCPI ASCII TX; ASCII simple or TCP-32 CP936 RX",
         )
 
     def _transport(self, configuration: SerialTransportConfiguration) -> SerialTransport:
         return At4532SerialTransport(configuration)
 
     def _response_type(self, payload: bytes) -> str | None:
-        return self.parser.classify(payload)
+        self._last_response_parser_error = None
+        try:
+            self.parser.parse_identity(payload)
+            return "identity_response"
+        except ProtocolResponseError:
+            pass
+        try:
+            self.parser.parse(payload)
+            return "temperature_measurement"
+        except ProtocolResponseError as exc:
+            self._last_response_parser_error = {"code": exc.code, "message": str(exc)}
+            return "unknown_response"
+
+    def _wire_response_diagnostics(self, payload: bytes) -> dict[str, Any]:
+        try:
+            decoded, encoding = self.parser.decode_line(payload)
+        except ProtocolResponseError as exc:
+            return {
+                "wire_encoding": "undecodable",
+                "wire_decode_error": {"code": exc.code, "message": str(exc)},
+            }
+        return {
+            "wire_encoding": encoding,
+            "rx_text": decoded.replace("\r", "\\r").replace("\n", "\\n"),
+        }
 
     async def _continue_after_identity_error(self, exc: SerialTransportError) -> bool:
         return self.allow_identity_fallback and exc.code == "protocol_timeout"
@@ -888,18 +1203,42 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
     async def _query_reading(self) -> DeviceReading:
         payload = await self._transaction(self.protocol.temperatures, expect_response=True)
         reading = self._normalize_payload(payload)
+        raw = reading.raw_payload
+        if raw["channel_count_received"] == 32 and raw["valid_channels"] >= 1:
+            self.protocol_status = "verified_by_measurement"
+        self.transactions[-1].update(
+            {
+                "wire_encoding": raw["wire_encoding"],
+                "rx_text": raw["response_text"].replace("\r", "\\r").replace("\n", "\\n"),
+                "frame_type": raw["frame_type"],
+                "total_fields": raw["total_fields"],
+            }
+        )
         self.transactions[-1]["parsed"] = {
             "channel_count_requested": 32,
-            "channel_count_received": reading.raw_payload["channel_count_received"],
-            "token_count": reading.raw_payload["token_count"],
-            "tokens": reading.raw_payload["tokens"],
-            "valid_channels": reading.raw_payload["valid_channels"],
-            "unavailable_channels": reading.raw_payload["unavailable_channels"],
-            "channels": reading.raw_payload["channels"],
-            "valid_channel_results": reading.raw_payload["valid_channel_results"],
-            "unknown_tokens": reading.raw_payload["unknown_tokens"],
-            "observed_terminator": reading.raw_payload["observed_terminator"],
-            "frame_count": reading.raw_payload["frame_count"],
+            "channel_count_received": raw["channel_count_received"],
+            "token_count": raw["token_count"],
+            "tokens": raw["tokens"],
+            "valid_channels": raw["valid_channels"],
+            "unavailable_channels": raw["unavailable_channels"],
+            "open_channels": raw["open_channels"],
+            "channels": raw["channels"],
+            "valid_channel_results": raw["valid_channel_results"],
+            "unknown_tokens": raw["unknown_tokens"],
+            "wire_encoding": raw["wire_encoding"],
+            "frame_type": raw["frame_type"],
+            "total_fields": raw["total_fields"],
+            "metadata_fields_raw": raw["metadata_fields_raw"],
+            "device_timestamp_raw": raw["device_timestamp_raw"],
+            "device_timestamp_iso": raw["device_timestamp_iso"],
+            "ambient_temperature_raw": raw["ambient_temperature_raw"],
+            "ambient_temperature_c": raw["ambient_temperature_c"],
+            "primary_channel_fields_raw": raw["primary_channel_fields_raw"],
+            "auxiliary_fields_raw": raw["auxiliary_fields_raw"],
+            "raw_bytes": raw["raw_bytes"],
+            "raw_hex": raw["raw_hex"],
+            "observed_terminator": raw["observed_terminator"],
+            "frame_count": raw["frame_count"],
             "normalized_reading": reading.model_dump(mode="json"),
         }
         logger.info("parser success equipment=%s command=temperatures", self.equipment)
@@ -997,9 +1336,7 @@ class Gpm8213UsbSerialAdapter(_DocumentedProtocolAdapter):
         if not self._headers:
             raise ProtocolResponseError("HEADER? deve ser validado antes de VALUE?.")
         parsed = self.parser.parse(payload, self._headers)
-        raw_fields = [
-            field.strip() for field in _single_ascii_line(payload, b"\r\n").split(",")
-        ]
+        raw_fields = [field.strip() for field in _single_ascii_line(payload, b"\r\n").split(",")]
         raw_values = dict(zip(self.headers_reported, raw_fields, strict=True))
         parsed_values = {
             "Vrms": parsed.get("voltage"),

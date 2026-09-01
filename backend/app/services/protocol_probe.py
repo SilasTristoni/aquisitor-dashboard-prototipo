@@ -16,8 +16,30 @@ ProbeMode = Literal["identity", "read", "full"]
 class ProtocolProbeService:
     def __init__(self) -> None:
         self.latest_results: dict[int, dict[str, Any]] = {}
+        self.pending_close_adapters: dict[int, list[Any]] = {}
+
+    async def _retry_pending_closes(self, device_id: int) -> None:
+        pending = self.pending_close_adapters.get(device_id)
+        if not pending:
+            return
+        failures: list[Exception] = []
+        for adapter in list(pending):
+            try:
+                await adapter.disconnect()
+            except Exception as exc:
+                failures.append(exc)
+                logger.exception("protocol probe close retry failed device_id=%s", device_id)
+            else:
+                pending.remove(adapter)
+        if not pending:
+            self.pending_close_adapters.pop(device_id, None)
+        if failures:
+            raise RuntimeError(
+                "A porta do probe anterior ainda nao pôde ser liberada; tente novamente."
+            ) from failures[0]
 
     async def run(self, device: Device, mode: ProbeMode) -> dict[str, Any]:
+        await self._retry_pending_closes(device.id)
         if device.protocol == "at4532_serial":
             policy = at4532_identity_fallback_policy(device)
             adapter = At4532SerialAdapter(
@@ -45,6 +67,7 @@ class ProtocolProbeService:
         result = "failed"
         configuration: dict[str, Any] = {}
         identity: dict[str, Any] = {}
+        transport_closed = False
         try:
             configuration = adapter._configuration().public_dict()
             await adapter.connect()
@@ -87,6 +110,13 @@ class ProtocolProbeService:
             logger.exception("protocol probe failed device_id=%s mode=%s", device.id, mode)
             error = {"code": getattr(exc, "code", type(exc).__name__), "message": str(exc)}
             error.update(getattr(exc, "details", {}))
+            if adapter.transactions:
+                parser_error = adapter.transactions[-1].get("parser_error")
+                wire_decode_error = adapter.transactions[-1].get("wire_decode_error")
+                if parser_error:
+                    error["parser_error"] = parser_error
+                if wire_decode_error:
+                    error["wire_decode_error"] = wire_decode_error
             errors.append(error)
             at_fallback_attempted = (
                 device.protocol == "at4532_serial"
@@ -154,8 +184,18 @@ class ProtocolProbeService:
         finally:
             try:
                 await adapter.disconnect()
+                transport_closed = True
             except Exception as exc:
                 errors.append({"code": "close_failed", "message": str(exc)})
+                self.pending_close_adapters.setdefault(device.id, []).append(adapter)
+                result = "failed"
+                stages[2] = self._stage(
+                    "port",
+                    "Porta",
+                    False,
+                    "Falha ao liberar a porta serial; verificacao nao autorizada.",
+                    status="failed",
+                )
 
         for transaction in adapter.transactions:
             transaction.setdefault("parsed", {})
@@ -182,20 +222,48 @@ class ProtocolProbeService:
             "stages": stages,
             "result": result,
             "errors": errors,
+            "transport_closed": transport_closed,
+            "close_retry_pending": not transport_closed,
         }
+        if device.protocol == "at4532_serial":
+            report["at4532_parser_errors"] = [
+                transaction["parser_error"]
+                for transaction in adapter.transactions
+                if transaction.get("parser_error")
+            ]
         if device.protocol == "at4532_serial" and readings:
             raw = readings[-1].get("raw_payload", {})
             report["at4532_channel_summary"] = {
                 "channel_count_requested": raw.get("channel_count_requested", 32),
                 "channel_count_received": raw.get("channel_count_received", 0),
+                "wire_encoding": raw.get("wire_encoding"),
+                "frame_type": raw.get("frame_type"),
+                "total_fields": raw.get("total_fields", 0),
+                "metadata_fields_raw": raw.get("metadata_fields_raw", []),
+                "device_timestamp_raw": raw.get("device_timestamp_raw"),
+                "device_timestamp_iso": raw.get("device_timestamp_iso"),
+                "ambient_temperature_raw": raw.get("ambient_temperature_raw"),
+                "ambient_temperature_c": raw.get("ambient_temperature_c"),
                 "valid_channels": raw.get("valid_channels", 0),
                 "unavailable_channels": raw.get("unavailable_channels", 32),
+                "open_channels": raw.get("open_channels", []),
+                "primary_channel_fields_raw": raw.get("primary_channel_fields_raw", []),
+                "auxiliary_fields_raw": raw.get("auxiliary_fields_raw", []),
+                "raw_bytes": raw.get("raw_bytes", []),
+                "raw_hex": raw.get("raw_hex", ""),
                 "valid_channel_results": raw.get("valid_channel_results", {}),
                 "channels": raw.get("channels", []),
                 "unknown_tokens": raw.get("unknown_tokens", []),
             }
         self.latest_results[device.id] = report
         return report
+
+    async def shutdown(self) -> None:
+        for device_id in list(self.pending_close_adapters):
+            try:
+                await self._retry_pending_closes(device_id)
+            except Exception:
+                logger.exception("protocol probe shutdown close failed device_id=%s", device_id)
 
     @staticmethod
     def _stage(

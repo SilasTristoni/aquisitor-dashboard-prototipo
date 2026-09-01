@@ -1,12 +1,14 @@
-# ThermoPower Monitor 0.5.4-physical-alpha
+# ThermoPower Monitor 0.5.5-physical-alpha
 
 Plataforma full-stack para aquisição industrial combinada: até 32 temperaturas pelo Applent AT4532 e grandezas elétricas pelo GW Instek GPM-8213. As sessões são rastreáveis, aceitam uma ou as duas fontes, sincronizam timestamps e mantêm o protótipo original em `legacy/`.
 
-> Build física de engenharia: o GPM-8213 está validado fisicamente; o AT4532 permanece
-> pendente de validação por `FETCH?`. O timeout de `*IDN?` só é não bloqueante para a associação
-> manual exata e o protocolo precisa ser comprovado por uma leitura válida de 32 canais.
+> Build física de engenharia: o GPM-8213 está validado fisicamente e o `FETCH?` real do
+> AT4532 foi confirmado como frame `TCP-32` em CP936. O timeout de `*IDN?` continua sem confirmar
+> identidade e só é não bloqueante para a associação manual exata; a conexão exige uma leitura
+> estruturalmente válida com 32 canais e ao menos uma temperatura numérica.
 > Consulte [fontes e lacunas](docs/PHYSICAL_PROTOCOL_GAPS.md) e
-> [roteiro de bancada](docs/PHYSICAL_ENGINEERING_TEST.md).
+> [roteiro de bancada](docs/PHYSICAL_ENGINEERING_TEST.md). As respostas conhecidas que bloqueiam
+> o empacotamento estão no [gate de regressão física](docs/PHYSICAL_REGRESSION_FIXTURES.md).
 
 ## Funcionalidades entregues
 
@@ -26,6 +28,9 @@ Plataforma full-stack para aquisição industrial combinada: até 32 temperatura
   todos os dados e gráficos Matplotlib reais em PDF/PNG/JPEG;
 - descoberta USB/COM pelo backend, associação por metadados reais e diagnóstico em etapas;
 - probe SCPI documentado com confirmação pré-TX, TX/RX ao vivo e exportação diagnóstica ZIP;
+- parser compatível com o `FETCH?` simples e com o frame físico `TCP-32`/CP936 do AT4532,
+  preservando `Open`, timestamps, tokens, bytes/HEX e campos auxiliares;
+- conexão independente por fonte: falha elétrica ou térmica não desfaz a fonte saudável;
 - assistente de primeiro uso e build Windows de engenharia com PyInstaller;
 - comparação de sessões, visão executiva e diagnóstico do sistema;
 - simulador configurável com oito cenários;
@@ -77,8 +82,8 @@ Acesse `http://localhost:5173`. A API estará em `http://localhost:8000` e o Swa
 No Windows, use `iniciar-windows.bat` na raiz. Na primeira execução ele cria o ambiente virtual, instala dependências, aplica migrações, abre backend e frontend e acessa `http://127.0.0.1:5173`. Se falhar, execute `diagnostico-windows.bat` e envie a saída ao suporte.
 
 Para gerar a build física de engenharia (sem instalador e sem release final), execute
-`scripts\build-windows-engineering.ps1`. Depois, execute
-`scripts\smoke-windows-package.ps1` e siga o [roteiro de bancada](docs/PHYSICAL_ENGINEERING_TEST.md).
+`scripts\build-windows-engineering.ps1`. O smoke do executável empacotado é um gate automático
+desse script. Depois da aprovação, siga o [roteiro de bancada](docs/PHYSICAL_ENGINEERING_TEST.md).
 
 ### Importação AT4532 + GPM-8213
 
@@ -88,7 +93,9 @@ Para gerar a build física de engenharia (sem instalador e sem release final), e
 4. Defina nome, grade e tolerância (padrão 1 s / 1,5 s) e confirme.
 5. Abra a sessão criada para analisar e exportar CSV, XLSX, PDF, PNG ou JPEG.
 
-Os arquivos reais não devem ser versionados. Como `reference-input/` foi recebido vazio, a homologação dos layouts e da comunicação física depende do fornecimento das amostras e manuais.
+Os arquivos reais não devem ser versionados. As respostas físicas conhecidas e os manuais oficiais
+já alimentam os fixtures 0.5.5; ainda faltam o dump integral real dos campos auxiliares TCP-32 e a
+homologação final de valores, estabilidade e driver no computador da cliente.
 
 Linux/macOS usam os equivalentes `source .venv/bin/activate` e `.venv/bin/python`.
 
@@ -122,6 +129,7 @@ A aplicação ficará em `http://localhost:8080`. O Compose inicia PostgreSQL, e
 ```powershell
 cd backend
 ..\.venv\Scripts\python -m ruff check .
+..\.venv\Scripts\python -m pytest -m physical_regression_fixtures
 ..\.venv\Scripts\python -m pytest
 
 cd ..\frontend

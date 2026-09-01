@@ -1,6 +1,7 @@
 # Teste da build física de engenharia
 
-Use somente `0.5.4-physical-alpha`. Não é beta de cliente e não declara homologação do AT4532.
+Use somente `0.5.5-physical-alpha`. Não é beta, instalador final nem release de cliente.
+Antes de empacotar, execute o [gate de regressão física](PHYSICAL_REGRESSION_FIXTURES.md).
 
 ## Preparação
 
@@ -16,9 +17,10 @@ Use somente `0.5.4-physical-alpha`. Não é beta de cliente e não declara homol
 1. Confirme COM5 e 19200; não associe COM2 apenas pelo mesmo VID/PID CH340.
 2. Clique **Testar leitura**. Se `*IDN?` não responder, confirme o aviso e verifique que o fluxo
    ainda transmite `SYST:UNIT CEL` e `FETCH?` — sem marcar identidade como OK.
-3. Confira TX/RX, terminador, frames, tokens e parser completo de CH01 a CH32.
+3. Confira TX/RX, HEX, `wire_encoding=cp936`, `frame_type=TCP-32`, metadados, campos auxiliares,
+   tokens e parser completo de CH01 a CH32.
 4. No arranjo atual, CH01–CH24 podem estar indisponíveis e CH25–CH32 devem apresentar valores.
-   `Open` só é sentinela SCPI se aparecer efetivamente no RX; a exportação XLSX não basta.
+   `Open|K|℃` foi confirmado no RX físico e deve aparecer como `null/open_sensor`, nunca zero.
 5. Aqueça manualmente qualquer ponteira conectada e confirme que o mesmo canal sobe e depois cai.
 6. Canais abertos devem ficar indisponíveis individualmente, preservando o token raw; nunca 0 °C.
 7. Execute o teste completo; duas leituras devem ocorrer com ~3 s entre elas e exporte o ZIP.
@@ -27,7 +29,7 @@ Use somente `0.5.4-physical-alpha`. Não é beta de cliente e não declara homol
 
 1. Confirme que o serial `GES913349` foi localizado, mesmo se a COM não for COM3.
 2. Teste identidade e confira firmware/serial.
-3. Confirme `number_requested=8`, `number_reported=8`, `headers_requested` e
+3. Confirme RX `:NUM:NORM:NUMB 8`, `number_requested=8`, `number_reported=8`, `headers_requested` e
    `headers_reported`; a ordem solicitada é `U,I,P,S,FU,LAMBDA,Q,FI`, mas a reportada prevalece.
    No firmware V1.05 observado, o retorno válido é `Urms,Irms,P,S,fU,PF,Q,fI`.
 4. Teste leitura e compare Vrms, Irms, P, VA, VAR, PF, VHz e IHz com o display.

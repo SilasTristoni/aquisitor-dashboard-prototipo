@@ -111,7 +111,7 @@ class SimulatorAdapter(DeviceAdapter):
                 else:
                     reading = self.parse_message(json.dumps(self._payload()))
                 self.messages += 1
-                self.last_message_at = reading.timestamp
+                self.last_message_at = reading.received_timestamp
                 yield reading
             except (ValueError, KeyError, json.JSONDecodeError):
                 self.errors += 1

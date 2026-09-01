@@ -10,36 +10,59 @@ if (-not $Executable) {
 }
 
 if (-not (Test-Path -LiteralPath $Executable)) {
-    throw "Pacote portátil ausente. Execute scripts\build-windows.ps1 -SkipInstaller."
+    throw "Pacote portátil ausente. Execute scripts\build-windows-engineering.ps1."
 }
 New-Item -ItemType Directory -Path $SmokeData -Force | Out-Null
-$env:THERMOPOWER_APP_DATA_DIR = $SmokeData
-$env:THERMOPOWER_NO_BROWSER = "1"
-$env:THERMOPOWER_MUTEX_NAME = "ThermoPowerMonitorSmoke-" + [guid]::NewGuid().ToString("N")
-$ExpectedPort = $null
-foreach ($Candidate in 8765..8804) {
-    $Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Candidate)
-    try {
-        $Listener.Start()
-        $ExpectedPort = $Candidate
-        break
-    } catch {
-        # Try the next local port.
-    } finally {
-        $Listener.Stop()
-    }
-}
-if (-not $ExpectedPort) { throw "Nenhuma porta de smoke test está livre." }
-$Process = Start-Process -FilePath $Executable -PassThru -WindowStyle Hidden
-
+$ManagedEnvironmentVariables = @(
+    "THERMOPOWER_APP_DATA_DIR",
+    "THERMOPOWER_DATABASE_URL",
+    "THERMOPOWER_DEMO_ADMIN_EMAIL",
+    "THERMOPOWER_DEMO_ADMIN_PASSWORD",
+    "THERMOPOWER_ENVIRONMENT",
+    "THERMOPOWER_FRONTEND_DIST",
+    "THERMOPOWER_JWT_SECRET",
+    "THERMOPOWER_MUTEX_NAME",
+    "THERMOPOWER_NO_BROWSER",
+    "THERMOPOWER_REPORT_OUTPUT_DIRECTORY"
+)
+$PreviousEnvironment = @{}
+$Process = $null
 try {
+    foreach ($Name in $ManagedEnvironmentVariables) {
+        $PreviousEnvironment[$Name] = [Environment]::GetEnvironmentVariable($Name, "Process")
+        [Environment]::SetEnvironmentVariable($Name, $null, "Process")
+    }
+    $env:THERMOPOWER_APP_DATA_DIR = $SmokeData
+    $env:THERMOPOWER_NO_BROWSER = "1"
+    $env:THERMOPOWER_ENVIRONMENT = "physical-alpha"
+    $env:THERMOPOWER_MUTEX_NAME = "ThermoPowerMonitorSmoke-" + [guid]::NewGuid().ToString("N")
+    $ExpectedDatabase = Join-Path $SmokeData "data\thermopower.db"
+    $ExpectedPort = $null
+    foreach ($Candidate in 8765..8804) {
+        $Listener = [System.Net.Sockets.TcpListener]::new(
+            [System.Net.IPAddress]::Loopback,
+            $Candidate
+        )
+        try {
+            $Listener.Start()
+            $ExpectedPort = $Candidate
+            break
+        } catch {
+            # Try the next local port.
+        } finally {
+            $Listener.Stop()
+        }
+    }
+    if (-not $ExpectedPort) { throw "Nenhuma porta de smoke test está livre." }
+    $Process = Start-Process -FilePath $Executable -WorkingDirectory $SmokeData `
+        -PassThru -WindowStyle Hidden
     $Health = $null
     $Port = $null
     for ($Attempt = 0; $Attempt -lt 40 -and -not $Health; $Attempt++) {
         Start-Sleep -Milliseconds 500
         try {
             $Response = Invoke-RestMethod -Uri "http://127.0.0.1:$ExpectedPort/health" -TimeoutSec 1
-            if ($Response.version -eq $ExpectedVersion) {
+            if ($Response.status -eq "ok" -and $Response.version -eq $ExpectedVersion) {
                 $Health = $Response
                 $Port = $ExpectedPort
             }
@@ -56,9 +79,13 @@ try {
     $Spa = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/" -TimeoutSec 5
     $BuildInfo = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/build-info" -TimeoutSec 5
     if ($BuildInfo.version -ne $ExpectedVersion -or
+        $BuildInfo.environment -ne "physical-alpha" -or
         $BuildInfo.demo_credentials.email -ne "homologacao@demo.thermopower.com" -or
         $BuildInfo.demo_credentials.password -ne "ThermoPower-HML@2026") {
         throw "A configuracao exibida pela UI nao corresponde ao usuario da build de engenharia."
+    }
+    if ($Spa.StatusCode -ne 200 -or -not $Spa.Content.Contains('id="root"')) {
+        throw "A SPA empacotada nao respondeu com o root esperado."
     }
     $LoginBody = @{
         email = "homologacao@demo.thermopower.com"
@@ -96,6 +123,8 @@ try {
     if (-not $ProtocolProbeRoute) { throw "A API de protocolo documentado nao foi empacotada." }
     $CombinedStatusRoute = $OpenApi.paths.PSObject.Properties.Name -contains "/api/v1/acquisition/combined-status"
     if (-not $CombinedStatusRoute) { throw "O status da aquisicao combinada nao foi empacotado." }
+    $ConnectSourcesRoute = $OpenApi.paths.PSObject.Properties.Name -contains "/api/v1/devices/connect-sources"
+    if (-not $ConnectSourcesRoute) { throw "A conexao independente por fonte nao foi empacotada." }
     $DiagnosticOpenSchema = $OpenApi.components.schemas.SerialDiagnosticOpenRequest
     $EngineeringConsent = $DiagnosticOpenSchema.properties.PSObject.Properties.Name -contains "use_engineering_assumption_8n1"
     if (-not $EngineeringConsent) { throw "O consentimento explicito para a hipotese 8-N-1 nao foi empacotado." }
@@ -110,6 +139,10 @@ try {
     $LogPath = Join-Path $SmokeData "logs\thermopower.log"
     if (-not (Test-Path -LiteralPath $LogPath) -or (Get-Item -LiteralPath $LogPath).Length -eq 0) {
         throw "thermopower.log nao foi criado com conteudo."
+    }
+    if (-not (Test-Path -LiteralPath $ExpectedDatabase -PathType Leaf) -or
+        (Get-Item -LiteralPath $ExpectedDatabase).Length -eq 0) {
+        throw "O banco SQLite isolado do smoke nao foi criado com conteudo."
     }
     $LogContent = Get-Content -Raw -LiteralPath $LogPath
     if (-not $LogContent.Contains("startup version=$ExpectedVersion")) {
@@ -129,12 +162,29 @@ try {
         GpmSerial = $Gpm8213.serial_number
         DocumentedProtocolProbe = $ProtocolProbeRoute
         CombinedAcquisitionStatus = $CombinedStatusRoute
+        IndependentSourceConnection = $ConnectSourcesRoute
         DiagnosticReadOnlyRoute = $DiagnosticRoute
         Engineering8N1Consent = $EngineeringConsent
         FrontendVersion = $ExpectedVersion
         LogBytes = (Get-Item -LiteralPath $LogPath).Length
-        DatabaseCreated = Test-Path -LiteralPath (Join-Path $SmokeData "data\thermopower.db")
+        DatabaseCreated = $true
+        DatabaseBytes = (Get-Item -LiteralPath $ExpectedDatabase).Length
     }
 } finally {
-    if (-not $Process.HasExited) { Stop-Process -Id $Process.Id }
+    try {
+        if ($Process -and -not $Process.HasExited) {
+            Stop-Process -Id $Process.Id
+            Wait-Process -Id $Process.Id -ErrorAction SilentlyContinue
+        }
+    } finally {
+        foreach ($Name in $ManagedEnvironmentVariables) {
+            if ($PreviousEnvironment.ContainsKey($Name)) {
+                [Environment]::SetEnvironmentVariable(
+                    $Name,
+                    $PreviousEnvironment[$Name],
+                    "Process"
+                )
+            }
+        }
+    }
 }

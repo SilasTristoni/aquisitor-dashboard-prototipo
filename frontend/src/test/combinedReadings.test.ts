@@ -35,4 +35,39 @@ describe("aquisição combinada", () => {
     expect(buildCombinedView([electrical("2026-08-17T12:00:00Z", 17.7)]).latestTemperature).toBeUndefined();
     expect(buildCombinedView([thermal("2026-08-17T12:00:00Z", [70.1, 69.9, 70.2])]).latestElectrical).toBeUndefined();
   });
+
+  test("mantém o aquecimento físico no CH29 sem deslocamento na série da dashboard", () => {
+    const timestamps = [
+      "2026-08-25T19:35:12Z",
+      "2026-08-25T19:35:15Z",
+      "2026-08-25T19:35:18Z",
+    ];
+    const readings = [21.5, 25, 29].map((channel29, index): Reading => {
+      const channels = Array<number | null>(32).fill(null);
+      channels[27] = 21.34;
+      channels[28] = channel29;
+      channels[29] = 21.71;
+      return {
+        timestamp: timestamps[index],
+        device_id: 1,
+        source_role: "temperature",
+        raw_power: null,
+        raw_power_unit: "W",
+        power_w: null,
+        temperatures_c: channels,
+        quality: "good",
+      };
+    });
+
+    const view = buildCombinedView(readings);
+    expect(view.temperatureReadings.map((reading) => reading.temperatures_c[28])).toEqual([
+      21.5,
+      25,
+      29,
+    ]);
+    expect(view.chartData.map((row) => row.t29)).toEqual([21.5, 25, 29]);
+    expect(view.chartData.map((row) => row.t28)).toEqual([21.34, 21.34, 21.34]);
+    expect(view.chartData.map((row) => row.t30)).toEqual([21.71, 21.71, 21.71]);
+    expect(view.chartData.map((row) => row.timestamp)).toEqual(timestamps);
+  });
 });

@@ -1,6 +1,7 @@
 # AT4532 — protocolo físico de engenharia
 
-Status: `vendor_documented`, com `physical_validation = pending`. Revisão documental: 2026-08-25.
+Status: comandos `vendor_documented`; `FETCH?` observado fisicamente em 2026-08-25 como frame
+`TCP-32`; identidade ainda `unconfirmed` porque `*IDN?` retornou zero bytes.
 
 ## Decisão
 
@@ -25,7 +26,8 @@ seções 8.1–8.4 e 9.1–9.5, páginas impressas 24–30.
 | Parity | none (`N`) | seção 8.3 |
 | Stop bits | 1 | seção 8.3 |
 | Flow control | nenhum; CTS/RTS não usados | seção 8.1 |
-| Encoding | ASCII | seção 2.3.6 |
+| Encoding TX | ASCII | seção 2.3.6 |
+| Encoding RX | ASCII no formato simples; CP936/GBK estrito no `TCP-32` observado | byte `A1 E6` representa `℃` |
 | Terminador | LF, byte `0A` | seção 9.1 |
 | Endereço | não aplicável a SCPI serial | — |
 | Timeout recomendado | não informado | timeout de 2 s é política do app, não parâmetro homologado |
@@ -58,17 +60,40 @@ recebem esse fallback.
 - Nome funcional: `temperatures`
 - Comando exato: `FETCH?`
 - Bytes TX: `46 45 54 43 48 3F 0A`
-- Encoding/terminador: ASCII + LF
+- Encoding/terminador: ASCII + LF no formato simples; CP936/GBK + LF no `TCP-32` físico
 - Exemplo TX: `FETCH?\n`
 - Exemplo RX oficial: `+1.00000e-05, +1.00000e-05, +1.00000e-05\n`
 - Campos: de 1 a 32 números ASCII separados por vírgula; a quantidade acompanha os canais
 - Unidade: unidade configurada no instrumento; a integração exige Celsius no ensaio
-- Parser: frame único, LF obrigatório, CR anterior ao LF tolerado e até 32 posições inequívocas
+- Parser simples: frame único, LF obrigatório, CR anterior ao LF tolerado e de 1 a 32
+  posições; compatibilidade mantida
 - Campos numéricos: positivos, negativos, zero, decimais e notação científica finita
 - Campo ainda desconhecido: preservado integralmente como `unknown_unavailable` somente no canal;
   não invalida valores numéricos dos outros canais
 - Erros de frame: timeout, parcial, múltiplos frames, controle não ASCII ou mais de 32 campos
 - Fonte: User's Guide Rev.A6, seção 9.5.3.1, p.30
+
+#### Frame físico `TCP-32`
+
+A captura física tem a forma `TCP-32,T:<timestamp>,<ambiente>,...`, cerca de 694 bytes e 69
+campos na observação fornecida. O reconhecimento não usa apenas o tamanho ou um CSV longo:
+exige prefixo exato, timestamp `T:` parseável, terceiro campo ambiente numérico, bloco primário
+de exatamente 32 tokens estruturados e pelo menos uma temperatura válida. Os campos posteriores
+ao bloco primário são preservados como `auxiliary_fields_raw`; nenhuma semântica foi atribuída.
+
+Cada token primário tem a forma `<leitura>|<tipo de termopar>|℃`. `K` é o tipo do termopar,
+não Kelvin. A posição 1 é CH01 e a posição 32 é CH32. A temperatura ambiente do terceiro
+campo é metadado do frame e não participa do mapa nem das estatísticas dos termopares.
+
+Na captura conhecida, CH01–CH24 retornaram `Open|K|℃` e CH25–CH32 retornaram valores
+numéricos. `Open` é agora sentinela físico desse formato: resulta em `temperature_c=null` e
+`quality=open_sensor`, preservando o token original. Zero continua sendo uma temperatura real.
+O timestamp do equipamento é preservado como timestamp da leitura, junto com seu texto raw.
+
+O RX sempre conserva HEX e uma representação reversível dos bytes. A decodificação tenta
+ASCII estrito e, para `TCP-32`, CP936 estrito; `errors=ignore` não é usado. O diagnóstico registra
+`wire_encoding`, tipo e total de campos, metadados, 32 tokens/canais, campos auxiliares, canais
+abertos/válidos, timestamps e erros do parser.
 
 ### Unidade Celsius
 
@@ -81,17 +106,13 @@ recebem esse fallback.
 
 ## Limitações explícitas
 
-O guia AT45xx encontrado não define o sentinela retornado por `FETCH?` para termopar aberto,
-canal desligado ou overflow. Por isso nenhum número é traduzido arbitrariamente para
-`open_sensor`. Valores fora da faixa publicada de -200 °C a 1800 °C são preservados no raw e
-marcados `invalid_out_of_range`; a distinção `open_sensor` depende da resposta física ou de
-documentação oficial adicional. MODBUS, checksum e registradores não foram implementados.
+O guia AT45xx não documenta o frame enriquecido nem os campos auxiliares, mas `Open|K|℃` foi
+confirmado no RX físico fornecido. O significado dos campos posteriores aos 32 canais, sentinelas
+além de `Open`, canal desligado e overflow continua desconhecido e não é inferido. Valores
+numéricos fora da faixa publicada de -200 °C a 1800 °C são preservados no raw e marcados
+`invalid_out_of_range`. MODBUS, checksum e registradores não foram implementados.
 
-O texto `Open` foi observado na exportação do Instrument V1.8.7 para CH01–CH24, mas ainda não no
-raw SCPI. Portanto continua preservado como token desconhecido, sem ser declarado sentinela do
-protocolo. Zero permanece uma temperatura legítima.
-
-O diagnóstico registra TX/RX ASCII e HEX, timestamps, latência, classificação, raw `FETCH?`,
+O diagnóstico registra TX/RX textual e HEX, encoding, timestamps, latência, classificação, raw `FETCH?`,
 quantidade recebida, terminador, quantidade de frames, tokens, valor/qualidade individual de CH01
 a CH32 e erro/timeout. Canais válidos são destacados dinamicamente, sem fixar quais ponteiras
 devem estar conectadas.

@@ -80,26 +80,28 @@ class SerialTransport:
                 rtscts=False,
                 dsrdtr=False,
             )
+            if not self.is_open:
+                raise SerialTransportError(
+                    "serial_open_failed", "A porta serial não permaneceu aberta."
+                )
+            pending_payload = await self._pending_input()
+            if hasattr(self.connection, "reset_input_buffer"):
+                await asyncio.to_thread(self.connection.reset_input_buffer)
+            if hasattr(self.connection, "reset_output_buffer"):
+                await asyncio.to_thread(self.connection.reset_output_buffer)
+            self.open_boundary = {
+                "pending_input_bytes": len(pending_payload),
+                "pending_input_ascii": pending_payload.decode("ascii", "backslashreplace")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n"),
+                "pending_input_hex": pending_payload.hex(" ").upper(),
+                "input_buffer_reset": hasattr(self.connection, "reset_input_buffer"),
+                "output_buffer_reset": hasattr(self.connection, "reset_output_buffer"),
+            }
+        except SerialTransportError:
+            raise
         except (serial.SerialException, PermissionError, OSError) as exc:
             raise classify_serial_error(exc) from exc
-        if not self.is_open:
-            raise SerialTransportError(
-                "serial_open_failed", "A porta serial não permaneceu aberta."
-            )
-        pending_payload = await self._pending_input()
-        if hasattr(self.connection, "reset_input_buffer"):
-            await asyncio.to_thread(self.connection.reset_input_buffer)
-        if hasattr(self.connection, "reset_output_buffer"):
-            await asyncio.to_thread(self.connection.reset_output_buffer)
-        self.open_boundary = {
-            "pending_input_bytes": len(pending_payload),
-            "pending_input_ascii": pending_payload.decode("ascii", "backslashreplace")
-            .replace("\r", "\\r")
-            .replace("\n", "\\n"),
-            "pending_input_hex": pending_payload.hex(" ").upper(),
-            "input_buffer_reset": hasattr(self.connection, "reset_input_buffer"),
-            "output_buffer_reset": hasattr(self.connection, "reset_output_buffer"),
-        }
         return (monotonic() - started) * 1000
 
     async def _pending_input(self) -> bytes:
@@ -189,12 +191,16 @@ class SerialTransport:
 
     async def close(self) -> None:
         connection = self.connection
-        self.connection = None
         if connection and getattr(connection, "is_open", False):
             try:
                 await asyncio.to_thread(connection.close)
             except (serial.SerialException, PermissionError, OSError) as exc:
                 raise classify_serial_error(exc) from exc
+            if getattr(connection, "is_open", False):
+                raise SerialTransportError(
+                    "serial_close_failed", "A porta serial não foi liberada."
+                )
+        self.connection = None
 
 
 class At4532SerialTransport(SerialTransport):
