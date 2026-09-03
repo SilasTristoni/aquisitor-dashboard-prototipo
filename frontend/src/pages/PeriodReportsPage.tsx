@@ -38,8 +38,14 @@ type Preview = {
       energy_wh: number;
       active_power_w: { mean?: number; max?: number };
     };
+    temperature: {
+      max?: number;
+      critical_channel_label?: string;
+      maximum_delta_t?: { value_c: number };
+    };
   };
   selected_channels: number[];
+  channel_labels: Record<string, string>;
   series: Array<{
     session_id: number;
     session_name: string;
@@ -84,7 +90,8 @@ export default function PeriodReportsPage() {
   const [notes, setNotes] = useState("");
   const [deviceId, setDeviceId] = useState(0);
   const [filterSessionId, setFilterSessionId] = useState(0);
-  const [channels, setChannels] = useState<number[]>(Array.from({ length: 8 }, (_, index) => index + 1));
+  const [channels, setChannels] = useState<number[]>([]);
+  const [includeOpenChannels, setIncludeOpenChannels] = useState(false);
   const [includePower, setIncludePower] = useState(true);
   const [includeTemperatures, setIncludeTemperatures] = useState(true);
   const [includeElectrical, setIncludeElectrical] = useState(true);
@@ -103,8 +110,7 @@ export default function PeriodReportsPage() {
     start
     && end
     && new Date(end) > new Date(start)
-    && (includePower || includeTemperatures || includeElectrical)
-    && (!includeTemperatures || channels.length),
+    && (includePower || includeTemperatures || includeElectrical),
   );
 
   async function load() {
@@ -147,6 +153,7 @@ export default function PeriodReportsPage() {
       device_ids: deviceId ? [deviceId] : null,
       session_ids: filterSessionId ? [filterSessionId] : null,
       channels: channels.length ? channels : null,
+      include_open_channels: includeOpenChannels,
       include_power: includePower,
       include_temperatures: includeTemperatures,
       include_electrical_details: includeElectrical,
@@ -181,16 +188,21 @@ export default function PeriodReportsPage() {
     }
   }
 
-  async function generateFile(kind: "pdf" | "png" | "jpeg") {
+  async function generateFile(kind: "pdf" | "png" | "jpeg" | "xlsx" | "csv" | "executive.png" | "executive.pdf") {
     if (!periodValid) {
       setError("Revise as datas, métricas e canais antes de gerar o arquivo.");
       return;
     }
     setError("");
-    setBusy(kind === "pdf" ? "Consultando dados, renderizando gráficos e montando o PDF…" : "Consultando dados e renderizando o gráfico…");
+    setBusy(kind === "pdf" ? "Consultando dados, renderizando gráficos e montando o PDF…" : "Preparando o arquivo profissional…");
     try {
-      const endpoint = kind === "pdf" ? "/reports/period/pdf" : `/reports/period/chart.${kind}`;
-      await downloadWithBody(endpoint, `relatorio-periodo.${kind}`, payload());
+      const endpoint = ["pdf", "xlsx", "csv"].includes(kind)
+        ? `/reports/period/${kind}`
+        : kind.startsWith("executive")
+          ? `/reports/period/${kind}`
+          : `/reports/period/chart.${kind}`;
+      const extension = kind.split(".").at(-1) ?? kind;
+      await downloadWithBody(endpoint, `relatorio-periodo.${extension}`, payload());
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Falha ao gerar arquivo");
@@ -226,7 +238,7 @@ export default function PeriodReportsPage() {
               </div>
               <label className="field"><span>Descrição</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} /></label>
               <label className="field"><span>Notas</span><textarea value={notes} onChange={(event) => setNotes(event.target.value)} /></label>
-              <div className="field"><span>Canais incluídos</span><div className="channel-picker">{Array.from({ length: 32 }, (_, index) => index + 1).map((channel) => <label key={channel}><input type="checkbox" checked={channels.includes(channel)} onChange={() => toggleChannel(channel)} /> T{channel}</label>)}</div></div>
+              <div className="field"><span>Canais incluídos</span><p className="hint">Sem seleção manual, o relatório identifica automaticamente somente os canais com leituras válidas.</p><div className="channel-picker">{Array.from({ length: 32 }, (_, index) => index + 1).map((channel) => <label key={channel}><input type="checkbox" checked={channels.includes(channel)} onChange={() => toggleChannel(channel)} /> T{channel}</label>)}</div><button className="button small ghost" type="button" onClick={() => setChannels([])}>Usar canais ativos automaticamente</button></div>
               <div className="check-grid">
                 <label><input type="checkbox" checked={includePower} onChange={(event) => setIncludePower(event.target.checked)} /> Potência</label>
                 <label><input type="checkbox" checked={includeTemperatures} onChange={(event) => setIncludeTemperatures(event.target.checked)} /> Temperaturas</label>
@@ -234,6 +246,7 @@ export default function PeriodReportsPage() {
                 <label><input type="checkbox" checked={includeAlerts} onChange={(event) => setIncludeAlerts(event.target.checked)} /> Alertas</label>
                 <label><input type="checkbox" checked={includeQuality} onChange={(event) => setIncludeQuality(event.target.checked)} /> Qualidade</label>
                 <label><input type="checkbox" checked={includeTable} onChange={(event) => setIncludeTable(event.target.checked)} /> Tabela resumida</label>
+                <label><input type="checkbox" checked={includeOpenChannels} onChange={(event) => setIncludeOpenChannels(event.target.checked)} /> Mostrar canais Open</label>
               </div>
               <details className="advanced-options"><summary>Opções avançadas</summary><div className="form-grid">
                 <label className="field"><span>Orientação</span><select value={orientation} onChange={(event) => setOrientation(event.target.value)}><option value="landscape">Paisagem</option><option value="portrait">Retrato</option></select></label>
@@ -248,8 +261,12 @@ export default function PeriodReportsPage() {
               <div className="report-buttons">
                 <button className="button secondary" disabled={Boolean(busy) || !periodValid} onClick={() => void generatePreview()}><Search /> Gerar prévia</button>
                 <button className="button primary" disabled={Boolean(busy) || !periodValid} onClick={() => void generateFile("pdf")}><FileText /> Gerar PDF</button>
+                <button className="button secondary" disabled={Boolean(busy) || !periodValid} onClick={() => void generateFile("xlsx")}><FileSpreadsheet /> XLSX técnico</button>
+                <button className="button secondary" disabled={Boolean(busy) || !periodValid} onClick={() => void generateFile("executive.png")}><FileImage /> Resumo executivo</button>
+                <button className="button ghost" disabled={Boolean(busy) || !periodValid} onClick={() => void generateFile("executive.pdf")}><FileText /> Resumo 1 página</button>
                 <button className="button ghost" disabled={Boolean(busy) || !periodValid} onClick={() => void generateFile("png")}><FileImage /> PNG</button>
                 <button className="button ghost" disabled={Boolean(busy) || !periodValid} onClick={() => void generateFile("jpeg")}><FileImage /> JPEG</button>
+                <button className="button ghost" disabled={Boolean(busy) || !periodValid} onClick={() => void generateFile("csv")}><Download /> CSV</button>
               </div>
               {!periodValid && <p className="hint danger-text">O fim deve ser posterior ao início; selecione ao menos uma métrica e os canais térmicos.</p>}
               {busy && <Spinner label={busy} />}
@@ -258,11 +275,11 @@ export default function PeriodReportsPage() {
             <Panel title="Prévia do período" kicker="DADOS REDUZIDOS PARA VISUALIZAÇÃO">
               {!preview ? <Empty title="Configure o período e gere uma prévia" text="As estatísticas usarão todos os dados; apenas o gráfico será reduzido." /> : (
                 <div className="period-preview">
-                  <div className="metrics-grid four"><Metric label="Sessões" value={preview.statistics.general.session_count} /><Metric label="Amostras elétricas" value={preview.statistics.general.electrical_sample_count.toLocaleString("pt-BR")} /><Metric label="Amostras térmicas" value={preview.statistics.general.temperature_sample_count.toLocaleString("pt-BR")} /><Metric label="Energia" value={`${preview.statistics.electrical.energy_wh.toFixed(3)} Wh`} /></div>
+                  <div className="metrics-grid four"><Metric label="Sessões" value={preview.statistics.general.session_count} /><Metric label="Potência média" value={preview.statistics.electrical.active_power_w.mean == null ? "—" : `${preview.statistics.electrical.active_power_w.mean.toFixed(2)} W`} /><Metric label="Temperatura máxima" value={preview.statistics.temperature.max == null ? "—" : `${preview.statistics.temperature.max.toFixed(2)} °C`} hint={preview.statistics.temperature.critical_channel_label} /><Metric label="Energia" value={`${preview.statistics.electrical.energy_wh.toFixed(3)} Wh`} /></div>
                   {preview.warnings.map((warning) => <div className="preview-warning" key={warning}><AlertTriangle /> {warning}</div>)}
                   {preview.series.map((series) => {
                     const points = mergedSeries(series);
-                    return <div className="preview-chart" key={series.session_id}><h3>{series.session_name}</h3><ResponsiveContainer width="100%" height={280}><LineChart data={points}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="timestamp" tickFormatter={(value) => new Date(value).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })} minTickGap={45} /><YAxis yAxisId="power" /><YAxis yAxisId="temperature" orientation="right" /><Tooltip labelFormatter={(value) => formatDate(String(value))} /><Legend /><Line yAxisId="power" type="linear" dataKey="active_power_w" name="Potência (W)" stroke="#3B82F6" dot={false} connectNulls={false} />{preview.selected_channels.slice(0, 8).map((channel, index) => <Line key={channel} yAxisId="temperature" type="linear" dataKey={`channel_${channel}`} name={`T${channel}`} stroke={channelColors[index % channelColors.length]} dot={false} connectNulls={false} />)}</LineChart></ResponsiveContainer></div>;
+                    return <div className="preview-chart" key={series.session_id}><h3>{series.session_name}</h3><ResponsiveContainer width="100%" height={330}><LineChart data={points}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="timestamp" tickFormatter={(value) => new Date(value).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" })} minTickGap={45} /><YAxis yAxisId="temperature" unit=" °C" /><YAxis yAxisId="power" orientation="right" unit=" W" /><Tooltip labelFormatter={(value) => formatDate(String(value))} /><Legend /><Line yAxisId="power" type="linear" dataKey="active_power_w" name="Potência ativa" stroke="#2563EB" strokeWidth={2.5} dot={false} connectNulls={false} />{preview.selected_channels.map((channel) => <Line key={channel} yAxisId="temperature" type="linear" dataKey={`channel_${channel}`} name={preview.channel_labels[String(channel)] ?? `T${channel}`} stroke={channelColors[(channel - 1) % channelColors.length]} dot={false} connectNulls={false} />)}</LineChart></ResponsiveContainer></div>;
                   })}
                 </div>
               )}

@@ -69,6 +69,7 @@ from app.schemas.contracts import (
     SerialDiagnosticReadRequest,
     SessionCreate,
     SessionStartResult,
+    SessionUpdate,
     SimulatorConfigInput,
     SourceConnectionRequest,
     SourceConnectionResult,
@@ -87,11 +88,13 @@ from app.services.device_policy import (
 from app.services.diagnostic_export import create_diagnostic_zip
 from app.services.imports import create_import_session
 from app.services.period_documents import (
+    render_executive_summary,
     render_period_chart,
     render_period_pdf,
     safe_report_filename,
 )
 from app.services.period_reporting import PeriodReportDataService
+from app.services.period_workbook import render_period_csv, render_period_xlsx
 from app.services.protocol_probe import protocol_probe_service
 from app.services.reporting import create_chart_image, create_csv, create_pdf, create_xlsx
 from app.services.serial_diagnostic import real_serial_diagnostic_service
@@ -324,9 +327,10 @@ def create_user(payload: UserCreate, db: Db, _: User = Depends(require_roles("ad
 
 @router.get("/devices")
 def list_devices(db: Db, _: CurrentUser) -> list[dict]:
-    devices = list(
-        db.scalars(select(Device).where(Device.active.is_(True)).order_by(Device.name))
-    )
+    conditions = [Device.active.is_(True)]
+    if settings.environment not in {"development", "test"}:
+        conditions.append(Device.protocol != "simulator")
+    devices = list(db.scalars(select(Device).where(*conditions).order_by(Device.name)))
     return [
         _device_dict(
             device,
@@ -338,6 +342,11 @@ def list_devices(db: Db, _: CurrentUser) -> list[dict]:
 
 @router.post("/devices", status_code=201)
 def create_device(payload: DeviceInput, db: Db, _: User = Depends(require_roles("admin"))) -> dict:
+    if payload.protocol == "simulator" and settings.environment not in {"development", "test"}:
+        raise HTTPException(
+            status_code=403,
+            detail="O simulador está disponível somente em desenvolvimento e testes.",
+        )
     _ensure_active_port_is_unique(
         db,
         port=payload.port,
@@ -499,10 +508,7 @@ def update_device(
         if payload.serial_settings is None and "serial" in current_metadata:
             preserved_at4532_metadata["serial"] = dict(current_metadata["serial"])
     preserved_verification = {}
-    if (
-        device.protocol == "at4532_serial"
-        and at4532_has_current_measurement_verification(device)
-    ):
+    if device.protocol == "at4532_serial" and at4532_has_current_measurement_verification(device):
         preserved_verification = {
             field: current_metadata[field]
             for field in _AT4532_SERVER_METADATA_FIELDS
@@ -573,9 +579,7 @@ async def connect_device_sources(
             continue
         device = db.get(Device, device_id)
         if not device or not device.active:
-            failures[role] = _source_failure(
-                device_id, "Equipamento não encontrado ou inativo."
-            )
+            failures[role] = _source_failure(device_id, "Equipamento não encontrado ou inativo.")
             continue
         if protocol_error := _source_protocol_error(role, device):
             failures[role] = _source_failure(device_id, protocol_error)
@@ -649,11 +653,7 @@ async def export_complete_diagnostic(
         )
     discoveries = usb_discovery_service.discover(db, _active_device_ports(db))
     physical_devices = list(
-        db.scalars(
-            select(Device).where(
-                Device.protocol.in_(["at4532_serial", "gpm8213_serial"])
-            )
-        )
+        db.scalars(select(Device).where(Device.protocol.in_(["at4532_serial", "gpm8213_serial"])))
     )
     integration = await acquisition_service.integration_snapshot()
     payload = create_diagnostic_zip(
@@ -1042,10 +1042,14 @@ async def start_session(
         )
     primary_device = devices[0][1]
     values = payload.model_dump(
-        exclude={"device_id", "temperature_device_id", "electrical_device_id"}
+        exclude={"device_id", "temperature_device_id", "electrical_device_id", "metadata"}
     )
     session = MeasurementSession(
-        **values, device_id=primary_device.id, user_id=user.id, status="running"
+        **values,
+        metadata_json=payload.metadata.model_dump(exclude_none=True),
+        device_id=primary_device.id,
+        user_id=user.id,
+        status="running",
     )
     db.add(session)
     db.flush()
@@ -1087,9 +1091,7 @@ async def start_session(
     )
     db.commit()
     db.refresh(session)
-    if payload.device_id and not (
-        payload.temperature_device_id or payload.electrical_device_id
-    ):
+    if payload.device_id and not (payload.temperature_device_id or payload.electrical_device_id):
         device_id = payload.device_id
         try:
             await acquisition_service.attach_session(device_id, session.id)
@@ -1194,19 +1196,21 @@ async def start_session(
         )
     db.commit()
     db.refresh(session)
-    return SessionStartResult.model_validate({
-        "id": session.id,
-        "device_id": session.device_id,
-        "status": session.status,
-        "started_at": session.started_at,
-        "devices": [
-            {"role": role, "device": _device_dict(device)}
-            for role, device in devices
-            if role == "combined"
-            or connection["thermal" if role == "temperature" else role]["success"]
-        ],
-        "connection": connection,
-    })
+    return SessionStartResult.model_validate(
+        {
+            "id": session.id,
+            "device_id": session.device_id,
+            "status": session.status,
+            "started_at": session.started_at,
+            "devices": [
+                {"role": role, "device": _device_dict(device)}
+                for role, device in devices
+                if role == "combined"
+                or connection["thermal" if role == "temperature" else role]["success"]
+            ],
+            "connection": connection,
+        }
+    )
 
 
 @router.get("/sessions/{session_id}")
@@ -1228,6 +1232,7 @@ def get_session(session_id: int, db: Db, _: CurrentUser) -> dict:
         "name": session.name,
         "description": session.description,
         "notes": session.notes,
+        "metadata": session.metadata_json or {},
         "status": session.status,
         "started_at": session.started_at,
         "ended_at": session.ended_at,
@@ -1241,7 +1246,62 @@ def get_session(session_id: int, db: Db, _: CurrentUser) -> dict:
         ]
         or [{"role": "combined", "device": _device_dict(session.device)}],
         "operator": {"id": session.user.id, "name": session.user.name, "email": session.user.email},
+        "channels": [
+            {
+                "channel": row.channel,
+                "name": row.name,
+                "enabled": row.enabled,
+                "sensor_type": row.sensor_type,
+                "color": row.color,
+            }
+            for row in db.scalars(
+                select(SessionChannelConfiguration)
+                .where(SessionChannelConfiguration.session_id == session_id)
+                .order_by(
+                    SessionChannelConfiguration.display_order, SessionChannelConfiguration.channel
+                )
+            )
+        ],
         "statistics": session_statistics(db, session_id),
+    }
+
+
+@router.patch("/sessions/{session_id}")
+def update_session(
+    session_id: int,
+    payload: SessionUpdate,
+    db: Db,
+    _: User = Depends(require_roles("admin", "operator")),
+) -> dict:
+    session = db.get(MeasurementSession, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Sessão não encontrada")
+    for field in ("name", "description", "notes"):
+        value = getattr(payload, field)
+        if value is not None:
+            setattr(session, field, value)
+    if payload.metadata is not None:
+        session.metadata_json = payload.metadata.model_dump(exclude_none=True)
+    if payload.channel_names is not None:
+        snapshots = {
+            row.channel: row
+            for row in db.scalars(
+                select(SessionChannelConfiguration).where(
+                    SessionChannelConfiguration.session_id == session_id
+                )
+            )
+        }
+        for channel, name in payload.channel_names.items():
+            if channel in snapshots:
+                snapshots[channel].name = name or f"T{channel}"
+    db.commit()
+    return {
+        "id": session.id,
+        "name": session.name,
+        "description": session.description,
+        "notes": session.notes,
+        "metadata": session.metadata_json or {},
+        "channel_names": payload.channel_names or {},
     }
 
 
@@ -1882,6 +1942,105 @@ def download_period_chart_jpeg(
     return _period_chart_response(payload, db, user, "jpeg")
 
 
+@router.post("/reports/period/xlsx")
+def download_period_xlsx(
+    payload: PeriodReportRequest, db: Db, user: CurrentUser
+) -> StreamingResponse:
+    report = _period_report_record(db, payload, user.id, "xlsx")
+    try:
+        content = _finish_period_report(
+            db,
+            report,
+            lambda: render_period_xlsx(PeriodReportDataService(db).collect(payload), payload),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": _period_content_disposition(payload.title, "xlsx")},
+    )
+
+
+@router.post("/reports/period/csv")
+def download_period_csv(
+    payload: PeriodReportRequest,
+    db: Db,
+    user: CurrentUser,
+    dataset: Literal["electrical", "thermal", "synchronized"] = "synchronized",
+) -> StreamingResponse:
+    report = _period_report_record(db, payload, user.id, "csv")
+    try:
+        content = _finish_period_report(
+            db,
+            report,
+            lambda: render_period_csv(
+                PeriodReportDataService(db).collect(payload), payload, dataset
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": _period_content_disposition(payload.title, "csv")},
+    )
+
+
+def _executive_summary_response(
+    payload: PeriodReportRequest,
+    db: Session,
+    user: User,
+    output_type: Literal["png", "jpeg", "pdf"],
+) -> StreamingResponse:
+    report = _period_report_record(db, payload, user.id, f"summary_{output_type}")
+    try:
+        content = _finish_period_report(
+            db,
+            report,
+            lambda: render_executive_summary(
+                PeriodReportDataService(db).collect(payload), payload, output_type
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    media_type = (
+        "image/jpeg"
+        if output_type == "jpeg"
+        else f"{'application' if output_type == 'pdf' else 'image'}/{output_type}"
+    )
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": _period_content_disposition(
+                f"{payload.title}-resumo-executivo", output_type
+            )
+        },
+    )
+
+
+@router.post("/reports/period/executive.png")
+def download_executive_png(
+    payload: PeriodReportRequest, db: Db, user: CurrentUser
+) -> StreamingResponse:
+    return _executive_summary_response(payload, db, user, "png")
+
+
+@router.post("/reports/period/executive.jpeg")
+def download_executive_jpeg(
+    payload: PeriodReportRequest, db: Db, user: CurrentUser
+) -> StreamingResponse:
+    return _executive_summary_response(payload, db, user, "jpeg")
+
+
+@router.post("/reports/period/executive.pdf")
+def download_executive_pdf(
+    payload: PeriodReportRequest, db: Db, user: CurrentUser
+) -> StreamingResponse:
+    return _executive_summary_response(payload, db, user, "pdf")
+
+
 @router.get("/reports/sessions/{session_id}.{report_type}")
 def download_report(
     session_id: int,
@@ -1939,6 +2098,8 @@ async def combined_acquisition_status(_: CurrentUser) -> dict:
 
 @router.get("/simulator/scenarios")
 def simulator_scenarios(_: CurrentUser) -> list[str]:
+    if settings.environment not in {"development", "test"}:
+        raise HTTPException(status_code=404, detail="Recurso não disponível nesta build.")
     return list(SCENARIOS)
 
 
@@ -1948,6 +2109,8 @@ async def configure_simulator(
     payload: SimulatorConfigInput,
     _: User = Depends(require_roles("admin", "operator")),
 ) -> dict:
+    if settings.environment not in {"development", "test"}:
+        raise HTTPException(status_code=404, detail="Recurso não disponível nesta build.")
     try:
         return await acquisition_service.configure_simulator(device_id, payload)
     except ValueError as exc:
@@ -1958,6 +2121,8 @@ async def configure_simulator(
 async def apply_simulator_scenario(
     device_id: int, scenario: str, _: User = Depends(require_roles("admin", "operator"))
 ) -> dict:
+    if settings.environment not in {"development", "test"}:
+        raise HTTPException(status_code=404, detail="Recurso não disponível nesta build.")
     try:
         return await acquisition_service.apply_scenario(device_id, scenario)
     except ValueError as exc:

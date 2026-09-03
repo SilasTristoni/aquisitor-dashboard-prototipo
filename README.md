@@ -1,4 +1,4 @@
-# ThermoPower Monitor 0.5.6-physical-alpha
+# ThermoPower Monitor 0.6.0-client-preview
 
 Plataforma full-stack para aquisição industrial combinada: até 32 temperaturas pelo Applent AT4532 e grandezas elétricas pelo GW Instek GPM-8213. As sessões são rastreáveis, aceitam uma ou as duas fontes, sincronizam timestamps e mantêm o protótipo original em `legacy/`.
 
@@ -13,7 +13,7 @@ Plataforma full-stack para aquisição industrial combinada: até 32 temperatura
 ## Funcionalidades entregues
 
 - login JWT, hash bcrypt, expiração, rate limit básico e RBAC para Administrador, Operador e Visualizador;
-- dashboard em tempo real por WebSocket, indicadores, janela temporal, pausa visual, curvas e mapa térmico de 32 canais;
+- dashboard executivo em tempo real por WebSocket, indicadores elétricos/térmicos, energia, ΔT, curvas e mapa térmico de 32 canais;
 - ciclo persistido de sessão: iniciar, pausar, continuar, finalizar, cancelar, duplicar e excluir conforme permissão;
 - potência recebida em mW, W ou kW, preservada na forma original e normalizada em watts;
 - configuração dos 32 termopares, offset, tipo, cor, localização, ordem e limites;
@@ -23,7 +23,8 @@ Plataforma full-stack para aquisição industrial combinada: até 32 temperatura
 - regras e eventos de alerta com severidade, canal, reconhecimento e cooldown;
 - eventos de conexão, sessão, configuração, login e falhas;
 - estatísticas de média, mínimo, máximo, mediana, desvio padrão, amplitude, percentil 95, frequência e lacunas;
-- relatórios CSV, XLSX e PDF gerados no backend;
+- relatório técnico PDF, resumo executivo de uma página e imagem para e-mail gerados no backend;
+- XLSX profissional com resumo, curvas, estatística por canal, grandezas elétricas, amostras reais separadas, dados sincronizados e metadados;
 - relatórios por intervalo de data/hora atravessando múltiplas sessões, com estatísticas sobre
   todos os dados e gráficos Matplotlib reais em PDF/PNG/JPEG;
 - descoberta USB/COM pelo backend, associação por metadados reais e diagnóstico em etapas;
@@ -85,9 +86,9 @@ Acesse `http://localhost:5173`. A API estará em `http://localhost:8000` e o Swa
 
 No Windows, use `iniciar-windows.bat` na raiz. Na primeira execução ele cria o ambiente virtual, instala dependências, aplica migrações, abre backend e frontend e acessa `http://127.0.0.1:5173`. Se falhar, execute `diagnostico-windows.bat` e envie a saída ao suporte.
 
-Para gerar a build física de engenharia (sem instalador e sem release final), execute
+Para gerar a prévia de cliente Windows (sem instalador final), execute
 `scripts\build-windows-engineering.ps1`. O smoke do executável empacotado é um gate automático
-desse script. Depois da aprovação, siga o [roteiro de bancada](docs/PHYSICAL_ENGINEERING_TEST.md).
+desse script e valida login local, ausência do simulador e os endpoints de relatório.
 
 ### Importação AT4532 + GPM-8213
 
@@ -103,12 +104,13 @@ homologação final de valores, estabilidade e driver no computador da cliente.
 
 Linux/macOS usam os equivalentes `source .venv/bin/activate` e `.venv/bin/python`.
 
-## Usuário de demonstração
+## Primeiro acesso local
 
-- E-mail: `admin@demo.thermopower.com`
-- Senha: `ThermoPower@123`
+- A build Windows cria `PRIMEIRO-ACESSO.txt` na pasta de dados do usuário na primeira execução.
+- A senha temporária é gerada localmente e não faz parte do EXE ou do ZIP.
 
-Essas credenciais são exclusivamente iniciais. Defina `THERMOPOWER_DEMO_ADMIN_PASSWORD` e um segredo JWT forte em qualquer implantação. Não exponha a configuração padrão em rede.
+No desenvolvimento, defina `THERMOPOWER_DEMO_ADMIN_EMAIL`, `THERMOPOWER_DEMO_ADMIN_PASSWORD`
+e um segredo JWT forte no ambiente. Não exponha a configuração local em rede.
 
 ## Demonstração do simulador
 

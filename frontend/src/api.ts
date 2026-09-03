@@ -70,7 +70,11 @@ export async function downloadWithBody(
 }
 
 export function formatDate(value?: string | null): string {
-  return value ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "medium" }).format(new Date(value)) : "—";
+  return value ? new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "medium",
+    timeZone: "America/Sao_Paulo",
+  }).format(new Date(value)) : "—";
 }
 
 export function formatDuration(seconds?: number | null): string {

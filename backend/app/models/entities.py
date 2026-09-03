@@ -81,6 +81,7 @@ class MeasurementSession(Base):
     sync_grid_ms: Mapped[int] = mapped_column(Integer, default=1000)
     sync_tolerance_ms: Mapped[int] = mapped_column(Integer, default=1500)
     notes: Mapped[str | None] = mapped_column(Text)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     device: Mapped[Device] = relationship()
     user: Mapped[User] = relationship()

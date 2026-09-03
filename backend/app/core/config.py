@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     access_token_minutes: int = 480
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
     demo_admin_email: str = "admin@demo.thermopower.com"
-    demo_admin_password: str = "ThermoPower@123"
+    demo_admin_password: str = ""
+    initial_admin_name: str = "Administrador local"
     measurement_batch_size: int = 25
     websocket_queue_size: int = 100
     login_attempts_per_minute: int = 8

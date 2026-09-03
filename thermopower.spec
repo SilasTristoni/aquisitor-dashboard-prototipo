@@ -10,7 +10,12 @@ datas = [
     (str(backend / "alembic"), "alembic"),
     (str(backend / "alembic.ini"), "."),
 ]
-datas += collect_data_files("matplotlib")
+datas += [
+    item
+    for item in collect_data_files("matplotlib")
+    if "sample_data" not in item[0].replace("\\", "/")
+    and "sample_data" not in item[1].replace("\\", "/")
+]
 hiddenimports = [
     "app.main",
     "matplotlib.backends.backend_agg",

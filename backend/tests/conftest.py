@@ -2,6 +2,8 @@ import os
 
 os.environ["THERMOPOWER_DATABASE_URL"] = "sqlite:///./test-thermopower.db"
 os.environ["THERMOPOWER_JWT_SECRET"] = "test-secret-with-enough-entropy-for-tests-only"
+os.environ["THERMOPOWER_DEMO_ADMIN_EMAIL"] = "admin@demo.thermopower.com"
+os.environ["THERMOPOWER_DEMO_ADMIN_PASSWORD"] = "ThermoPower@123"
 
 import pytest
 from fastapi.testclient import TestClient

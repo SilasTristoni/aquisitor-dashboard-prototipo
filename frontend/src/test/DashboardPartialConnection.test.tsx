@@ -12,6 +12,7 @@ vi.mock("recharts", () => {
   const Primitive = () => null;
   return {
     CartesianGrid: Primitive,
+    Legend: Primitive,
     Line: Primitive,
     LineChart: Chart,
     ResponsiveContainer: Container,

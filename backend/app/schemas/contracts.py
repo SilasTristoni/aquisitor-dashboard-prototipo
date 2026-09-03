@@ -76,6 +76,19 @@ class DeviceInput(BaseModel):
         return self
 
 
+class SessionMetadataInput(BaseModel):
+    product: str | None = Field(default=None, max_length=160)
+    model: str | None = Field(default=None, max_length=120)
+    sample: str | None = Field(default=None, max_length=120)
+    code: str | None = Field(default=None, max_length=120)
+    nominal_voltage: str | None = Field(default=None, max_length=80)
+    setpoint: str | None = Field(default=None, max_length=80)
+    responsible: str | None = Field(default=None, max_length=160)
+    location: str | None = Field(default=None, max_length=160)
+    project: str | None = Field(default=None, max_length=160)
+    observations: str | None = Field(default=None, max_length=4000)
+
+
 class SessionCreate(BaseModel):
     device_id: int | None = None
     temperature_device_id: int | None = None
@@ -83,6 +96,7 @@ class SessionCreate(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     description: str | None = None
     notes: str | None = None
+    metadata: SessionMetadataInput = Field(default_factory=SessionMetadataInput)
     sample_interval_ms: int = Field(default=1000, ge=100, le=60_000)
     sync_grid_ms: int = Field(default=1000, ge=100, le=60_000)
     sync_tolerance_ms: int = Field(default=1500, ge=0, le=3000)
@@ -100,6 +114,26 @@ class SessionCreate(BaseModel):
         ):
             raise ValueError("As fontes elétrica e térmica devem usar equipamentos distintos")
         return self
+
+
+class SessionUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=160)
+    description: str | None = Field(default=None, max_length=2000)
+    notes: str | None = Field(default=None, max_length=4000)
+    metadata: SessionMetadataInput | None = None
+    channel_names: dict[int, str] | None = None
+
+    @field_validator("channel_names")
+    @classmethod
+    def validate_channel_names(cls, value: dict[int, str] | None) -> dict[int, str] | None:
+        if value is None:
+            return None
+        if any(channel < 1 or channel > 32 for channel in value):
+            raise ValueError("Canais devem estar entre 1 e 32")
+        normalized = {channel: name.strip() for channel, name in value.items()}
+        if any(len(name) > 80 for name in normalized.values()):
+            raise ValueError("O nome do canal deve ter no máximo 80 caracteres")
+        return normalized
 
 
 class SourceConnectionRequest(BaseModel):
@@ -209,6 +243,7 @@ class PeriodReportRequest(BaseModel):
     device_ids: list[int] | None = Field(default=None, max_length=100)
     session_ids: list[int] | None = Field(default=None, max_length=100)
     channels: list[int] | None = Field(default=None, max_length=32)
+    include_open_channels: bool = False
     include_power: bool = True
     include_temperatures: bool = True
     include_electrical_details: bool = True

@@ -31,8 +31,9 @@ test("gera prévia por período e mantém abas de sessão e histórico", async (
     if (url.includes("/reports/period/preview")) return response({
       period: { start: "2026-01-01T10:00:00Z", end: "2026-01-01T11:00:00Z", timezone: "America/Sao_Paulo" },
       sessions: [{ id: 7, name: "Ensaio térmico", electrical_samples: 2, temperature_samples: 2 }],
-      statistics: { general: { session_count: 1, electrical_sample_count: 2, temperature_sample_count: 2, alert_count: 0, gap_count: 0, coverage_seconds: 60 }, electrical: { energy_wh: 1.25, active_power_w: { mean: 75, max: 100 } } },
+      statistics: { general: { session_count: 1, electrical_sample_count: 2, temperature_sample_count: 2, alert_count: 0, gap_count: 0, coverage_seconds: 60 }, electrical: { energy_wh: 1.25, active_power_w: { mean: 75, max: 100 } }, temperature: { max: 30, critical_channel_label: "T1", maximum_delta_t: null } },
       selected_channels: [1],
+      channel_labels: { "1": "T1" },
       series: [{ session_id: 7, session_name: "Ensaio térmico", electrical: [{ timestamp: "2026-01-01T10:00:00Z", active_power_w: 50 }], temperatures: [{ timestamp: "2026-01-01T10:00:00Z", channel_1: 30 }] }],
       warnings: ["As sessões são apresentadas como segmentos independentes."],
     });
@@ -48,7 +49,7 @@ test("gera prévia por período e mantém abas de sessão e histórico", async (
   expect(screen.getByText("1.250 Wh")).toBeInTheDocument();
   const previewCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/reports/period/preview"));
   expect(previewCall?.[1]).toMatchObject({ method: "POST" });
-  expect(JSON.parse(String(previewCall?.[1]?.body))).toMatchObject({ timezone: "America/Sao_Paulo", channels: [1, 2, 3, 4, 5, 6, 7, 8] });
+  expect(JSON.parse(String(previewCall?.[1]?.body))).toMatchObject({ timezone: "America/Sao_Paulo", channels: null, include_open_channels: false });
 
   await userEvent.click(screen.getByRole("button", { name: "Por sessão" }));
   expect(screen.getByText("COMPATIBILIDADE PRESERVADA")).toBeInTheDocument();

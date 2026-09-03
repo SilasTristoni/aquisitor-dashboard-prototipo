@@ -32,7 +32,12 @@ export function buildCombinedView(readings: Reading[]) {
     const timestamp = reading.timestamp;
     const row = rows.get(timestamp) ?? {
       timestamp,
-      time: new Date(timestamp).toLocaleTimeString("pt-BR"),
+      time: new Date(timestamp).toLocaleTimeString("pt-BR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        timeZone: "America/Sao_Paulo",
+      }),
     };
     if (isElectricalReading(reading)) row.power = reading.power_w;
     if (isTemperatureReading(reading)) {

@@ -63,6 +63,7 @@ def _numeric_statistics(values: Iterable[float | None]) -> dict[str, float | int
             "mean": None,
             "median": None,
             "standard_deviation": None,
+            "range": None,
             "p05": None,
             "p95": None,
         }
@@ -73,8 +74,120 @@ def _numeric_statistics(values: Iterable[float | None]) -> dict[str, float | int
         "mean": statistics.fmean(numbers),
         "median": statistics.median(numbers),
         "standard_deviation": statistics.pstdev(numbers) if len(numbers) > 1 else 0.0,
+        "range": numbers[-1] - numbers[0],
         "p05": _percentile(numbers, 0.05),
         "p95": _percentile(numbers, 0.95),
+    }
+
+
+def _friendly_channel_name(channel: int, names: Iterable[str]) -> tuple[str | None, str]:
+    generic = {
+        f"t{channel}".casefold(),
+        f"ch{channel}".casefold(),
+        f"canal {channel}".casefold(),
+        f"termopar {channel}".casefold(),
+    }
+    name = next(
+        (
+            candidate.strip()
+            for candidate in sorted(names, key=lambda item: item.casefold())
+            if candidate and candidate.strip().casefold() not in generic
+        ),
+        None,
+    )
+    return name, f"T{channel} — {name}" if name else f"T{channel}"
+
+
+def _suggest_stabilization(temperatures: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return a transparent engineering suggestion; it never confirms the analysis window."""
+    aggregate = []
+    for point in sorted(temperatures, key=lambda item: item["timestamp"]):
+        values = [value for value in point["channels"].values() if value is not None]
+        if values:
+            aggregate.append((point["timestamp"], statistics.fmean(values)))
+    criteria = {
+        "window_seconds": 180,
+        "maximum_slope_c_per_minute": 0.2,
+        "maximum_range_c": 1.0,
+        "minimum_points": 5,
+    }
+    for index, (timestamp, _) in enumerate(aggregate):
+        window = [
+            item for item in aggregate[index:] if (item[0] - timestamp).total_seconds() <= 180
+        ]
+        if len(window) < criteria["minimum_points"]:
+            continue
+        elapsed_minutes = (window[-1][0] - window[0][0]).total_seconds() / 60
+        if elapsed_minutes <= 0:
+            continue
+        values = [item[1] for item in window]
+        slope = (values[-1] - values[0]) / elapsed_minutes
+        if abs(slope) <= 0.2 and max(values) - min(values) <= 1.0:
+            return {
+                "suggested": True,
+                "start": timestamp.isoformat(),
+                "duration_seconds": max(0.0, (aggregate[-1][0] - timestamp).total_seconds()),
+                "slope_c_per_minute": slope,
+                "range_c": max(values) - min(values),
+                "criteria": criteria,
+                "requires_confirmation": True,
+            }
+    return {"suggested": False, "criteria": criteria, "requires_confirmation": True}
+
+
+def _power_cycle_analysis(electrical: list[dict[str, Any]]) -> dict[str, Any] | None:
+    values = [
+        point["active_power_w"] for point in electrical if point["active_power_w"] is not None
+    ]
+    if len(values) < 3:
+        return None
+    low, high = min(values), max(values)
+    if high - low < max(5.0, abs(high) * 0.2):
+        return None
+    threshold = low + (high - low) / 2
+    on_seconds = off_seconds = 0.0
+    on_values: list[float] = []
+    cycle_durations: list[float] = []
+    cycle_count = 0
+    by_session: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for point in electrical:
+        if point["active_power_w"] is not None:
+            by_session[point["session_id"]].append(point)
+    for points in by_session.values():
+        ordered = sorted(points, key=lambda item: item["timestamp"])
+        states = [point["active_power_w"] >= threshold for point in ordered]
+        if states[0]:
+            cycle_count += 1
+        cycle_started = ordered[0]["timestamp"] if states[0] else None
+        for previous, current, previous_on, current_on in zip(
+            ordered, ordered[1:], states, states[1:], strict=False
+        ):
+            seconds = max(0.0, (current["timestamp"] - previous["timestamp"]).total_seconds())
+            if seconds <= settings.report_energy_max_gap_seconds:
+                if previous_on:
+                    on_seconds += seconds
+                    on_values.append(previous["active_power_w"])
+                else:
+                    off_seconds += seconds
+            if current_on and not previous_on:
+                cycle_count += 1
+                cycle_started = current["timestamp"]
+            elif previous_on and not current_on and cycle_started is not None:
+                cycle_durations.append((current["timestamp"] - cycle_started).total_seconds())
+                cycle_started = None
+    total = on_seconds + off_seconds
+    return {
+        "threshold_w": threshold,
+        "cycle_count": cycle_count,
+        "on_seconds": on_seconds,
+        "off_seconds": off_seconds,
+        "duty_cycle_percent": 100 * on_seconds / total if total else None,
+        "mean_power_on_w": statistics.fmean(on_values) if on_values else None,
+        "maximum_power_w": high,
+        "mean_cycle_duration_seconds": statistics.fmean(cycle_durations)
+        if cycle_durations
+        else None,
+        "method": "limiar central entre os níveis mínimo e máximo observados",
     }
 
 
@@ -161,7 +274,11 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
     channel_expected: Counter[int] = Counter()
     channel_names: dict[int, set[str]] = defaultdict(set)
     per_session_channels: dict[tuple[int, int], list[float]] = defaultdict(list)
+    timed_channel_values: dict[int, list[tuple[datetime, float]]] = defaultdict(list)
+    critical_candidates: list[tuple[float, int, datetime]] = []
+    maximum_delta: dict[str, Any] | None = None
     for point in temperatures:
+        valid_at_timestamp: list[tuple[int, float]] = []
         for channel in data["selected_channels"]:
             channel_expected[channel] += 1
             value = point["channels"].get(channel)
@@ -169,17 +286,41 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
                 channel_available[channel] += 1
                 channel_values[channel].append(value)
                 per_session_channels[(point["session_id"], channel)].append(value)
+                timed_channel_values[channel].append((point["timestamp"], value))
+                critical_candidates.append((value, channel, point["timestamp"]))
+                valid_at_timestamp.append((channel, value))
             name = point["channel_names"].get(channel)
             if name:
                 channel_names[channel].add(name)
+        if len(valid_at_timestamp) >= 2:
+            cold = min(valid_at_timestamp, key=lambda item: item[1])
+            hot = max(valid_at_timestamp, key=lambda item: item[1])
+            delta = hot[1] - cold[1]
+            if maximum_delta is None or delta > maximum_delta["value_c"]:
+                maximum_delta = {
+                    "value_c": delta,
+                    "hot_channel": hot[0],
+                    "cold_channel": cold[0],
+                    "timestamp": point["timestamp"].isoformat(),
+                }
 
     channel_stats = []
     for channel in data["selected_channels"]:
         result = _numeric_statistics(channel_values[channel])
+        friendly_name, label = _friendly_channel_name(channel, channel_names[channel])
+        timed = sorted(timed_channel_values[channel])
+        heating_rate = None
+        if len(timed) > 1:
+            elapsed_minutes = (timed[-1][0] - timed[0][0]).total_seconds() / 60
+            if elapsed_minutes > 0:
+                heating_rate = (timed[-1][1] - timed[0][1]) / elapsed_minutes
         result.update(
             {
                 "channel": channel,
-                "names": sorted(channel_names[channel]) or [f"Termopar {channel}"],
+                "names": sorted(channel_names[channel]),
+                "friendly_name": friendly_name,
+                "label": label,
+                "heating_rate_c_per_minute": heating_rate,
                 "availability_percent": round(
                     100 * channel_available[channel] / channel_expected[channel], 2
                 )
@@ -200,6 +341,55 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
         )
         channel_stats.append(result)
 
+    populated_channel_stats = [item for item in channel_stats if item["count"]]
+    critical = max(critical_candidates) if critical_candidates else None
+    critical_channel = critical[1] if critical else None
+    critical_names = channel_names[critical_channel] if critical_channel is not None else []
+    _, critical_label = (
+        _friendly_channel_name(critical_channel, critical_names)
+        if critical_channel is not None
+        else (None, None)
+    )
+    overall_temperature = _numeric_statistics(
+        value for values in channel_values.values() for value in values
+    )
+    hottest_channel = (
+        max(populated_channel_stats, key=lambda item: item["max"] or -math.inf)
+        if populated_channel_stats
+        else None
+    )
+    coldest_channel = (
+        min(populated_channel_stats, key=lambda item: item["min"] or math.inf)
+        if populated_channel_stats
+        else None
+    )
+    greatest_variation = (
+        max(populated_channel_stats, key=lambda item: item["range"] or 0.0)
+        if populated_channel_stats
+        else None
+    )
+    greatest_heating_rate = max(
+        (item for item in populated_channel_stats if item["heating_rate_c_per_minute"] is not None),
+        key=lambda item: item["heating_rate_c_per_minute"],
+        default=None,
+    )
+    request = data["request"]
+    analyzed_seconds = max(0.0, (request.end - request.start).total_seconds())
+    full_session_seconds = sum(
+        max(
+            0.0,
+            (
+                (
+                    _utc(datetime.fromisoformat(session["ended_at"]))
+                    if session["ended_at"]
+                    else request.end
+                )
+                - _utc(datetime.fromisoformat(session["started_at"]))
+            ).total_seconds(),
+        )
+        for session in data["sessions"]
+    )
+
     return {
         "general": {
             "session_count": len(data["sessions"]),
@@ -209,6 +399,8 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
             "coverage_start": min(all_timestamps).isoformat() if all_timestamps else None,
             "coverage_end": max(all_timestamps).isoformat() if all_timestamps else None,
             "coverage_seconds": duration,
+            "analyzed_period_seconds": analyzed_seconds,
+            "full_session_duration_seconds": full_session_seconds,
             "observed_frequency_hz": 1 / median_interval if median_interval else None,
             "gap_count": gaps,
             "gap_seconds": gap_seconds,
@@ -238,8 +430,29 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
             "energy_gap_limit_seconds": settings.report_energy_max_gap_seconds,
             "excluded_energy_intervals": excluded_energy_intervals,
             "excluded_energy_seconds": excluded_energy_seconds,
+            "cycles": _power_cycle_analysis(electrical),
         },
         "channels": channel_stats,
+        "temperature": {
+            **overall_temperature,
+            "critical_channel": critical_channel,
+            "critical_channel_label": critical_label,
+            "critical_value_c": critical[0] if critical else None,
+            "critical_timestamp": critical[2].isoformat() if critical else None,
+            "hottest_channel": hottest_channel["channel"] if hottest_channel else None,
+            "coldest_channel": coldest_channel["channel"] if coldest_channel else None,
+            "greatest_variation_channel": greatest_variation["channel"]
+            if greatest_variation
+            else None,
+            "maximum_delta_t": maximum_delta,
+            "greatest_heating_rate": {
+                "channel": greatest_heating_rate["channel"],
+                "value_c_per_minute": greatest_heating_rate["heating_rate_c_per_minute"],
+            }
+            if greatest_heating_rate
+            else None,
+            "stabilization": _suggest_stabilization(temperatures),
+        },
     }
 
 
@@ -347,9 +560,36 @@ class PeriodReportDataService:
             snapshots,
             selected_channels,
         )
+        if not request.include_open_channels:
+            active_channels = sorted(
+                {
+                    channel
+                    for point in temperatures
+                    for channel, value in point["channels"].items()
+                    if value is not None
+                }
+            )
+            selected_channels = [
+                channel for channel in selected_channels if channel in active_channels
+            ]
+            for point in temperatures:
+                point["channels"] = {
+                    channel: value
+                    for channel, value in point["channels"].items()
+                    if channel in selected_channels
+                }
+                point["channel_names"] = {
+                    channel: name
+                    for channel, name in point["channel_names"].items()
+                    if channel in selected_channels
+                }
         selected_electrical = request.include_power or request.include_electrical_details
+        has_temperature_values = any(
+            value is not None for point in temperatures for value in point["channels"].values()
+        )
         if not (
-            (selected_electrical and electrical) or (request.include_temperatures and temperatures)
+            (selected_electrical and electrical)
+            or (request.include_temperatures and has_temperature_values)
         ):
             raise ValueError("Não existem medições no período e filtros informados")
         alerts = self._alerts(request, session_ids)
@@ -422,6 +662,9 @@ class PeriodReportDataService:
             "statistics": data["statistics"],
             "alerts": data["alerts"] if request.include_alerts else [],
             "selected_channels": data["selected_channels"],
+            "channel_labels": {
+                str(item["channel"]): item["label"] for item in data["statistics"]["channels"]
+            },
             "series": series,
             "warnings": self._warnings(data),
         }
@@ -682,6 +925,13 @@ class PeriodReportDataService:
         devices = {
             row.id: row for row in self.db.scalars(select(Device).where(Device.id.in_(device_ids)))
         }
+        roles_by_session: dict[int, dict[int, str]] = defaultdict(dict)
+        for session_id, device_id, role in self.db.execute(
+            select(SessionDevice.session_id, SessionDevice.device_id, SessionDevice.role).where(
+                SessionDevice.session_id.in_([session.id for session in sessions])
+            )
+        ):
+            roles_by_session[session_id][device_id] = role
         user_ids = sorted({session.user_id for session in sessions})
         users = {row.id: row for row in self.db.scalars(select(User).where(User.id.in_(user_ids)))}
         electrical_counts = Counter(point["session_id"] for point in electrical)
@@ -694,12 +944,28 @@ class PeriodReportDataService:
                 "ended_at": _utc(session.ended_at).isoformat() if session.ended_at else None,
                 "status": session.status,
                 "operator": users[session.user_id].name if session.user_id in users else None,
+                "metadata": dict(session.metadata_json or {}),
                 "devices": [
                     {
                         "id": device_id,
                         "name": devices[device_id].name
                         if device_id in devices
                         else f"#{device_id}",
+                        "role": roles_by_session[session.id].get(device_id, "combined"),
+                        "manufacturer": devices[device_id].manufacturer
+                        if device_id in devices
+                        else None,
+                        "model": devices[device_id].model if device_id in devices else None,
+                        "serial_number": devices[device_id].serial_number
+                        if device_id in devices
+                        else None,
+                        "port": devices[device_id].port if device_id in devices else None,
+                        "baud_rate": devices[device_id].baud_rate if device_id in devices else None,
+                        "cadence_ms": (devices[device_id].metadata_json or {}).get(
+                            "expected_interval_ms"
+                        )
+                        if device_id in devices
+                        else None,
                     }
                     for device_id in device_ids_by_session[session.id]
                 ],

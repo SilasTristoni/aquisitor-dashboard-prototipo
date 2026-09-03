@@ -52,13 +52,14 @@ def test_upgrade_accepts_schema_precreated_by_sqlalchemy(tmp_path):
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            "0007_at4532_duplicate_neutralization"
+            "0008_session_metadata"
         )
+        assert "metadata" in {
+            column["name"] for column in inspect(connection).get_columns("measurement_sessions")
+        }
         assert "session_devices" in inspect(connection).get_table_names()
         assert connection.scalar(text("SELECT count(*) FROM session_devices")) == 0
-        assert connection.scalar(
-            text("SELECT session_id FROM system_events WHERE id = 1")
-        ) is None
+        assert connection.scalar(text("SELECT session_id FROM system_events WHERE id = 1")) is None
 
 
 def test_upgrade_neutralizes_duplicate_at4532_port_without_deleting_history(tmp_path):
@@ -95,9 +96,7 @@ def test_upgrade_neutralizes_duplicate_at4532_port_without_deleting_history(tmp_
             baud_rate=19200,
             protocol="at4532_serial",
             active=True,
-            metadata_json={
-                "usb": {"manual_confirmed": True, "confirmed_port": "COM5"}
-            },
+            metadata_json={"usb": {"manual_confirmed": True, "confirmed_port": "COM5"}},
         )
         db.add_all([old, canonical])
         db.commit()

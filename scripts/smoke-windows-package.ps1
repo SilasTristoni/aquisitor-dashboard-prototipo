@@ -20,6 +20,7 @@ $ManagedEnvironmentVariables = @(
     "THERMOPOWER_DEMO_ADMIN_PASSWORD",
     "THERMOPOWER_ENVIRONMENT",
     "THERMOPOWER_FRONTEND_DIST",
+    "THERMOPOWER_INITIAL_ADMIN_NAME",
     "THERMOPOWER_JWT_SECRET",
     "THERMOPOWER_MUTEX_NAME",
     "THERMOPOWER_NO_BROWSER",
@@ -34,7 +35,7 @@ try {
     }
     $env:THERMOPOWER_APP_DATA_DIR = $SmokeData
     $env:THERMOPOWER_NO_BROWSER = "1"
-    $env:THERMOPOWER_ENVIRONMENT = "physical-alpha"
+    $env:THERMOPOWER_ENVIRONMENT = "client-preview"
     $env:THERMOPOWER_MUTEX_NAME = "ThermoPowerMonitorSmoke-" + [guid]::NewGuid().ToString("N")
     $ExpectedDatabase = Join-Path $SmokeData "data\thermopower.db"
     $ExpectedPort = $null
@@ -79,28 +80,36 @@ try {
     $Spa = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/" -TimeoutSec 5
     $BuildInfo = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/build-info" -TimeoutSec 5
     if ($BuildInfo.version -ne $ExpectedVersion -or
-        $BuildInfo.environment -ne "physical-alpha" -or
-        $BuildInfo.demo_credentials.email -ne "homologacao@demo.thermopower.com" -or
-        $BuildInfo.demo_credentials.password -ne "ThermoPower-HML@2026") {
-        throw "A configuracao exibida pela UI nao corresponde ao usuario da build de engenharia."
+        $BuildInfo.environment -ne "client-preview" -or
+        $null -ne $BuildInfo.demo_credentials) {
+        throw "A configuracao da client preview ou a ocultacao de credenciais esta incorreta."
     }
     if ($Spa.StatusCode -ne 200 -or -not $Spa.Content.Contains('id="root"')) {
         throw "A SPA empacotada nao respondeu com o root esperado."
     }
-    $LoginBody = @{
-        email = "homologacao@demo.thermopower.com"
-        password = "ThermoPower-HML@2026"
-    } | ConvertTo-Json
+    $FirstAccessPath = Join-Path $SmokeData "PRIMEIRO-ACESSO.txt"
+    if (-not (Test-Path -LiteralPath $FirstAccessPath -PathType Leaf)) {
+        throw "As credenciais locais de primeiro acesso nao foram geradas."
+    }
+    $FirstAccessLines = Get-Content -LiteralPath $FirstAccessPath
+    $LoginEmail = ($FirstAccessLines | Where-Object { $_.StartsWith("E-mail: ") } |
+        Select-Object -First 1).Substring(8)
+    $LoginPassword = ($FirstAccessLines | Where-Object { $_.StartsWith("Senha temporaria: ") -or
+        $_.StartsWith("Senha temporária: ") } | Select-Object -First 1).Split(":", 2)[1].Trim()
+    $LoginBody = @{ email = $LoginEmail; password = $LoginPassword } | ConvertTo-Json
     $Login = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/auth/login" `
         -Method Post -ContentType "application/json" -Body $LoginBody -TimeoutSec 10
-    if ($Login.user.email -ne "homologacao@demo.thermopower.com") {
-        throw "O launcher nao autenticou o usuario de homologacao esperado."
+    if ($Login.user.email -ne "admin@thermopower.com.br" -or
+        $Login.user.name -ne "Administrador local") {
+        throw "O launcher nao autenticou o administrador local esperado."
     }
     $Headers = @{ Authorization = "Bearer $($Login.access_token)" }
     $Devices = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/devices" `
         -Headers $Headers -TimeoutSec 10
     $At4532 = $Devices | Where-Object { $_.protocol -eq "at4532_serial" } | Select-Object -First 1
     $Gpm8213 = $Devices | Where-Object { $_.protocol -eq "gpm8213_serial" } | Select-Object -First 1
+    $Simulator = $Devices | Where-Object { $_.protocol -eq "simulator" } | Select-Object -First 1
+    if ($Simulator) { throw "A build de cliente exibiu um equipamento simulado." }
     if (-not $At4532 -or $At4532.baud_rate -ne 19200) {
         throw "AT4532 ausente ou sem baud rate 19200."
     }
@@ -125,6 +134,18 @@ try {
     if (-not $CombinedStatusRoute) { throw "O status da aquisicao combinada nao foi empacotado." }
     $ConnectSourcesRoute = $OpenApi.paths.PSObject.Properties.Name -contains "/api/v1/devices/connect-sources"
     if (-not $ConnectSourcesRoute) { throw "A conexao independente por fonte nao foi empacotada." }
+    $PeriodReportRoutes = @(
+        "/api/v1/reports/period/pdf",
+        "/api/v1/reports/period/xlsx",
+        "/api/v1/reports/period/csv",
+        "/api/v1/reports/period/executive.png",
+        "/api/v1/reports/period/executive.pdf"
+    )
+    foreach ($ReportRoute in $PeriodReportRoutes) {
+        if (-not ($OpenApi.paths.PSObject.Properties.Name -contains $ReportRoute)) {
+            throw "Endpoint profissional ausente do pacote: $ReportRoute"
+        }
+    }
     $DiagnosticOpenSchema = $OpenApi.components.schemas.SerialDiagnosticOpenRequest
     $EngineeringConsent = $DiagnosticOpenSchema.properties.PSObject.Properties.Name -contains "use_engineering_assumption_8n1"
     if (-not $EngineeringConsent) { throw "O consentimento explicito para a hipotese 8-N-1 nao foi empacotado." }
@@ -156,7 +177,9 @@ try {
         SpaStatus = $Spa.StatusCode
         SpaHasRoot = $Spa.Content.Contains('id="root"')
         LoginUser = $Login.user.email
-        UiCredentialsMatch = $true
+        CredentialsHiddenFromUi = ($null -eq $BuildInfo.demo_credentials)
+        FirstAccessGeneratedLocally = $true
+        SimulatorHidden = ($null -eq $Simulator)
         At4532BaudRate = $At4532.baud_rate
         At4532ManualPort = $At4532.metadata.usb.confirmed_port
         GpmSerial = $Gpm8213.serial_number
@@ -164,6 +187,7 @@ try {
         CombinedAcquisitionStatus = $CombinedStatusRoute
         IndependentSourceConnection = $ConnectSourcesRoute
         DiagnosticReadOnlyRoute = $DiagnosticRoute
+        ProfessionalReportRoutes = $PeriodReportRoutes.Count
         Engineering8N1Consent = $EngineeringConsent
         FrontendVersion = $ExpectedVersion
         LogBytes = (Get-Item -LiteralPath $LogPath).Length

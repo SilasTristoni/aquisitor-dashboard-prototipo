@@ -1,8 +1,11 @@
+import io
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
+from PIL import Image
 from sqlalchemy import select
 
 from app.core.database import SessionLocal
@@ -13,6 +16,7 @@ from app.models.entities import (
     MeasurementSession,
     Report,
     SessionChannelConfiguration,
+    SessionDevice,
     TemperatureChannelValue,
     TemperatureMeasurement,
     TemperatureSample,
@@ -131,6 +135,128 @@ def _payload(start: datetime, end: datetime) -> dict:
     }
 
 
+def _seed_client_preview_data() -> tuple[datetime, datetime, int, int]:
+    start = datetime(2026, 9, 3, 13, 0, tzinfo=UTC)
+    timestamps = [start + timedelta(seconds=30 * index) for index in range(8)]
+    with SessionLocal() as db:
+        user = db.scalar(select(User).where(User.email == "admin@demo.thermopower.com"))
+        thermal = Device(
+            name="Termômetro multiponto",
+            manufacturer="Applent",
+            model="AT4532",
+            serial_number="AT-CLIENT-PREVIEW",
+            connection_type="serial",
+            port="COM5",
+            baud_rate=19200,
+            protocol="at4532_serial",
+            metadata_json={"expected_interval_ms": 1000},
+        )
+        electrical = Device(
+            name="Medidor de potência",
+            manufacturer="GW Instek",
+            model="GPM-8213",
+            serial_number="GPM-CLIENT-PREVIEW",
+            connection_type="serial",
+            port="COM4",
+            baud_rate=9600,
+            protocol="gpm8213_serial",
+            metadata_json={"expected_interval_ms": 1000},
+        )
+        db.add_all([thermal, electrical])
+        db.flush()
+        session = MeasurementSession(
+            device_id=thermal.id,
+            user_id=user.id,
+            name="Ensaio combinado Britânia",
+            description="Validação térmica e elétrica",
+            started_at=start,
+            ended_at=timestamps[-1],
+            status="finished",
+            metadata_json={
+                "product": "Forno elétrico",
+                "model": "BFE50",
+                "sample": "Amostra 04",
+                "code": "ENG-2026-004",
+                "nominal_voltage": "220 V",
+                "responsible": "Engenharia de Produto",
+            },
+        )
+        db.add(session)
+        db.flush()
+        db.add_all(
+            [
+                SessionDevice(session_id=session.id, device_id=thermal.id, role="temperature"),
+                SessionDevice(session_id=session.id, device_id=electrical.id, role="electrical"),
+            ]
+        )
+        for order, (channel, name) in enumerate(
+            [(25, "Saída de ar"), (26, "Carcaça superior"), (27, "T27")], start=1
+        ):
+            db.add(
+                SessionChannelConfiguration(
+                    session_id=session.id,
+                    channel=channel,
+                    name=name,
+                    enabled=True,
+                    sensor_type="K",
+                    unit="°C",
+                    correction_offset=0,
+                    color="#2563EB",
+                    display_order=order,
+                )
+            )
+        for index, timestamp in enumerate(timestamps):
+            power = 780.0 if index % 2 == 0 else 180.0
+            db.add(
+                ElectricalSample(
+                    session_id=session.id,
+                    device_id=electrical.id,
+                    device_timestamp=timestamp,
+                    received_timestamp=timestamp + timedelta(milliseconds=80),
+                    voltage_v=220.0,
+                    current_a=power / 220,
+                    active_power_w=power,
+                    apparent_power_va=power / 0.95,
+                    reactive_power_var=120.0,
+                    power_factor=0.95,
+                    voltage_frequency_hz=60.0,
+                    current_frequency_hz=60.0,
+                    original_values={"active_power": power},
+                    original_units={"active_power": "W"},
+                    quality="good",
+                    source="test",
+                    raw_payload={},
+                )
+            )
+            thermal_sample = TemperatureSample(
+                session_id=session.id,
+                device_id=thermal.id,
+                device_timestamp=timestamp,
+                received_timestamp=timestamp + timedelta(milliseconds=40),
+                ambient_temperature_c=23.0,
+                quality="good",
+                source="test",
+                raw_payload={},
+            )
+            for channel, value in (
+                (25, 60.0 + index * 0.1),
+                (26, 50.0 + index * 0.05),
+                (27, None),
+            ):
+                thermal_sample.channels.append(
+                    TemperatureChannelValue(
+                        channel=channel,
+                        temperature_c=value,
+                        original_value=value,
+                        original_unit="°C",
+                        quality="good" if value is not None else "open",
+                    )
+                )
+            db.add(thermal_sample)
+        db.commit()
+        return start, timestamps[-1], session.id, len(timestamps)
+
+
 def test_period_contract_normalizes_naive_local_time_and_validates_metrics():
     request = PeriodReportRequest(
         start=datetime(2026, 1, 15, 10, 0),
@@ -190,6 +316,126 @@ def test_period_endpoints_render_and_audit_files(client: TestClient, auth_header
     period_reports = [row for row in history if row["scope_type"] == "period"]
     assert len(period_reports) == 3
     assert all(row["status"] == "completed" for row in period_reports)
+
+
+def test_client_preview_auto_selects_active_channels_and_updates_identification(
+    client: TestClient, auth_headers: dict[str, str]
+):
+    start, end, session_id, _ = _seed_client_preview_data()
+    payload = {
+        **_payload(start, end),
+        "session_ids": [session_id],
+        "channels": None,
+    }
+    preview = client.post(
+        "/api/v1/reports/period/preview", headers=auth_headers, json=payload
+    )
+    assert preview.status_code == 200, preview.text
+    body = preview.json()
+    assert body["selected_channels"] == [25, 26]
+    assert body["channel_labels"] == {
+        "25": "T25 — Saída de ar",
+        "26": "T26 — Carcaça superior",
+    }
+    assert body["statistics"]["temperature"]["critical_channel"] == 25
+    assert body["statistics"]["temperature"]["maximum_delta_t"]["value_c"] == pytest.approx(
+        10.35
+    )
+    assert body["statistics"]["electrical"]["energy_wh"] > 0
+    assert body["statistics"]["electrical"]["cycles"]["cycle_count"] == 4
+
+    with_open = client.post(
+        "/api/v1/reports/period/preview",
+        headers=auth_headers,
+        json={**payload, "include_open_channels": True},
+    )
+    assert with_open.status_code == 200, with_open.text
+    assert with_open.json()["selected_channels"] == [25, 26, 27]
+    open_stats = next(
+        item for item in with_open.json()["statistics"]["channels"] if item["channel"] == 27
+    )
+    assert open_stats["count"] == 0
+    assert open_stats["label"] == "T27"
+
+    updated = client.patch(
+        f"/api/v1/sessions/{session_id}",
+        headers=auth_headers,
+        json={
+            "metadata": {
+                "product": "Air fryer",
+                "model": "BFR51",
+                "responsible": "Laboratório Britânia",
+            },
+            "channel_names": {"25": "Saída traseira"},
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    detail = client.get(f"/api/v1/sessions/{session_id}", headers=auth_headers)
+    assert detail.status_code == 200
+    assert detail.json()["metadata"] == {
+        "product": "Air fryer",
+        "model": "BFR51",
+        "responsible": "Laboratório Britânia",
+    }
+    assert next(row for row in detail.json()["channels"] if row["channel"] == 25)["name"] == (
+        "Saída traseira"
+    )
+
+
+def test_client_preview_outputs_keep_raw_streams_and_professional_workbook(
+    client: TestClient, auth_headers: dict[str, str]
+):
+    start, end, session_id, sample_count = _seed_client_preview_data()
+    payload = {
+        **_payload(start, end),
+        "session_ids": [session_id],
+        "channels": None,
+        "title": "Resumo executivo — Britânia",
+    }
+    spreadsheet = client.post(
+        "/api/v1/reports/period/xlsx", headers=auth_headers, json=payload
+    )
+    assert spreadsheet.status_code == 200, spreadsheet.text
+    workbook = load_workbook(io.BytesIO(spreadsheet.content), data_only=True)
+    assert workbook.sheetnames == [
+        "Resumo Executivo",
+        "Curvas do Ensaio",
+        "Análise Estabilizada",
+        "Estatística por Canal",
+        "Grandezas Elétricas",
+        "Amostras Elétricas Reais",
+        "Amostras Térmicas Reais",
+        "Dados Sincronizados",
+        "Metadados",
+    ]
+    assert workbook["Amostras Elétricas Reais"].max_row == sample_count + 1
+    assert workbook["Amostras Térmicas Reais"].max_row == sample_count + 1
+    assert workbook["Dados Sincronizados"].max_row == sample_count + 1
+    assert isinstance(workbook["Amostras Elétricas Reais"]["E2"].value, int | float)
+    assert isinstance(workbook["Amostras Térmicas Reais"]["D2"].value, int | float)
+    assert len(workbook["Curvas do Ensaio"]._charts) == 1
+    assert len(workbook["Resumo Executivo"]._charts) == 1
+
+    thermal_csv = client.post(
+        "/api/v1/reports/period/csv?dataset=thermal", headers=auth_headers, json=payload
+    )
+    assert thermal_csv.status_code == 200
+    assert thermal_csv.content.startswith(b"\xef\xbb\xbf")
+    assert len(thermal_csv.content.decode("utf-8-sig").splitlines()) == sample_count + 1
+
+    executive_png = client.post(
+        "/api/v1/reports/period/executive.png", headers=auth_headers, json=payload
+    )
+    assert executive_png.status_code == 200, executive_png.text
+    assert Image.open(io.BytesIO(executive_png.content)).size == (1200, 650)
+    assert len(executive_png.content) > 40_000
+
+    executive_pdf = client.post(
+        "/api/v1/reports/period/executive.pdf", headers=auth_headers, json=payload
+    )
+    assert executive_pdf.status_code == 200, executive_pdf.text
+    assert executive_pdf.content.startswith(b"%PDF")
+    assert executive_pdf.content.count(b"/Type /Page") == 2
 
 
 def test_period_endpoint_reports_clear_empty_data_error(

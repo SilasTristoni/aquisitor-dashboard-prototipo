@@ -971,8 +971,14 @@ def test_launcher_rejects_second_instance_and_writes_startup_log(tmp_path, monke
     application = tmp_path / "app"
     monkeypatch.setenv("THERMOPOWER_APP_DATA_DIR", str(application))
     monkeypatch.delenv("THERMOPOWER_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("THERMOPOWER_DEMO_ADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("THERMOPOWER_DEMO_ADMIN_PASSWORD", raising=False)
     _configure_environment(tmp_path, application)
-    assert os.environ["THERMOPOWER_ENVIRONMENT"] == "physical-alpha"
+    assert os.environ["THERMOPOWER_ENVIRONMENT"] == "client-preview"
+    first_access = (application / "PRIMEIRO-ACESSO.txt").read_text(encoding="utf-8")
+    assert "E-mail: admin@thermopower.com.br" in first_access
+    assert os.environ["THERMOPOWER_DEMO_ADMIN_PASSWORD"] in first_access
+    assert "ThermoPower-HML@2026" not in first_access
     added = [handler for handler in logging.getLogger().handlers if handler not in before]
     try:
         logging.getLogger("physical-test").info("startup diagnostic test")
@@ -1130,13 +1136,13 @@ def test_serial_diagnostic_does_not_mix_confirmed_and_assumed_parameters(client,
     assert response.status_code == 422
 
 
-def test_engineering_version_is_consistent_in_health_and_frontend(client):
+def test_client_preview_version_is_consistent_in_health_and_frontend(client):
     repository = Path(__file__).resolve().parents[2]
     expected = (repository / "VERSION.txt").read_text(encoding="utf-8").strip()
     frontend = json.loads((repository / "frontend" / "package.json").read_text("utf-8"))
     response = client.get("/health")
 
-    assert expected == "0.5.6-physical-alpha"
+    assert expected == "0.6.0-client-preview"
     assert response.status_code == 200
     assert response.json()["version"] == expected
     assert frontend["version"] == expected
@@ -1249,7 +1255,7 @@ def test_complete_diagnostic_export_contains_required_sanitized_files(
     log_path = runtime / "logs" / "thermopower.log"
     log_path.parent.mkdir(parents=True)
     log_path.write_text(
-        "startup version=0.5.6-physical-alpha\n"
+        "startup version=0.6.0-client-preview\n"
         "COM open port=COM3\n"
         "protocol TX command=query_headers\n"
         "response classification actual=header_list\n"
@@ -1299,7 +1305,7 @@ def test_complete_diagnostic_export_contains_required_sanitized_files(
             "SHA256SUMS.txt",
         } <= names
         assert archive.read("summary.pdf").startswith(b"%PDF")
-        assert b"0.5.6-physical-alpha" in archive.read("application-version.txt")
+        assert b"0.6.0-client-preview" in archive.read("application-version.txt")
         recent_log = archive.read("recent-log.txt").decode("utf-8")
         assert "COM open port=COM3" in recent_log
         assert "response classification actual=header_list" in recent_log

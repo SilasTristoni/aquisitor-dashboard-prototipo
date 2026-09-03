@@ -7,7 +7,7 @@ vi.mock("recharts", () => {
   const Container = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
   const Chart = () => <div data-testid="chart" />;
   const Primitive = () => null;
-  return { Area: Primitive, AreaChart: Chart, CartesianGrid: Primitive, Line: Primitive, LineChart: Chart, ReferenceLine: Primitive, ResponsiveContainer: Container, Tooltip: Primitive, XAxis: Primitive, YAxis: Primitive };
+  return { Area: Primitive, AreaChart: Chart, CartesianGrid: Primitive, Legend: Primitive, Line: Primitive, LineChart: Chart, ReferenceLine: Primitive, ResponsiveContainer: Container, Tooltip: Primitive, XAxis: Primitive, YAxis: Primitive };
 });
 const now = Date.now();
 const temperatures = Array<number | null>(32).fill(null);
@@ -37,7 +37,7 @@ test("combina potência do GPM e temperatura do AT sem fabricar zero", async () 
   expect(screen.getByText("21.7 °C")).toBeInTheDocument();
   expect(screen.getByText("22.2 °C")).toBeInTheDocument();
   expect(screen.getByText("8 canais com leitura")).toBeInTheDocument();
-  expect(screen.getByText("CH32")).toBeInTheDocument();
+  expect(screen.getAllByText("T32").length).toBeGreaterThanOrEqual(1);
   expect(screen.queryByText("0.0 °C")).not.toBeInTheDocument();
   expect(screen.getByText("WebSocket conectado")).toBeInTheDocument();
 });

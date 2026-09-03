@@ -40,6 +40,27 @@ def _persistent_secret(directory: Path) -> str:
     return value
 
 
+def _initial_admin_password(directory: Path) -> str:
+    """Generate the client-preview first-access secret outside the packaged application."""
+    configured = os.environ.get("THERMOPOWER_DEMO_ADMIN_PASSWORD")
+    if configured:
+        return configured
+    access_path = directory / "PRIMEIRO-ACESSO.txt"
+    if access_path.exists():
+        for line in access_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("Senha temporária: "):
+                return line.removeprefix("Senha temporária: ").strip()
+    password = secrets.token_urlsafe(18)
+    access_path.write_text(
+        "ThermoPower Monitor — primeiro acesso\n"
+        "E-mail: admin@thermopower.com.br\n"
+        f"Senha temporária: {password}\n\n"
+        "Arquivo gerado localmente na primeira execução. Guarde-o em local seguro.\n",
+        encoding="utf-8",
+    )
+    return password
+
+
 def _free_port(start: int = 8765, attempts: int = 40) -> int:
     for port in range(start, start + attempts):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
@@ -58,14 +79,15 @@ def _configure_environment(runtime: Path, application: Path) -> None:
     for path in (data, logs, reports):
         path.mkdir(parents=True, exist_ok=True)
     os.environ["THERMOPOWER_APP_DATA_DIR"] = str(application.resolve())
-    os.environ.setdefault("THERMOPOWER_ENVIRONMENT", "physical-alpha")
+    os.environ.setdefault("THERMOPOWER_ENVIRONMENT", "client-preview")
     database_url = f"sqlite:///{(data / 'thermopower.db').as_posix()}"
     os.environ.setdefault("THERMOPOWER_DATABASE_URL", database_url)
     os.environ.setdefault("THERMOPOWER_REPORT_OUTPUT_DIRECTORY", str(reports))
     os.environ.setdefault("THERMOPOWER_FRONTEND_DIST", str(runtime / "frontend"))
     os.environ.setdefault("THERMOPOWER_JWT_SECRET", _persistent_secret(application))
-    os.environ.setdefault("THERMOPOWER_DEMO_ADMIN_EMAIL", "homologacao@demo.thermopower.com")
-    os.environ.setdefault("THERMOPOWER_DEMO_ADMIN_PASSWORD", "ThermoPower-HML@2026")
+    os.environ.setdefault("THERMOPOWER_INITIAL_ADMIN_NAME", "Administrador local")
+    os.environ.setdefault("THERMOPOWER_DEMO_ADMIN_EMAIL", "admin@thermopower.com.br")
+    os.environ.setdefault("THERMOPOWER_DEMO_ADMIN_PASSWORD", _initial_admin_password(application))
     _configure_file_logging(runtime, application)
 
 

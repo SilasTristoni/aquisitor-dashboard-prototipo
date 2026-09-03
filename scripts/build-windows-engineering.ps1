@@ -10,8 +10,8 @@ $EngineeringZip = "$EngineeringRoot.zip"
 $StagingRoot = Join-Path $RepositoryRoot "dist\ThermoPowerMonitor"
 $ValidatedZip = Join-Path $RepositoryRoot "dist\ThermoPower-$Version.validated.zip"
 
-if ($Version -ne "0.5.6-physical-alpha") {
-    throw "Este script aceita somente a versao de engenharia 0.5.6-physical-alpha."
+if ($Version -ne "0.6.0-client-preview") {
+    throw "Este script aceita somente a versao 0.6.0-client-preview."
 }
 if (-not (Test-Path -LiteralPath $Python)) { throw "Ambiente .venv ausente." }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw "npm nao encontrado." }
@@ -89,6 +89,34 @@ finally { Pop-Location }
 if (-not (Test-Path -LiteralPath (Join-Path $StagingRoot "ThermoPowerMonitor.exe") -PathType Leaf)) {
     throw "Executavel PyInstaller ausente no staging da build."
 }
+
+# PyInstaller's Matplotlib hook adds its demonstration dataset after the spec data list is
+# evaluated. It is not required by ThermoPower and must not be shipped in a client preview.
+$MatplotlibSampleData = Join-Path $StagingRoot "_internal\matplotlib\mpl-data\sample_data"
+if (Test-Path -LiteralPath $MatplotlibSampleData -PathType Container) {
+    $ResolvedStagingRoot = [IO.Path]::GetFullPath($StagingRoot).TrimEnd("\")
+    $ResolvedSampleData = [IO.Path]::GetFullPath($MatplotlibSampleData)
+    $ExpectedSampleDataPrefix = "$ResolvedStagingRoot\_internal\matplotlib\mpl-data\sample_data"
+    if (-not $ResolvedSampleData.Equals(
+        $ExpectedSampleDataPrefix,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "Diretorio sample_data resolvido fora do staging esperado."
+    }
+    Remove-Item -LiteralPath $ResolvedSampleData -Recurse -Force
+}
+$ForbiddenPackageFiles = Get-ChildItem -LiteralPath $StagingRoot -File -Recurse |
+    Where-Object {
+        $_.Extension -in @(".db", ".csv", ".xlsx") -or
+        $_.Name -match "sessao-4|PRIMEIRO-ACESSO" -or
+        $_.FullName -match "[\\/]sample_data[\\/]"
+    }
+if ($ForbiddenPackageFiles) {
+    $ForbiddenRelativePaths = $ForbiddenPackageFiles | ForEach-Object {
+        $_.FullName.Substring($StagingRoot.Length).TrimStart("\")
+    }
+    throw "Dados de avaliacao ou arquivos locais presentes no pacote: $($ForbiddenRelativePaths -join ', ')"
+}
 $Smoke = & (Join-Path $RepositoryRoot "scripts\smoke-windows-package.ps1") `
     -Executable (Join-Path $StagingRoot "ThermoPowerMonitor.exe") | Out-String
 
@@ -100,9 +128,13 @@ if (-not $ResolvedEngineeringParent.Equals(
 )) {
     throw "Destino de engenharia fora do repositorio."
 }
-Set-Content -LiteralPath (Join-Path $StagingRoot "ENGINEERING-BUILD.txt") -Encoding utf8 -Value @(
+Set-Content -LiteralPath (Join-Path $StagingRoot "CLIENT-PREVIEW.txt") -Encoding utf8 -Value @(
     "ThermoPower $Version",
-    "BUILD DE ENGENHARIA - NAO DISTRIBUIR COMO BETA",
+    "PREVIA PARA AVALIACAO INTERNA - NAO E INSTALADOR FINAL",
+    "Interface cliente sem simulador e sem credenciais incorporadas ao pacote.",
+    "Primeiro acesso: senha aleatoria gerada localmente na primeira execucao.",
+    "Dashboard executivo, periodo analisado e KPIs termicos/eletricos.",
+    "Relatorio PDF tecnico, resumo executivo e XLSX profissional.",
     "GPM-8213: integracao fisica validada no firmware V1.05.",
     "AT4532: FETCH fisico TCP-32/CP936 suportado; IDN timeout permanece warning.",
     "AT4532 continuo: 3 s apos RX + guarda serial calculada de 0,4 s; soak 100 amostras.",
@@ -152,6 +184,8 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "TEST-RESULTS.txt") -Encoding u
     "Typecheck: passed",
     "Frontend tests: passed",
     "Vite build: passed",
+    "Client-preview without simulator: passed",
+    "Professional PDF/XLSX/PNG/CSV report contracts: passed",
     "docker compose config: $DockerResult",
     "Packaged executable smoke: passed",
     "",
@@ -169,7 +203,7 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "TEST-RESULTS.txt") -Encoding u
 $RequiredPackagePaths = @(
     "ThermoPowerMonitor.exe",
     "_internal",
-    "ENGINEERING-BUILD.txt",
+    "CLIENT-PREVIEW.txt",
     "PROTOCOL-SOURCES.txt",
     "TEST-RESULTS.txt"
 )

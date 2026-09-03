@@ -29,15 +29,22 @@ def seed_database() -> None:
     with SessionLocal() as db:
         user = db.scalar(select(User).where(User.email == settings.demo_admin_email))
         if not user:
+            if not settings.demo_admin_password:
+                raise RuntimeError(
+                    "Configure THERMOPOWER_DEMO_ADMIN_PASSWORD para criar o administrador inicial"
+                )
             user = User(
-                name="Administrador Demo",
+                name=settings.initial_admin_name,
                 email=settings.demo_admin_email,
                 password_hash=hash_password(settings.demo_admin_password),
                 role="admin",
             )
             db.add(user)
+        elif settings.environment == "client-preview" and user.name == "Administrador Demo":
+            user.name = settings.initial_admin_name
+        simulator_enabled = settings.environment in {"development", "test"}
         device = db.scalar(select(Device).where(Device.name == "Aquisitor simulado"))
-        if not device:
+        if simulator_enabled and not device:
             device = Device(
                 name="Aquisitor simulado",
                 manufacturer="ThermoPower Labs",
