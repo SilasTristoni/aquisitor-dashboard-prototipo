@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 AT4532_MANUAL_URL = "https://www.anbai.cn/app_file/products/AT4532/ug_en_AT4532.pdf"
 GPM8213_MANUAL_URL = "https://www.gwinstek.com/en-US/download/downloadFile/11551"
+AT4532_PHYSICAL_FRAME_BYTES = 694
+AT4532_SERIAL_BITS_PER_BYTE = 10
+AT4532_CONTINUOUS_READ_GUARD_SECONDS = math.ceil(
+    AT4532_PHYSICAL_FRAME_BYTES * AT4532_SERIAL_BITS_PER_BYTE / 19200 * 10
+) / 10
 
 
 class ProtocolDocumentationRequired(RuntimeError):
@@ -818,6 +823,9 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
         self.identity_status = "not_attempted"
         self.protocol_status = "not_verified"
         self.identity_error: dict[str, Any] | None = None
+        self._command_sequences: dict[str, int] = {}
+        self._last_command_tx_monotonic: dict[str, float] = {}
+        self._last_command_rx_monotonic: dict[str, float] = {}
 
     def _configuration(self) -> SerialTransportConfiguration:
         raise NotImplementedError
@@ -833,6 +841,10 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
         timestamp = datetime.now(UTC)
         transaction_started = monotonic()
         previous_command = self.transactions[-1]["command_name"] if self.transactions else None
+        sequence = self._command_sequences.get(command.name, 0) + 1
+        self._command_sequences[command.name] = sequence
+        previous_tx = self._last_command_tx_monotonic.get(command.name)
+        previous_rx = self._last_command_rx_monotonic.get(command.name)
         logger.info("protocol TX equipment=%s command=%s", self.equipment, command.name)
         try:
             if expect_response:
@@ -845,6 +857,8 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
         except SerialTransportError as exc:
             elapsed_ms = (monotonic() - transaction_started) * 1000
             boundary = dict(getattr(self.transport, "last_query_boundary", {}))
+            tx_monotonic = float(boundary.get("tx_monotonic", transaction_started))
+            self._last_command_tx_monotonic[command.name] = tx_monotonic
             transaction = {
                 "command_name": command.name,
                 "vendor_documented": True,
@@ -854,13 +868,32 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
                 .replace("\r", "\\r")
                 .replace("\n", "\\n"),
                 "tx_hex": command.request.hex(" ").upper(),
-                "timestamp_tx": timestamp.isoformat(),
+                "timestamp_tx": boundary.get("timestamp_tx", timestamp.isoformat()),
                 "rx_ascii": "",
                 "rx_bytes": [],
                 "rx_hex": "",
-                "timestamp_rx": datetime.now(UTC).isoformat(),
+                "timestamp_rx": boundary.get("timestamp_rx", datetime.now(UTC).isoformat()),
                 "elapsed_ms": round(elapsed_ms, 3),
+                "query_duration_ms": round(
+                    float(boundary.get("query_duration_ms", elapsed_ms)), 3
+                ),
                 "bytes_received": 0,
+                "sample_sequence": sequence if command.name == "temperatures" else None,
+                "interval_since_previous_tx_ms": (
+                    round((tx_monotonic - previous_tx) * 1000, 3)
+                    if previous_tx is not None
+                    else None
+                ),
+                "interval_since_previous_rx_ms": (
+                    round((tx_monotonic - previous_rx) * 1000, 3)
+                    if previous_rx is not None
+                    else None
+                ),
+                "buffer_pending_before_tx_bytes": boundary.get(
+                    "buffer_pending_before_tx_bytes", 0
+                ),
+                "buffer_drained_bytes": boundary.get("buffer_drained_bytes", 0),
+                "timeout": exc.code == "protocol_timeout",
                 "previous_command": previous_command,
                 "transaction_boundary": boundary,
                 "expected_for_command": command.expected_response_type,
@@ -871,11 +904,18 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
             }
             self.transactions.append(transaction)
             logger.warning(
-                "protocol timeout/error equipment=%s command=%s code=%s elapsed_ms=%.2f",
+                "protocol timeout/error equipment=%s command=%s sample_sequence=%s "
+                "code=%s elapsed_ms=%.2f interval_tx_ms=%s interval_rx_ms=%s "
+                "buffer_pending=%s buffer_drained=%s",
                 self.equipment,
                 command.name,
+                transaction["sample_sequence"],
                 exc.code,
                 elapsed_ms,
+                transaction["interval_since_previous_tx_ms"],
+                transaction["interval_since_previous_rx_ms"],
+                transaction["buffer_pending_before_tx_bytes"],
+                transaction["buffer_drained_bytes"],
             )
             raise
         logger.info(
@@ -885,6 +925,16 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
             len(response),
             elapsed_ms,
         )
+        boundary = (
+            dict(getattr(self.transport, "last_query_boundary", {}))
+            if expect_response
+            else {}
+        )
+        tx_monotonic = float(boundary.get("tx_monotonic", transaction_started))
+        rx_monotonic = float(boundary.get("rx_monotonic", monotonic()))
+        self._last_command_tx_monotonic[command.name] = tx_monotonic
+        if expect_response:
+            self._last_command_rx_monotonic[command.name] = rx_monotonic
         transaction = {
             "command_name": command.name,
             "vendor_documented": True,
@@ -892,21 +942,39 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
             "section": command.section,
             "tx_ascii": command.request.decode("ascii").replace("\r", "\\r").replace("\n", "\\n"),
             "tx_hex": command.request.hex(" ").upper(),
-            "timestamp_tx": timestamp.isoformat(),
+            "timestamp_tx": boundary.get("timestamp_tx", timestamp.isoformat()),
             "rx_ascii": response.decode("ascii", "backslashreplace")
             .replace("\r", "\\r")
             .replace("\n", "\\n"),
             "rx_bytes": list(response),
             "rx_hex": response.hex(" ").upper(),
-            "timestamp_rx": datetime.now(UTC).isoformat(),
+            "timestamp_rx": boundary.get("timestamp_rx", datetime.now(UTC).isoformat()),
             "elapsed_ms": round(elapsed_ms, 3),
+            "query_duration_ms": round(
+                float(boundary.get("query_duration_ms", elapsed_ms)), 3
+            ),
             "bytes_received": len(response),
+            "sample_sequence": sequence if command.name == "temperatures" else None,
+            "interval_since_previous_tx_ms": (
+                round((tx_monotonic - previous_tx) * 1000, 3)
+                if previous_tx is not None
+                else None
+            ),
+            "interval_since_previous_rx_ms": (
+                round((tx_monotonic - previous_rx) * 1000, 3)
+                if previous_rx is not None
+                else None
+            ),
+            "buffer_pending_before_tx_bytes": boundary.get(
+                "buffer_pending_before_tx_bytes", 0
+            ),
+            "buffer_drained_bytes": boundary.get("buffer_drained_bytes", 0),
+            "timeout": False,
             "previous_command": previous_command,
             **_wire_diagnostics(response),
             **self._wire_response_diagnostics(response),
         }
         if expect_response:
-            boundary = dict(getattr(self.transport, "last_query_boundary", {}))
             transaction["transaction_boundary"] = boundary
             actual_response_type = self._response_type(response)
             transaction["expected_for_command"] = command.expected_response_type
@@ -1063,9 +1131,10 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
                 self.last_message_at = reading.received_timestamp
                 self._read_count += 1
                 yield reading
-                remaining = self.expected_interval_seconds - (monotonic() - started)
-                if remaining > 0:
-                    await asyncio.sleep(remaining)
+                if not getattr(self, "polling_managed_by_read_once", False):
+                    remaining = self.expected_interval_seconds - (monotonic() - started)
+                    if remaining > 0:
+                        await asyncio.sleep(remaining)
         finally:
             logger.info("acquisition stopped equipment=%s", self.equipment)
 
@@ -1115,6 +1184,8 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
     manufacturer = "Applent Instruments"
     model = "AT4532"
     expected_interval_seconds = 3.0
+    continuous_read_guard_seconds = AT4532_CONTINUOUS_READ_GUARD_SECONDS
+    polling_managed_by_read_once = True
     protocol = At4532Protocol()
     parser = At4532Parser()
     normalizer = At4532Normalizer()
@@ -1132,6 +1203,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         self.allow_identity_fallback = allow_identity_fallback
         self.association_source = association_source
         self._primed_reading: DeviceReading | None = None
+        self._last_fetch_completed_monotonic: float | None = None
 
     def _configuration(self) -> SerialTransportConfiguration:
         if self.baud_rate != 19200:
@@ -1186,6 +1258,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
 
     async def _after_identity(self) -> None:
         self._primed_reading = None
+        self._last_fetch_completed_monotonic = None
         await self._transaction(self.protocol.celsius, expect_response=False)
 
         if self.identity_status == "unconfirmed":
@@ -1203,6 +1276,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
     async def _query_reading(self) -> DeviceReading:
         payload = await self._transaction(self.protocol.temperatures, expect_response=True)
         reading = self._normalize_payload(payload)
+        self._last_fetch_completed_monotonic = monotonic()
         raw = reading.raw_payload
         if raw["channel_count_received"] == 32 and raw["valid_channels"] >= 1:
             self.protocol_status = "verified_by_measurement"
@@ -1212,6 +1286,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                 "rx_text": raw["response_text"].replace("\r", "\\r").replace("\n", "\\n"),
                 "frame_type": raw["frame_type"],
                 "total_fields": raw["total_fields"],
+                "parsed_channels": raw["channel_count_received"],
             }
         )
         self.transactions[-1]["parsed"] = {
@@ -1241,14 +1316,52 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             "frame_count": raw["frame_count"],
             "normalized_reading": reading.model_dump(mode="json"),
         }
-        logger.info("parser success equipment=%s command=temperatures", self.equipment)
+        transaction = self.transactions[-1]
+        logger.info(
+            "AT4532 FETCH diagnostic sample=%s tx=%s rx=%s interval_tx_ms=%s "
+            "interval_rx_ms=%s duration_ms=%s bytes=%s buffer_pending=%s "
+            "buffer_drained=%s frame=%s encoding=%s parsed_channels=%s timeout=%s",
+            transaction.get("sample_sequence"),
+            transaction.get("timestamp_tx"),
+            transaction.get("timestamp_rx"),
+            transaction.get("interval_since_previous_tx_ms"),
+            transaction.get("interval_since_previous_rx_ms"),
+            transaction.get("query_duration_ms"),
+            transaction.get("bytes_received"),
+            transaction.get("buffer_pending_before_tx_bytes"),
+            transaction.get("buffer_drained_bytes"),
+            transaction.get("frame_type"),
+            transaction.get("wire_encoding"),
+            transaction.get("parsed_channels"),
+            transaction.get("timeout"),
+        )
         return reading
+
+    async def _wait_until_next_fetch_window(self) -> None:
+        if self._last_fetch_completed_monotonic is None:
+            return
+        minimum_rx_interval = (
+            self.expected_interval_seconds + self.continuous_read_guard_seconds
+        )
+        remaining = (
+            self._last_fetch_completed_monotonic + minimum_rx_interval - monotonic()
+        )
+        if remaining > 0:
+            logger.info(
+                "AT4532 cadence wait anchor=previous_fetch_completed "
+                "measurement_interval_s=%.3f serial_frame_guard_s=%.3f wait_s=%.3f",
+                self.expected_interval_seconds,
+                self.continuous_read_guard_seconds,
+                remaining,
+            )
+            await asyncio.sleep(remaining)
 
     async def _read_once(self) -> DeviceReading:
         if self._primed_reading is not None:
             reading = self._primed_reading
             self._primed_reading = None
             return reading
+        await self._wait_until_next_fetch_window()
         return await self._query_reading()
 
     async def get_device_information(self) -> DeviceInformation:
@@ -1257,6 +1370,9 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             {
                 "identity_fallback_allowed": self.allow_identity_fallback,
                 "association_source": self.association_source,
+                "polling_anchor": "previous_fetch_completed",
+                "continuous_read_guard_seconds": self.continuous_read_guard_seconds,
+                "physical_frame_bytes": AT4532_PHYSICAL_FRAME_BYTES,
             }
         )
         return information

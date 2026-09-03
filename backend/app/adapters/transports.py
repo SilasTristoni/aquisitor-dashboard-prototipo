@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
 
@@ -168,21 +169,49 @@ class SerialTransport:
         self, payload: bytes, response_terminator: bytes, max_bytes: int = 65_536
     ) -> tuple[bytes, float]:
         async with self._io_lock:
+            self.last_query_boundary = {
+                "buffer_pending_before_tx_bytes": 0,
+                "buffer_drained_bytes": 0,
+                "pending_before_tx_bytes": 0,
+                "pending_before_tx_ascii": "",
+                "pending_before_tx_hex": "",
+                "tx_flushed": False,
+            }
             stale_payload = await self._pending_input()
             started = monotonic()
+            timestamp_tx = datetime.now(UTC)
+            tx_monotonic = monotonic()
+            self.last_query_boundary.update(
+                {
+                    "buffer_pending_before_tx_bytes": len(stale_payload),
+                    "buffer_drained_bytes": len(stale_payload),
+                    # Backward-compatible names retained in exported diagnostics.
+                    "pending_before_tx_bytes": len(stale_payload),
+                    "pending_before_tx_ascii": stale_payload.decode(
+                        "ascii", "backslashreplace"
+                    )
+                    .replace("\r", "\\r")
+                    .replace("\n", "\\n"),
+                    "pending_before_tx_hex": stale_payload.hex(" ").upper(),
+                    "timestamp_tx": timestamp_tx.isoformat(),
+                    "tx_monotonic": tx_monotonic,
+                }
+            )
             _, write_elapsed_ms = await self._write_unlocked(payload)
             response, read_elapsed_ms = await self.read_until(response_terminator, max_bytes)
-            elapsed_ms = (monotonic() - started) * 1000
-            self.last_query_boundary = {
-                "pending_before_tx_bytes": len(stale_payload),
-                "pending_before_tx_ascii": stale_payload.decode("ascii", "backslashreplace")
-                .replace("\r", "\\r")
-                .replace("\n", "\\n"),
-                "pending_before_tx_hex": stale_payload.hex(" ").upper(),
-                "tx_flushed": True,
-                "write_elapsed_ms": round(write_elapsed_ms, 3),
-                "read_elapsed_ms": round(read_elapsed_ms, 3),
-            }
+            rx_monotonic = monotonic()
+            timestamp_rx = datetime.now(UTC)
+            elapsed_ms = (rx_monotonic - started) * 1000
+            self.last_query_boundary.update(
+                {
+                    "timestamp_rx": timestamp_rx.isoformat(),
+                    "rx_monotonic": rx_monotonic,
+                    "tx_flushed": True,
+                    "write_elapsed_ms": round(write_elapsed_ms, 3),
+                    "read_elapsed_ms": round(read_elapsed_ms, 3),
+                    "query_duration_ms": round(elapsed_ms, 3),
+                }
+            )
             if not response:
                 raise SerialTransportError(
                     "protocol_timeout", "Instrumento não respondeu ao comando."

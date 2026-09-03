@@ -384,6 +384,14 @@ export default function DevicesDiscoveryPage() {
               </div>
               <h2>{device.name}</h2>
               <p>{device.manufacturer || "Fabricante não informado"} · {device.model || "Modelo não informado"}</p>
+              {device.configuration_conflicts && device.configuration_conflicts.length > 0 && (
+                <div className="safety-notice">
+                  <strong>Cadastro histórico conflitante neutralizado.</strong>{" "}
+                  {device.configuration_conflicts.map((conflict) =>
+                    `${conflict.name} (${conflict.port}, ${conflict.baud_rate ?? "baud não informado"}, ${conflict.active ? "ativo" : "arquivado"})`,
+                  ).join("; ")}. Somente este cadastro explicitamente selecionado controla a porta.
+                </div>
+              )}
               <div className="device-specs">
                 <div><span>PROTOCOLO</span><strong>{device.protocol}</strong></div>
                 <div><span>PORTA</span><strong>{device.port || "Virtual"}</strong></div>
@@ -421,6 +429,9 @@ export default function DevicesDiscoveryPage() {
                 <div className="serial-diagnostic-result" key={`${transaction.command_name}-${index}`}>
                   <div className="inline-actions"><Badge tone={transaction.error ? "danger" : "success"}>vendor_documented</Badge><strong>{transaction.command_name}</strong><span>{transaction.elapsed_ms} ms · {transaction.bytes_received} byte(s) · {transaction.observed_terminator ?? "terminador não observado"} · {transaction.frame_count ?? 0} frame(s)</span></div>
                   <p className="hint">Fonte: {transaction.source} · {transaction.section}</p>
+                  {transaction.command_name === "temperatures" && <p className="hint">
+                    Amostra #{transaction.sample_sequence ?? "—"} · intervalo TX {transaction.interval_since_previous_tx_ms ?? "—"} ms · intervalo RX {transaction.interval_since_previous_rx_ms ?? "—"} ms · consulta {transaction.query_duration_ms ?? transaction.elapsed_ms} ms · buffer pendente/drenado {transaction.buffer_pending_before_tx_bytes ?? 0}/{transaction.buffer_drained_bytes ?? 0} byte(s) · frame {transaction.frame_type ?? "—"} · encoding {transaction.wire_encoding ?? "—"} · canais {transaction.parsed_channels ?? transaction.parsed?.channel_count_received ?? "—"} · timeout {transaction.timeout ? "sim" : "não"}
+                  </p>}
                   <div className="serial-raw-grid"><div><strong>TX ASCII · {transaction.timestamp_tx}</strong><pre>{transaction.tx_ascii}</pre><strong>TX HEX</strong><pre>{transaction.tx_hex}</pre></div><div><strong>RX ASCII · {transaction.timestamp_rx}</strong><pre>{transaction.rx_ascii || (transaction.error ? "Nenhum byte recebido" : "Sem resposta esperada")}</pre><strong>RX HEX</strong><pre>{transaction.rx_hex || "—"}</pre></div></div>
                   {transaction.error && <ErrorNotice message={`${transaction.error.code}: ${transaction.error.message}`} />}
                   {transaction.parsed?.parsed_values && <div className="serial-diagnostic-result">

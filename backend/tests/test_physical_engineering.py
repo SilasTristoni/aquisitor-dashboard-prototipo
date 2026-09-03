@@ -408,6 +408,11 @@ async def test_gpm_transport_clears_open_buffer_and_drains_second_buffered_respo
     response, _ = await transport.query(Gpm8213Protocol.number_query.request, b"\r\n")
     assert response == b"8\r\n"
     assert transport.last_query_boundary["pending_before_tx_bytes"] == len(extra)
+    assert transport.last_query_boundary["buffer_pending_before_tx_bytes"] == len(extra)
+    assert transport.last_query_boundary["buffer_drained_bytes"] == len(extra)
+    assert transport.last_query_boundary["timestamp_tx"]
+    assert transport.last_query_boundary["timestamp_rx"]
+    assert transport.last_query_boundary["query_duration_ms"] >= 0
     assert transport.last_query_boundary["pending_before_tx_ascii"].startswith("GWInstek")
     await transport.close()
 
@@ -1131,7 +1136,7 @@ def test_engineering_version_is_consistent_in_health_and_frontend(client):
     frontend = json.loads((repository / "frontend" / "package.json").read_text("utf-8"))
     response = client.get("/health")
 
-    assert expected == "0.5.5-physical-alpha"
+    assert expected == "0.5.6-physical-alpha"
     assert response.status_code == 200
     assert response.json()["version"] == expected
     assert frontend["version"] == expected
@@ -1244,7 +1249,7 @@ def test_complete_diagnostic_export_contains_required_sanitized_files(
     log_path = runtime / "logs" / "thermopower.log"
     log_path.parent.mkdir(parents=True)
     log_path.write_text(
-        "startup version=0.5.5-physical-alpha\n"
+        "startup version=0.5.6-physical-alpha\n"
         "COM open port=COM3\n"
         "protocol TX command=query_headers\n"
         "response classification actual=header_list\n"
@@ -1294,7 +1299,7 @@ def test_complete_diagnostic_export_contains_required_sanitized_files(
             "SHA256SUMS.txt",
         } <= names
         assert archive.read("summary.pdf").startswith(b"%PDF")
-        assert b"0.5.5-physical-alpha" in archive.read("application-version.txt")
+        assert b"0.5.6-physical-alpha" in archive.read("application-version.txt")
         recent_log = archive.read("recent-log.txt").decode("utf-8")
         assert "COM open port=COM3" in recent_log
         assert "response classification actual=header_list" in recent_log

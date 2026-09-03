@@ -17,6 +17,7 @@ from app.adapters import (
     SerialJsonAdapter,
     SimulatorAdapter,
 )
+from app.adapters.transports import SerialTransportError
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.entities import (
@@ -75,10 +76,27 @@ class AcquisitionService:
         self.runtimes: dict[int, DeviceRuntime] = {}
         self.last_connection_results: dict[int, dict] = {}
         self._device_locks: dict[int, asyncio.Lock] = {}
+        self._port_locks: dict[str, asyncio.Lock] = {}
         self.started_at = datetime.now(UTC)
 
     def _device_lock(self, device_id: int) -> asyncio.Lock:
         return self._device_locks.setdefault(device_id, asyncio.Lock())
+
+    def _port_lock(self, port: str) -> asyncio.Lock:
+        return self._port_locks.setdefault(port.casefold(), asyncio.Lock())
+
+    @staticmethod
+    def _device_port_key(device_id: int) -> str | None:
+        with SessionLocal() as db:
+            device = db.get(Device, device_id)
+            if (
+                not device
+                or not device.active
+                or device.connection_type == "simulator"
+                or not device.port
+            ):
+                return None
+            return device.port.casefold()
 
     def _adapter_for(self, device: Device) -> DeviceAdapter:
         if device.protocol == "simulator":
@@ -115,6 +133,11 @@ class AcquisitionService:
         )
 
     async def connect(self, device_id: int) -> dict:
+        port_key = self._device_port_key(device_id)
+        if port_key:
+            async with self._port_lock(port_key):
+                async with self._device_lock(device_id):
+                    return await self._connect_locked(device_id)
         async with self._device_lock(device_id):
             return await self._connect_locked(device_id)
 
@@ -166,6 +189,23 @@ class AcquisitionService:
             device = db.get(Device, device_id)
             if not device or not device.active:
                 raise ValueError("Equipamento não encontrado ou inativo")
+            if device.port:
+                port_key = device.port.casefold()
+                conflicting_runtime = next(
+                    (
+                        other_id
+                        for other_id, runtime in self.runtimes.items()
+                        if other_id != device_id
+                        and str(getattr(runtime.adapter, "port", "")).casefold() == port_key
+                    ),
+                    None,
+                )
+                if conflicting_runtime is not None:
+                    raise SerialTransportError(
+                        "port_busy",
+                        f"A porta {device.port} já está sob controle do equipamento "
+                        f"#{conflicting_runtime} explicitamente conectado.",
+                    )
             if device.protocol == "gpm8213_serial" and device.serial_number:
                 # The USB serial is stable; Windows may assign a different COM port.
                 usb_discovery_service.discover(db)

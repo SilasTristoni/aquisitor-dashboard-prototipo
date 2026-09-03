@@ -9,6 +9,15 @@ export type Device = {
   port?: string;
   baud_rate: number;
   active: boolean;
+  metadata?: Record<string, unknown>;
+  configuration_conflicts?: Array<{
+    id: number;
+    name: string;
+    port?: string;
+    baud_rate?: number | null;
+    active: boolean;
+    configuration_status: string;
+  }>;
   last_connected_at?: string;
 };
 

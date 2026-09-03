@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -32,7 +32,7 @@ pytestmark = pytest.mark.physical_regression_fixtures
 
 
 PHYSICAL_CHANNEL_VALUES = [21.79, 21.62, 21.38, 21.34, 21.57, 21.71, 21.90, 22.19]
-PHYSICAL_AUXILIARY_FIELDS = [f"AUXILIARY_RAW_{index:02d}" for index in range(1, 35)]
+PHYSICAL_AUXILIARY_FIELDS = ["0.00|K|℃"] * 32 + ["001", "068214"]
 
 
 def tcp32_physical_fixture(
@@ -58,8 +58,11 @@ class FakeAt4532Transport:
         self.is_open = False
         self.open_boundary: dict[str, Any] = {}
         self.last_query_boundary: dict[str, Any] = {}
+        self.open_calls = 0
+        self.close_calls = 0
 
     async def open(self) -> float:
+        self.open_calls += 1
         self.is_open = True
         return 1.0
 
@@ -77,8 +80,108 @@ class FakeAt4532Transport:
         return len(payload), 1.0
 
     async def close(self) -> None:
+        self.close_calls += 1
         if self.fail_close:
             raise SerialTransportError("serial_error", "fixture close failure")
+        self.is_open = False
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.value = 0.0
+
+    def monotonic(self) -> float:
+        return self.value
+
+    async def sleep(self, seconds: float) -> None:
+        assert seconds >= 0
+        self.value += seconds
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
+class CadenceSensitiveAt4532Transport:
+    """Physical-like transport that rejects FETCH before the post-RX window."""
+
+    minimum_interval_after_rx_seconds = 3.4
+
+    def __init__(self, clock: FakeClock) -> None:
+        self.clock = clock
+        self.requests: list[bytes] = []
+        self.is_open = False
+        self.open_calls = 0
+        self.close_calls = 0
+        self.rejected_fetches = 0
+        self.fetch_count = 0
+        self.last_fetch_completed: float | None = None
+        self.open_boundary: dict[str, Any] = {}
+        self.last_query_boundary: dict[str, Any] = {}
+        self.started_at = datetime(2026, 8, 25, 16, 35, 12)
+
+    def _boundary(self, tx: float, rx: float) -> dict[str, Any]:
+        utc_base = datetime(2026, 8, 25, 19, 35, 12, tzinfo=UTC)
+        return {
+            "timestamp_tx": (utc_base + timedelta(seconds=tx)).isoformat(),
+            "timestamp_rx": (utc_base + timedelta(seconds=rx)).isoformat(),
+            "tx_monotonic": tx,
+            "rx_monotonic": rx,
+            "query_duration_ms": round((rx - tx) * 1000, 3),
+            "buffer_pending_before_tx_bytes": 0,
+            "buffer_drained_bytes": 0,
+            "pending_before_tx_bytes": 0,
+            "pending_before_tx_ascii": "",
+            "pending_before_tx_hex": "",
+            "tx_flushed": True,
+        }
+
+    async def open(self) -> float:
+        self.open_calls += 1
+        self.is_open = True
+        return 1.0
+
+    async def write(self, payload: bytes) -> tuple[int, float]:
+        self.requests.append(payload)
+        return len(payload), 1.0
+
+    async def query(
+        self, payload: bytes, _terminator: bytes, _max_bytes: int = 65_536
+    ) -> tuple[bytes, float]:
+        self.requests.append(payload)
+        tx = self.clock.monotonic()
+        if payload == b"*IDN?\n":
+            self.clock.advance(2.0)
+            self.last_query_boundary = self._boundary(tx, self.clock.monotonic())
+            raise SerialTransportError(
+                "protocol_timeout", "Instrumento não respondeu ao comando."
+            )
+        assert payload == b"FETCH?\n"
+        if (
+            self.last_fetch_completed is not None
+            and tx + 1e-9
+            < self.last_fetch_completed + self.minimum_interval_after_rx_seconds
+        ):
+            self.rejected_fetches += 1
+            self.clock.advance(2.0)
+            self.last_query_boundary = self._boundary(tx, self.clock.monotonic())
+            raise SerialTransportError(
+                "protocol_timeout", "FETCH recebido antes da janela física simulada."
+            )
+
+        device_timestamp = self.started_at + timedelta(seconds=self.fetch_count * 3)
+        payload_response = tcp32_physical_fixture(
+            timestamp=device_timestamp.strftime("%Y/%m/%d %H:%M:%S"),
+            channel_29=21.57 + self.fetch_count / 100,
+        )
+        assert len(payload_response) == 694
+        self.fetch_count += 1
+        self.clock.advance(0.375)
+        self.last_fetch_completed = self.clock.monotonic()
+        self.last_query_boundary = self._boundary(tx, self.last_fetch_completed)
+        return payload_response, 375.0
+
+    async def close(self) -> None:
+        self.close_calls += 1
         self.is_open = False
 
 
@@ -288,7 +391,7 @@ def test_at4532_association_and_verification_metadata_are_server_owned(
             "manufacturer": "Applent",
             "model": "AT4532",
             "connection_type": "serial",
-            "port": "COM2",
+            "port": "COM6",
             "baud_rate": 19200,
             "protocol": "at4532_serial",
             "active": True,
@@ -301,6 +404,61 @@ def test_at4532_association_and_verification_metadata_are_server_owned(
     assert "usb" not in created_metadata
     assert created_metadata["protocol_status"].endswith("physical_validation_pending")
     assert "protocol_verification" not in created_metadata
+
+
+def test_duplicate_at4532_port_is_reported_and_cannot_take_control(
+    client: Any,
+    auth_headers: dict[str, str],
+) -> None:
+    historical = client.post(
+        "/api/v1/devices",
+        headers=auth_headers,
+        json={
+            "name": "AT4532 antigo 115200",
+            "manufacturer": "Applent",
+            "model": "AT4532",
+            "connection_type": "serial",
+            "port": "COM5",
+            "baud_rate": 115200,
+            "protocol": "at4532_serial",
+            "active": False,
+        },
+    )
+    assert historical.status_code == 201, historical.text
+
+    devices = client.get("/api/v1/devices", headers=auth_headers).json()
+    canonical = next(device for device in devices if device["protocol"] == "at4532_serial")
+    assert canonical["port"] == "COM5"
+    assert canonical["baud_rate"] == 19200
+    assert canonical["configuration_conflicts"] == [
+        {
+            "id": historical.json()["id"],
+            "name": "AT4532 antigo 115200",
+            "port": "COM5",
+            "baud_rate": 115200,
+            "active": False,
+            "configuration_status": "historical_conflict",
+        }
+    ]
+
+    conflicting = client.post(
+        "/api/v1/devices",
+        headers=auth_headers,
+        json={
+            "name": "AT4532 duplicado ativo",
+            "manufacturer": "Applent",
+            "model": "AT4532",
+            "connection_type": "serial",
+            "port": "COM5",
+            "baud_rate": 19200,
+            "protocol": "at4532_serial",
+            "active": True,
+        },
+    )
+    assert conflicting.status_code == 409
+    assert "já é controlada" in conflicting.json()["error"]["message"]
+    with SessionLocal() as db:
+        assert db.get(Device, historical.json()["id"]) is not None
 
 
 def test_tcp32_cp936_physical_frame_is_lossless_and_maps_ch01_through_ch32() -> None:
@@ -455,6 +613,15 @@ async def test_tcp32_manual_com5_identity_timeout_verifies_measurement_and_diagn
     assert report["result"] == "passed_with_warning"
     assert report["transport_closed"] is True
     assert report["identity_error"]["code"] == "protocol_timeout"
+    assert {stage["key"]: stage["status"] for stage in report["stages"]} == {
+        "usb": "passed",
+        "identity": "warning",
+        "port": "passed",
+        "protocol": "passed",
+        "configuration": "passed",
+        "reading": "passed",
+        "acquisition": "pending",
+    }
     summary = report["at4532_channel_summary"]
     assert summary["wire_encoding"] == "cp936"
     assert summary["frame_type"] == "TCP-32"
@@ -752,10 +919,72 @@ async def test_tcp32_continuous_polling_reuses_handshake_and_tracks_ch29(
     assert [reading.raw_payload["device_timestamp_raw"] for reading in readings] == [
         f"T:{timestamp}" for timestamp in timestamps
     ]
-    assert all(2.9 <= delay <= 3.0 for delay in sleep_calls)
+    assert all(3.3 <= delay <= 3.4 for delay in sleep_calls)
     assert len(sleep_calls) == 2
     assert adapter.identity_status == "unconfirmed"
     assert adapter.protocol_status == "verified_by_measurement"
+
+
+@pytest.mark.asyncio
+async def test_at4532_continuous_acquisition_completes_100_samples_after_rx_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = FakeClock()
+    transport = CadenceSensitiveAt4532Transport(clock)
+    monkeypatch.setattr("app.adapters.specific.monotonic", clock.monotonic)
+    monkeypatch.setattr("app.adapters.specific.asyncio.sleep", clock.sleep)
+    adapter = At4532SerialAdapter(
+        "COM5",
+        19200,
+        transport=transport,
+        allow_identity_fallback=True,
+        association_source="manual_port",
+    )
+
+    await adapter.connect()
+    stream = adapter.start_reading()
+    readings = [await anext(stream) for _ in range(100)]
+    await adapter.stop_reading()
+    await stream.aclose()
+    await adapter.disconnect()
+
+    fetch_transactions = [
+        transaction
+        for transaction in adapter.transactions
+        if transaction["command_name"] == "temperatures"
+    ]
+    assert transport.rejected_fetches == 0
+    assert transport.open_calls == 1
+    assert transport.close_calls == 1
+    assert transport.requests.count(b"*IDN?\n") == 1
+    assert transport.requests.count(b"SYST:UNIT CEL\n") == 1
+    assert transport.requests.count(b"FETCH?\n") == 100
+    assert len(readings) == len(fetch_transactions) == 100
+    assert [transaction["sample_sequence"] for transaction in fetch_transactions] == list(
+        range(1, 101)
+    )
+    assert all(transaction["timeout"] is False for transaction in fetch_transactions)
+    assert all(
+        transaction["buffer_pending_before_tx_bytes"] == 0
+        and transaction["buffer_drained_bytes"] == 0
+        for transaction in fetch_transactions
+    )
+    assert all(transaction["frame_type"] == "TCP-32" for transaction in fetch_transactions)
+    assert all(transaction["wire_encoding"] == "cp936" for transaction in fetch_transactions)
+    assert all(transaction["parsed_channels"] == 32 for transaction in fetch_transactions)
+    assert all(reading.temperatures_c[:24] == [None] * 24 for reading in readings)
+    assert [reading.raw_payload["channels"][24]["channel"] for reading in readings] == [
+        "CH25"
+    ] * 100
+    assert all(reading.temperatures_c[24] == PHYSICAL_CHANNEL_VALUES[0] for reading in readings)
+    assert all(
+        previous.timestamp < current.timestamp
+        for previous, current in zip(readings, readings[1:], strict=False)
+    )
+    assert all(
+        transaction["interval_since_previous_rx_ms"] >= 3400
+        for transaction in fetch_transactions[1:]
+    )
 
 
 @pytest.mark.parametrize(

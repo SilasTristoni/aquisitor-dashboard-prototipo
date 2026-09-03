@@ -10,8 +10,8 @@ $EngineeringZip = "$EngineeringRoot.zip"
 $StagingRoot = Join-Path $RepositoryRoot "dist\ThermoPowerMonitor"
 $ValidatedZip = Join-Path $RepositoryRoot "dist\ThermoPower-$Version.validated.zip"
 
-if ($Version -ne "0.5.5-physical-alpha") {
-    throw "Este script aceita somente a versao de engenharia 0.5.5-physical-alpha."
+if ($Version -ne "0.5.6-physical-alpha") {
+    throw "Este script aceita somente a versao de engenharia 0.5.6-physical-alpha."
 }
 if (-not (Test-Path -LiteralPath $Python)) { throw "Ambiente .venv ausente." }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw "npm nao encontrado." }
@@ -105,6 +105,8 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "ENGINEERING-BUILD.txt") -Encod
     "BUILD DE ENGENHARIA - NAO DISTRIBUIR COMO BETA",
     "GPM-8213: integracao fisica validada no firmware V1.05.",
     "AT4532: FETCH fisico TCP-32/CP936 suportado; IDN timeout permanece warning.",
+    "AT4532 continuo: 3 s apos RX + guarda serial calculada de 0,4 s; soak 100 amostras.",
+    "Cadastro AT duplicado: historico preservado e neutralizado; uma COM tem um controlador ativo.",
     "Fallback: somente associacao manual exata + 19200/8-N-1 + medicao estrutural valida.",
     "Dashboard/sessao: fontes eletrica e termica simultaneas com ciclos independentes.",
     "Use o Teste de Protocolo Documentado somente apos fechar o software do fabricante."
@@ -116,6 +118,7 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "PROTOCOL-SOURCES.txt") -Encodi
     "Evidencia fisica: *IDN? em COM5 retornou 0 bytes; identidade permanece unconfirmed.",
     "FETCH fisico: frame TCP-32 com byte A1 E6 para Celsius, decodificado estritamente em CP936.",
     "Open|K|Celsius foi confirmado no RX para CH01-CH24; CH25-CH32 foram numericos.",
+    "Cadencia continua: FETCH ancorado no RX anterior + 0,4 s de guarda calculada para 694 bytes em 19200 8-N-1.",
     "Campos posteriores ao bloco primario de 32 canais permanecem auxiliares sem semantica.",
     "",
     "GPM-8213 User Manual G_20230828:",
@@ -136,6 +139,9 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "TEST-RESULTS.txt") -Encoding u
     "GPM V1.05 / NUMBER abreviado / HEADER / VALUE / NAN: passed",
     "GPM fragmented, stale e multiple buffered responses: passed",
     "AT IDN timeout + manual COM5 + TCP-32 CP936 32 channels: passed",
+    "AT continuous acquisition 100 samples with fake clock: passed",
+    "AT FETCH cadence anchored after RX with calculated serial guard: passed",
+    "AT duplicate COM registration neutralization and warning: passed",
     "AT unknown COM fallback rejection: passed",
     "AT CH25-CH32 mapping and CH29 heating series: passed",
     "Combined and partial-source acquisition: passed",

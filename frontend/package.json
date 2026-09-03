@@ -1,7 +1,7 @@
 {
   "name": "thermopower-monitor-frontend",
   "private": true,
-  "version": "0.5.5-physical-alpha",
+  "version": "0.5.6-physical-alpha",
   "type": "module",
   "scripts": {
     "dev": "vite",

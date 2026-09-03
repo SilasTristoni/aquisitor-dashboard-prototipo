@@ -1,4 +1,4 @@
-# Pacote portátil Windows — 0.5.5-physical-alpha
+# Pacote portátil Windows — 0.5.6-physical-alpha
 
 ## Objetivo e limites
 
@@ -41,8 +41,8 @@ Somente então promove os artefatos validados, com rollback da versão-alvo caso
 
 Saídas esperadas:
 
-- `engineering\ThermoPower-0.5.5-physical-alpha\`;
-- `engineering\ThermoPower-0.5.5-physical-alpha.zip`.
+- `engineering\ThermoPower-0.5.6-physical-alpha\`;
+- `engineering\ThermoPower-0.5.6-physical-alpha.zip`.
 
 A pasta contém `ThermoPowerMonitor.exe`, `_internal\`, `ENGINEERING-BUILD.txt`,
 `PROTOCOL-SOURCES.txt`, `TEST-RESULTS.txt` e `SHA256SUMS.txt`. Builds de engenharia anteriores são

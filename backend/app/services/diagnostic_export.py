@@ -106,6 +106,10 @@ def create_diagnostic_zip(
             "port": item.port,
             "baud_rate": item.baud_rate,
             "protocol": item.protocol,
+            "active": item.active,
+            "configuration_status": (item.metadata_json or {}).get(
+                "configuration_status"
+            ),
             "metadata": item.metadata_json,
         }
 

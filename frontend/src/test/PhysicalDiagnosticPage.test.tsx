@@ -15,7 +15,23 @@ vi.mock("../api", async () => {
         return { id: 1, name: "Admin", email: "admin@example.com", role: "admin" };
       }
       if (path === "/devices") {
-        return [{ id: 1, name: "AT4532", protocol: "at4532_serial", connection_type: "serial", port: "COM5", baud_rate: 19200, active: true }];
+        return [{
+          id: 1,
+          name: "AT4532",
+          protocol: "at4532_serial",
+          connection_type: "serial",
+          port: "COM5",
+          baud_rate: 19200,
+          active: true,
+          configuration_conflicts: [{
+            id: 2,
+            name: "AT4532 antigo",
+            port: "COM5",
+            baud_rate: 115200,
+            active: false,
+            configuration_status: "archived_duplicate",
+          }],
+        }];
       }
       if (path.includes("/status")) return { connected: false };
       if (path === "/hardware/discovery") {
@@ -122,6 +138,33 @@ test("envia protocolo oficial somente após confirmação explícita", async () 
     operator_confirmed: true,
   });
   confirmSpy.mockRestore();
+});
+
+test("Testar leitura e teste completo enviam os modos seguros de fallback", async () => {
+  const user = userEvent.setup();
+  const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+  localStorage.setItem("thermopower.token", "test-token");
+  render(<MemoryRouter><AuthProvider><DevicesDiscoveryPage /></AuthProvider></MemoryRouter>);
+
+  await user.click(await screen.findByRole("button", { name: "Testar leitura" }));
+  await screen.findByText("ATENÇÃO");
+  await user.click(screen.getByRole("button", { name: "Executar teste completo" }));
+
+  const modes = vi.mocked(api).mock.calls
+    .filter(([path]) => path === "/devices/1/protocol-probe")
+    .map(([, options]) => JSON.parse(String(options?.body)).mode);
+  expect(modes).toContain("read");
+  expect(modes).toContain("full");
+  confirmSpy.mockRestore();
+});
+
+test("avisa sobre cadastro AT4532 histórico neutralizado", async () => {
+  localStorage.setItem("thermopower.token", "test-token");
+  render(<MemoryRouter><AuthProvider><DevicesDiscoveryPage /></AuthProvider></MemoryRouter>);
+
+  expect(await screen.findByText(/Cadastro histórico conflitante neutralizado/)).toBeInTheDocument();
+  expect(screen.getByText(/AT4532 antigo \(COM5, 115200, arquivado\)/)).toBeInTheDocument();
+  expect(screen.getByText(/Somente este cadastro explicitamente selecionado controla a porta/)).toBeInTheDocument();
 });
 
 test("mostra identidade ambígua e diagnóstico serial estritamente read-only", async () => {

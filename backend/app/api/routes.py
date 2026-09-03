@@ -191,8 +191,8 @@ def _duration_seconds(start: datetime, end: datetime | None) -> float:
     return max(0, (normalized_end - normalized_start).total_seconds())
 
 
-def _device_dict(device: Device) -> dict:
-    return {
+def _device_dict(device: Device, *, configuration_conflicts: list[dict] | None = None) -> dict:
+    result = {
         "id": device.id,
         "name": device.name,
         "manufacturer": device.manufacturer,
@@ -207,6 +207,60 @@ def _device_dict(device: Device) -> dict:
         "last_connected_at": device.last_connected_at,
         "created_at": device.created_at,
     }
+    if configuration_conflicts:
+        result["configuration_conflicts"] = configuration_conflicts
+    return result
+
+
+def _device_configuration_conflicts(db: Session, device: Device) -> list[dict]:
+    if device.protocol != "at4532_serial" or not device.port:
+        return []
+    conflicts = list(
+        db.scalars(
+            select(Device).where(
+                Device.id != device.id,
+                func.lower(Device.port) == device.port.casefold(),
+                or_(Device.protocol == "at4532_serial", Device.model == "AT4532"),
+            )
+        )
+    )
+    return [
+        {
+            "id": conflict.id,
+            "name": conflict.name,
+            "port": conflict.port,
+            "baud_rate": conflict.baud_rate,
+            "active": conflict.active,
+            "configuration_status": (conflict.metadata_json or {}).get(
+                "configuration_status", "historical_conflict"
+            ),
+        }
+        for conflict in conflicts
+    ]
+
+
+def _ensure_active_port_is_unique(
+    db: Session,
+    *,
+    port: str | None,
+    active: bool,
+    connection_type: str,
+    exclude_device_id: int | None = None,
+) -> None:
+    if not active or connection_type == "simulator" or not port:
+        return
+    conditions = [Device.active.is_(True), func.lower(Device.port) == port.casefold()]
+    if exclude_device_id is not None:
+        conditions.append(Device.id != exclude_device_id)
+    conflict = db.scalar(select(Device).where(*conditions))
+    if conflict:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f'A porta {port} já é controlada pelo cadastro ativo "{conflict.name}". '
+                "Arquive ou migre o cadastro conflitante antes de continuar."
+            ),
+        )
 
 
 @router.post("/auth/login", response_model=TokenResponse)
@@ -270,16 +324,26 @@ def create_user(payload: UserCreate, db: Db, _: User = Depends(require_roles("ad
 
 @router.get("/devices")
 def list_devices(db: Db, _: CurrentUser) -> list[dict]:
+    devices = list(
+        db.scalars(select(Device).where(Device.active.is_(True)).order_by(Device.name))
+    )
     return [
-        _device_dict(device)
-        for device in db.scalars(
-            select(Device).where(Device.active.is_(True)).order_by(Device.name)
+        _device_dict(
+            device,
+            configuration_conflicts=_device_configuration_conflicts(db, device),
         )
+        for device in devices
     ]
 
 
 @router.post("/devices", status_code=201)
 def create_device(payload: DeviceInput, db: Db, _: User = Depends(require_roles("admin"))) -> dict:
+    _ensure_active_port_is_unique(
+        db,
+        port=payload.port,
+        active=payload.active,
+        connection_type=payload.connection_type,
+    )
     metadata = _device_input_metadata(payload)
     device = Device(
         name=payload.name,
@@ -418,6 +482,13 @@ def update_device(
     device = db.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+    _ensure_active_port_is_unique(
+        db,
+        port=payload.port,
+        active=payload.active,
+        connection_type=payload.connection_type,
+        exclude_device_id=device_id,
+    )
     current_metadata = dict(device.metadata_json or {})
     preserved_at4532_metadata = {}
     if device.protocol == "at4532_serial":

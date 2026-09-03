@@ -17,6 +17,7 @@ from app.adapters.specific import (
     Gpm8213Normalizer,
     Gpm8213Parser,
 )
+from app.adapters.transports import SerialTransportError
 from app.core.database import SessionLocal
 from app.models import (
     Device,
@@ -33,7 +34,7 @@ from app.services.usb_discovery import usb_discovery_service
 pytestmark = pytest.mark.physical_regression_fixtures
 
 PHYSICAL_TEMPERATURES = [21.79, 21.62, 21.38, 21.34, 21.57, 21.71, 21.90, 22.19]
-PHYSICAL_AUXILIARY_FIELDS = [f"AUXILIARY_RAW_{index:02d}" for index in range(1, 35)]
+PHYSICAL_AUXILIARY_FIELDS = ["0.00|K|℃"] * 32 + ["001", "068214"]
 GPM_PHYSICAL_HEADERS = b"Urms,Irms,P,S,fU,PF,Q,fI\r\n"
 GPM_PHYSICAL_VALUES = (
     b"127.58E+00,240.02E-03,17.688E+00,30.622E+00,59.993E+00,"
@@ -724,6 +725,73 @@ async def test_concurrent_connect_uses_one_adapter_and_one_acquisition_task(
     assert len(service.runtimes) == 1
     assert service.runtimes[device.id].task is not None
     await service.disconnect(device.id)
+
+
+@pytest.mark.asyncio
+async def test_only_explicitly_connected_registration_controls_a_physical_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    devices = {
+        4532: Device(
+            id=4532,
+            name="AT4532 canônico",
+            connection_type="serial",
+            port="COM5",
+            baud_rate=19200,
+            protocol="at4532_serial",
+            active=True,
+        ),
+        4533: Device(
+            id=4533,
+            name="AT4532 duplicado",
+            connection_type="serial",
+            port="com5",
+            baud_rate=115200,
+            protocol="at4532_serial",
+            active=True,
+        ),
+    }
+
+    class SuccessfulSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, _model, device_id):
+            return devices[device_id]
+
+        def add(self, _item) -> None:
+            return None
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+    adapters: dict[int, PhysicalStreamFixtureAdapter] = {}
+
+    def adapter_for(device: Device) -> PhysicalStreamFixtureAdapter:
+        adapter = PhysicalStreamFixtureAdapter("temperature")
+        adapter.port = device.port
+        adapters[device.id] = adapter
+        return adapter
+
+    service = AcquisitionService()
+    monkeypatch.setattr(service, "_adapter_for", adapter_for)
+    monkeypatch.setattr("app.services.acquisition.SessionLocal", lambda: SuccessfulSession())
+
+    first = await service.connect(4532)
+    assert first["connected"] is True
+    with pytest.raises(SerialTransportError) as caught:
+        await service.connect(4533)
+
+    assert caught.value.code == "port_busy"
+    assert set(service.runtimes) == {4532}
+    assert 4533 not in adapters
+    await service.disconnect(4532)
 
 
 @pytest.mark.asyncio

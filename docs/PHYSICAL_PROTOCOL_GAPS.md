@@ -1,4 +1,4 @@
-# Estado e lacunas dos protocolos físicos — 0.5.5-physical-alpha
+# Estado e lacunas dos protocolos físicos — 0.5.6-physical-alpha
 
 Os comandos deixaram de ser um bloqueio documental geral. A implementação usa exclusivamente
 fontes oficiais listadas em `docs/protocols/` e fixtures derivadas das respostas físicas recebidas.
@@ -10,7 +10,7 @@ Confirmado oficialmente: SCPI ASCII, LF, 8-N-1, sem CTS/RTS, baud rates suportad
 observados fisicamente. O Datalogger v9.11 e `ATSCPIv5.dll` confirmam estaticamente os literais
 `idn?` e `fetch?`.
 
-Na evidência física mais recente, `*IDN?` em COM5 não respondeu. A 0.5.5 mantém isso como
+Na evidência física mais recente, `*IDN?` em COM5 não respondeu. A 0.5.6 mantém isso como
 `identity_status=unconfirmed`, mas permite que o operador execute a medição documentada quando a
 porta coincide com a associação manual persistida e os parâmetros seriais conhecidos. A conexão
 contínua só é liberada após `FETCH?` válido com 32 posições e ao menos um canal numérico.
@@ -21,11 +21,36 @@ CH01–CH24 retornaram `Open|K|℃` e CH25–CH32 retornaram temperaturas. O par
 HEX, encoding, tokens e auxiliares, sem misturar ambiente ou auxiliares com canais. `Open` resulta
 em `null/open_sensor`, nunca zero. Formato ASCII simples continua suportado.
 
+### Causa e correção da aquisição contínua
+
+O diagnóstico 0.5.5 repetiu 25 ciclos completos de primeira leitura válida seguida de timeout:
+o próximo TX ocorria em média 3,463 s após o TX anterior, mas apenas 3,061 s após o RX anterior
+(mínimo observado de 2,988 s). O loop genérico descontava a duração da própria consulta do período
+de 3 s e, no probe, aguardava 3 s na borda. Assim, a primeira leitura funcionava como leitura
+preparada durante a conexão, enquanto a segunda consulta chegava antes da janela pós-resposta do
+instrumento. Não houve evidência de consulta duplicada, reabertura, bytes pendentes ou concorrência
+na COM5.
+
+A 0.5.6 mantém o intervalo oficial de medição em 3 s e ancora o próximo `FETCH?` na conclusão do
+RX/parser anterior. Acrescenta uma guarda determinística de 0,4 s, calculada pela serialização do
+frame físico (`694 bytes × 10 bits / 19200 baud = 0,3615 s`, arredondada para cima). Não muda o
+timeout e não envia comando adicional. O mesmo limite vale para `read_once`, probe completo e
+aquisição contínua. Um relógio falso valida 100 respostas consecutivas sem esperar 300 s reais.
+
+O buffer de entrada é inspecionado e qualquer resposta anterior já presente é registrada e drenada
+antes do TX; não há reset de input/output entre amostras. Esses resets continuam ocorrendo uma única
+vez na abertura. Cada consulta registra sequência, TX/RX, intervalos desde TX/RX anteriores,
+duração, bytes, buffers, frame, encoding, canais e timeout.
+
+Cadastros históricos AT4532 que disputam a mesma COM são preservados e arquivados pela migration,
+com referência ao cadastro canônico. A API bloqueia dois cadastros ativos na mesma porta e a UI
+exibe o conflito neutralizado; o ID explicitamente selecionado é o único que pode controlar a COM.
+
 Lacunas restantes: o User's Guide não descreve o significado dos campos auxiliares do `TCP-32`,
 nem sentinelas diferentes de `Open`, canal desligado ou overflow. Esses valores permanecem raw;
-valores numéricos fora da faixa publicada usam `invalid_out_of_range`. O dump integral original
-de aproximadamente 694 bytes não foi anexado ao repositório e deve ser coletado pelo diagnóstico
-na homologação, sem incluir dados da cliente no Git.
+valores numéricos fora da faixa publicada usam `invalid_out_of_range`. O diagnóstico físico
+anexado forneceu o RX integral de 694 bytes e permitiu tornar a fixture fiel aos 34 campos
+auxiliares observados, ainda tratados como opacos. O diagnóstico da cliente não é versionado.
 
 ## GPM-8213
 

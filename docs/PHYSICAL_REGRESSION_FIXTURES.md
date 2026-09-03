@@ -29,11 +29,15 @@ A série temporal de aquecimento altera somente CH29 entre 21,5 °C, 25,0 °C e 
 preservando o timestamp de cada frame. CH29 não recebe tratamento especial no código de produto.
 O formato simples ASCII anterior continua coberto separadamente.
 
-O briefing descreve a captura física como tendo aproximadamente 694 bytes e informa sua estrutura
-e os tokens de canal, mas não fornece o dump integral dos bytes nem o conteúdo integral dos campos
-auxiliares. Por isso as fixtures exercitam auxiliares opacos sem lhes atribuir significado. A build
-registra o RX integral no ZIP de diagnóstico durante a próxima homologação; esse diagnóstico não
-deve ser versionado.
+O soak contínuo usa frame físico de 694 bytes, relógio controlado e um transporte que aceita a
+primeira leitura, mas rejeita consultas antes de 3 s mais a guarda serial após o RX. O gate exige
+100 amostras consecutivas, um `FETCH?` por ciclo, apenas um `*IDN?` e um `SYST:UNIT CEL`, nenhuma
+reabertura, nenhum timeout, timestamps monotônicos e mapeamento CH01–CH32 intacto.
+
+O diagnóstico físico anexado fornece a captura integral de 694 bytes e o conteúdo dos 34 campos
+auxiliares. A fixture reproduz a estrutura e os bytes CP936 observados, mas mantém esses auxiliares
+opacos, sem lhes atribuir significado. A build registra o RX integral no ZIP de diagnóstico durante
+a próxima homologação; o diagnóstico da cliente não é versionado.
 
 ## Fontes combinadas e falha parcial
 

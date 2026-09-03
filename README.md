@@ -1,4 +1,4 @@
-# ThermoPower Monitor 0.5.5-physical-alpha
+# ThermoPower Monitor 0.5.6-physical-alpha
 
 Plataforma full-stack para aquisição industrial combinada: até 32 temperaturas pelo Applent AT4532 e grandezas elétricas pelo GW Instek GPM-8213. As sessões são rastreáveis, aceitam uma ou as duas fontes, sincronizam timestamps e mantêm o protótipo original em `legacy/`.
 
@@ -30,6 +30,10 @@ Plataforma full-stack para aquisição industrial combinada: até 32 temperatura
 - probe SCPI documentado com confirmação pré-TX, TX/RX ao vivo e exportação diagnóstica ZIP;
 - parser compatível com o `FETCH?` simples e com o frame físico `TCP-32`/CP936 do AT4532,
   preservando `Open`, timestamps, tokens, bytes/HEX e campos auxiliares;
+- polling AT4532 ancorado no RX anterior, com guarda calculada pela serialização do frame físico,
+  soak automatizado de 100 amostras e diagnóstico temporal por `FETCH?`;
+- cadastros físicos conflitantes são bloqueados; históricos AT na mesma COM são preservados,
+  neutralizados e exibidos como aviso no cadastro canônico;
 - conexão independente por fonte: falha elétrica ou térmica não desfaz a fonte saudável;
 - assistente de primeiro uso e build Windows de engenharia com PyInstaller;
 - comparação de sessões, visão executiva e diagnóstico do sistema;
@@ -94,7 +98,7 @@ desse script. Depois da aprovação, siga o [roteiro de bancada](docs/PHYSICAL_E
 5. Abra a sessão criada para analisar e exportar CSV, XLSX, PDF, PNG ou JPEG.
 
 Os arquivos reais não devem ser versionados. As respostas físicas conhecidas e os manuais oficiais
-já alimentam os fixtures 0.5.5; ainda faltam o dump integral real dos campos auxiliares TCP-32 e a
+já alimentam os fixtures 0.5.6; ainda faltam a homologação da nova cadência contínua e a
 homologação final de valores, estabilidade e driver no computador da cliente.
 
 Linux/macOS usam os equivalentes `source .venv/bin/activate` e `.venv/bin/python`.

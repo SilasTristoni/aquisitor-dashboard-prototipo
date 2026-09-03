@@ -1,6 +1,6 @@
 # Teste da build física de engenharia
 
-Use somente `0.5.5-physical-alpha`. Não é beta, instalador final nem release de cliente.
+Use somente `0.5.6-physical-alpha`. Não é beta, instalador final nem release de cliente.
 Antes de empacotar, execute o [gate de regressão física](PHYSICAL_REGRESSION_FIXTURES.md).
 
 ## Preparação
@@ -23,7 +23,10 @@ Antes de empacotar, execute o [gate de regressão física](PHYSICAL_REGRESSION_F
    `Open|K|℃` foi confirmado no RX físico e deve aparecer como `null/open_sensor`, nunca zero.
 5. Aqueça manualmente qualquer ponteira conectada e confirme que o mesmo canal sobe e depois cai.
 6. Canais abertos devem ficar indisponíveis individualmente, preservando o token raw; nunca 0 °C.
-7. Execute o teste completo; duas leituras devem ocorrer com ~3 s entre elas e exporte o ZIP.
+7. Execute o teste completo; duas leituras devem ocorrer sem timeout, com a segunda consulta
+   ancorada na conclusão da primeira, e exporte o ZIP.
+8. Em cada `FETCH?`, confira sequência, TX/RX, intervalos desde TX/RX anteriores, duração, bytes,
+   buffers pendente/drenado, frame, encoding, canais interpretados e indicador de timeout.
 
 ## GPM-8213
 
