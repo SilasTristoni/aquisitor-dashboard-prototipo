@@ -1183,7 +1183,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
     equipment = "Applent AT4532"
     manufacturer = "Applent Instruments"
     model = "AT4532"
-    expected_interval_seconds = 3.0
+    expected_interval_seconds = 1.0
     continuous_read_guard_seconds = AT4532_CONTINUOUS_READ_GUARD_SECONDS
     polling_managed_by_read_once = True
     protocol = At4532Protocol()
@@ -1203,6 +1203,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         self.allow_identity_fallback = allow_identity_fallback
         self.association_source = association_source
         self._primed_reading: DeviceReading | None = None
+        self._last_fetch_started_monotonic: float | None = None
         self._last_fetch_completed_monotonic: float | None = None
 
     def _configuration(self) -> SerialTransportConfiguration:
@@ -1258,6 +1259,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
 
     async def _after_identity(self) -> None:
         self._primed_reading = None
+        self._last_fetch_started_monotonic = None
         self._last_fetch_completed_monotonic = None
         await self._transaction(self.protocol.celsius, expect_response=False)
 
@@ -1276,6 +1278,9 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
     async def _query_reading(self) -> DeviceReading:
         payload = await self._transaction(self.protocol.temperatures, expect_response=True)
         reading = self._normalize_payload(payload)
+        self._last_fetch_started_monotonic = self._last_command_tx_monotonic.get(
+            self.protocol.temperatures.name
+        )
         self._last_fetch_completed_monotonic = monotonic()
         raw = reading.raw_payload
         if raw["channel_count_received"] == 32 and raw["valid_channels"] >= 1:
@@ -1338,18 +1343,21 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         return reading
 
     async def _wait_until_next_fetch_window(self) -> None:
-        if self._last_fetch_completed_monotonic is None:
+        if (
+            self._last_fetch_started_monotonic is None
+            or self._last_fetch_completed_monotonic is None
+        ):
             return
-        minimum_rx_interval = (
-            self.expected_interval_seconds + self.continuous_read_guard_seconds
+        next_fetch_at = max(
+            self._last_fetch_started_monotonic + self.expected_interval_seconds,
+            self._last_fetch_completed_monotonic + self.continuous_read_guard_seconds,
         )
-        remaining = (
-            self._last_fetch_completed_monotonic + minimum_rx_interval - monotonic()
-        )
+        remaining = next_fetch_at - monotonic()
         if remaining > 0:
             logger.info(
-                "AT4532 cadence wait anchor=previous_fetch_completed "
-                "measurement_interval_s=%.3f serial_frame_guard_s=%.3f wait_s=%.3f",
+                "AT4532 cadence wait anchor=max(previous_fetch_started+interval,"
+                "previous_fetch_completed+guard) measurement_interval_s=%.3f "
+                "post_rx_guard_s=%.3f wait_s=%.3f",
                 self.expected_interval_seconds,
                 self.continuous_read_guard_seconds,
                 remaining,
@@ -1370,7 +1378,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             {
                 "identity_fallback_allowed": self.allow_identity_fallback,
                 "association_source": self.association_source,
-                "polling_anchor": "previous_fetch_completed",
+                "polling_anchor": "fetch_start_interval_with_post_rx_guard",
                 "continuous_read_guard_seconds": self.continuous_read_guard_seconds,
                 "physical_frame_bytes": AT4532_PHYSICAL_FRAME_BYTES,
             }

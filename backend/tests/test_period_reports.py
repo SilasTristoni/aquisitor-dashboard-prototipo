@@ -138,6 +138,7 @@ def _payload(start: datetime, end: datetime) -> dict:
 def _seed_client_preview_data() -> tuple[datetime, datetime, int, int]:
     start = datetime(2026, 9, 3, 13, 0, tzinfo=UTC)
     timestamps = [start + timedelta(seconds=30 * index) for index in range(8)]
+    thermal_offset = timedelta(milliseconds=350)
     with SessionLocal() as db:
         user = db.scalar(select(User).where(User.email == "admin@demo.thermopower.com"))
         thermal = Device(
@@ -170,7 +171,7 @@ def _seed_client_preview_data() -> tuple[datetime, datetime, int, int]:
             name="Ensaio combinado Britânia",
             description="Validação térmica e elétrica",
             started_at=start,
-            ended_at=timestamps[-1],
+            ended_at=timestamps[-1] + thermal_offset,
             status="finished",
             metadata_json={
                 "product": "Forno elétrico",
@@ -228,11 +229,12 @@ def _seed_client_preview_data() -> tuple[datetime, datetime, int, int]:
                     raw_payload={},
                 )
             )
+            thermal_timestamp = timestamp + thermal_offset
             thermal_sample = TemperatureSample(
                 session_id=session.id,
                 device_id=thermal.id,
-                device_timestamp=timestamp,
-                received_timestamp=timestamp + timedelta(milliseconds=40),
+                device_timestamp=thermal_timestamp,
+                received_timestamp=thermal_timestamp + timedelta(milliseconds=40),
                 ambient_temperature_c=23.0,
                 quality="good",
                 source="test",
@@ -254,7 +256,7 @@ def _seed_client_preview_data() -> tuple[datetime, datetime, int, int]:
                 )
             db.add(thermal_sample)
         db.commit()
-        return start, timestamps[-1], session.id, len(timestamps)
+        return start, timestamps[-1] + thermal_offset, session.id, len(timestamps)
 
 
 def test_period_contract_normalizes_naive_local_time_and_validates_metrics():
@@ -343,6 +345,25 @@ def test_client_preview_auto_selects_active_channels_and_updates_identification(
     )
     assert body["statistics"]["electrical"]["energy_wh"] > 0
     assert body["statistics"]["electrical"]["cycles"]["cycle_count"] == 4
+    assert body["period"]["time_axis_mode"] == "synchronized"
+    assert len(body["series"][0]["electrical"]) == len(body["series"][0]["temperatures"])
+    first_electrical = body["series"][0]["electrical"][0]
+    first_thermal = body["series"][0]["temperatures"][0]
+    assert datetime.fromisoformat(first_thermal["timestamp"]) - datetime.fromisoformat(
+        first_electrical["timestamp"]
+    ) == timedelta(milliseconds=350)
+    assert first_electrical["elapsed_seconds"] == 0
+    assert first_thermal["elapsed_seconds"] == pytest.approx(0.35)
+    assert body["series"][0]["session_started_at"] == start.isoformat()
+
+    real_time = client.post(
+        "/api/v1/reports/period/preview",
+        headers=auth_headers,
+        json={**payload, "time_axis_mode": "real"},
+    )
+    assert real_time.status_code == 200, real_time.text
+    assert real_time.json()["period"]["time_axis_mode"] == "real"
+    assert real_time.json()["statistics"] == body["statistics"]
 
     with_open = client.post(
         "/api/v1/reports/period/preview",
@@ -403,18 +424,24 @@ def test_client_preview_outputs_keep_raw_streams_and_professional_workbook(
         "Análise Estabilizada",
         "Estatística por Canal",
         "Grandezas Elétricas",
-        "Amostras Elétricas Reais",
-        "Amostras Térmicas Reais",
+        "Leituras Elétricas Reais",
+        "Leituras Térmicas Reais",
         "Dados Sincronizados",
         "Metadados",
     ]
-    assert workbook["Amostras Elétricas Reais"].max_row == sample_count + 1
-    assert workbook["Amostras Térmicas Reais"].max_row == sample_count + 1
+    assert workbook["Leituras Elétricas Reais"].max_row == sample_count + 1
+    assert workbook["Leituras Térmicas Reais"].max_row == sample_count + 1
     assert workbook["Dados Sincronizados"].max_row == sample_count + 1
-    assert isinstance(workbook["Amostras Elétricas Reais"]["E2"].value, int | float)
-    assert isinstance(workbook["Amostras Térmicas Reais"]["D2"].value, int | float)
+    assert isinstance(workbook["Leituras Elétricas Reais"]["E2"].value, int | float)
+    assert isinstance(workbook["Leituras Térmicas Reais"]["D2"].value, int | float)
     assert len(workbook["Curvas do Ensaio"]._charts) == 1
     assert len(workbook["Resumo Executivo"]._charts) == 1
+    curves = workbook["Curvas do Ensaio"]
+    assert curves["B1"].value == "Tempo decorrido"
+    assert curves["B2"].value == timedelta(milliseconds=350)
+    assert curves["C2"].value != curves["D2"].value
+    assert curves["E2"].value is not None
+    assert curves["F2"].value is not None
 
     thermal_csv = client.post(
         "/api/v1/reports/period/csv?dataset=thermal", headers=auth_headers, json=payload

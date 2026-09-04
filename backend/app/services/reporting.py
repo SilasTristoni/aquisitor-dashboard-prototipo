@@ -134,7 +134,7 @@ def create_xlsx(db: Session, session_id: int, user_id: int) -> bytes:
     summary = workbook.create_sheet("Resumo")
     summary.append(["ThermoPower Monitor", session.name])
     stats = session_statistics(db, session_id)
-    summary.append(["Amostras", stats["power"]["count"]])
+    summary.append(["Leituras", stats["power"]["count"]])
     summary.append(["Potência média (W)", stats["power"]["mean"]])
     summary.append(["Potência máxima (W)", stats["power"]["max"]])
     summary.append(["Alertas", stats["alert_count"]])
@@ -174,7 +174,7 @@ def create_pdf(db: Session, session_id: int, user_id: int, orientation: str = "l
     ]
     summary_data = [
         ["Indicador", "Valor"],
-        ["Amostras", str(stats["power"]["count"])],
+        ["Leituras", str(stats["power"]["count"])],
         ["Potência média", f"{(stats['power']['mean'] or 0):.2f} W"],
         ["Potência mínima", f"{(stats['power']['min'] or 0):.2f} W"],
         ["Potência máxima", f"{(stats['power']['max'] or 0):.2f} W"],

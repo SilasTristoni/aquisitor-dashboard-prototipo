@@ -8,8 +8,12 @@ export function Panel({ title, kicker, actions, children, className = "" }: { ti
   return <section className={`panel ${className}`}>{(title || actions) && <div className="panel-head"><div>{kicker && <p className="eyebrow">{kicker}</p>}{title && <h2>{title}</h2>}</div>{actions}</div>}{children}</section>;
 }
 
-export function Metric({ label, value, hint, tone = "default" }: { label: string; value: ReactNode; hint?: string; tone?: string }) {
-  return <article className={`metric-card ${tone}`}><span>{label}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</article>;
+export function InfoTip({ text }: { text: string }) {
+  return <span className="info-tip" tabIndex={0} role="button" aria-label={text}><span aria-hidden="true">i</span><span className="info-tip-content" role="tooltip">{text}</span></span>;
+}
+
+export function Metric({ label, value, hint, help, tone = "default" }: { label: string; value: ReactNode; hint?: string; help?: string; tone?: string }) {
+  return <article className={`metric-card ${tone}`}><span className="metric-label">{label}{help && <InfoTip text={help} />}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</article>;
 }
 
 export function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: string }) {

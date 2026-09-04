@@ -15,6 +15,7 @@ from openpyxl.utils import get_column_letter
 
 from app.core.version import APPLICATION_VERSION
 from app.schemas.contracts import PeriodReportRequest
+from app.services.period_documents import CHANNEL_COLORS, POWER_COLOR, format_duration_pt
 
 NAVY = "17233F"
 BLUE = "2563EB"
@@ -46,7 +47,7 @@ def _finish_sheet(sheet: Any, freeze: str = "A2") -> None:
 
 
 def synchronized_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Create the visualization grid without changing either real source stream."""
+    """Associate each source sample at most once within the configured tolerance."""
     tolerance = data["request"].sync_tolerance_ms / 1000
     rows: list[dict[str, Any]] = []
     for session in data["sessions"]:
@@ -60,18 +61,25 @@ def synchronized_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
             key=lambda point: point["timestamp"],
         )
         electrical_times = [point["timestamp"] for point in electrical]
-        if not temperatures:
-            rows.extend({**point, "channels": {}} for point in electrical)
-            continue
+        used_electrical: set[int] = set()
         for temperature in temperatures:
             nearest = None
+            nearest_index = None
             index = bisect_left(electrical_times, temperature["timestamp"])
-            candidates = electrical[max(0, index - 1) : index + 1]
+            candidate_indexes = [
+                candidate_index
+                for candidate_index in range(max(0, index - 2), min(len(electrical), index + 2))
+                if candidate_index not in used_electrical
+            ]
+            candidates = [
+                (candidate_index, electrical[candidate_index])
+                for candidate_index in candidate_indexes
+            ]
             if candidates:
-                candidate = min(
+                nearest_index, candidate = min(
                     candidates,
-                    key=lambda point: abs(
-                        (point["timestamp"] - temperature["timestamp"]).total_seconds()
+                    key=lambda item: abs(
+                        (item[1]["timestamp"] - temperature["timestamp"]).total_seconds()
                     ),
                 )
                 if (
@@ -79,6 +87,7 @@ def synchronized_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
                     <= tolerance
                 ):
                     nearest = candidate
+                    used_electrical.add(nearest_index)
             rows.append(
                 {
                     "session_id": session_id,
@@ -96,6 +105,86 @@ def synchronized_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
                     "voltage_frequency_hz": nearest["voltage_frequency_hz"] if nearest else None,
                 }
             )
+        for electrical_index, point in enumerate(electrical):
+            if electrical_index not in used_electrical:
+                rows.append(
+                    {
+                        "session_id": session_id,
+                        "timestamp": point["timestamp"],
+                        "temperature_sample_timestamp": None,
+                        "electrical_sample_timestamp": point["timestamp"],
+                        "channels": {},
+                        "ambient_temperature_c": None,
+                        **{
+                            key: point[key]
+                            for key in (
+                                "active_power_w", "voltage_v", "current_a",
+                                "apparent_power_va", "reactive_power_var", "power_factor",
+                                "voltage_frequency_hz",
+                            )
+                        },
+                    }
+                )
+    rows.sort(key=lambda row: (row["session_id"], row["timestamp"]))
+    return rows
+
+
+def comparative_rows(
+    data: dict[str, Any], request: PeriodReportRequest
+) -> list[dict[str, Any]]:
+    """Build independent chart rows; no source sample is interpolated or duplicated."""
+    if request.time_axis_mode == "synchronized":
+        starts = {
+            session["id"]: datetime.fromisoformat(session["started_at"])
+            for session in data["sessions"]
+        }
+        return [
+            {
+                "session_id": row["session_id"],
+                "axis_value": (row["timestamp"] - starts[row["session_id"]]).total_seconds(),
+                "electrical_timestamp": row["electrical_sample_timestamp"],
+                "thermal_timestamp": row["temperature_sample_timestamp"],
+                "active_power_w": row["active_power_w"],
+                "channels": row["channels"],
+            }
+            for row in synchronized_rows(data)
+        ]
+    rows: list[dict[str, Any]] = []
+    for session in data["sessions"]:
+        session_id = session["id"]
+        electrical = sorted(
+            (point for point in data["electrical"] if point["session_id"] == session_id),
+            key=lambda point: point["timestamp"],
+        )
+        temperatures = sorted(
+            (point for point in data["temperatures"] if point["session_id"] == session_id),
+            key=lambda point: point["timestamp"],
+        )
+        merged: dict[datetime | float, dict[str, Any]] = {}
+
+        for point in electrical:
+            axis_value: datetime | float = point["timestamp"]
+            row = merged.setdefault(
+                axis_value,
+                {"session_id": session_id, "axis_value": axis_value, "channels": {}},
+            )
+            row.update(
+                {
+                    "electrical_timestamp": point["timestamp"],
+                    "active_power_w": point["active_power_w"],
+                }
+            )
+
+        for point in temperatures:
+            axis_value = point["timestamp"]
+            row = merged.setdefault(
+                axis_value,
+                {"session_id": session_id, "axis_value": axis_value, "channels": {}},
+            )
+            row["thermal_timestamp"] = point["timestamp"]
+            row["channels"] = point["channels"]
+
+        rows.extend(merged[key] for key in sorted(merged))
     return rows
 
 
@@ -140,13 +229,67 @@ def _append_synchronized(
     _finish_sheet(sheet)
 
 
-def _add_curve_chart(sheet: Any, channels: list[int], anchor: str) -> None:
+def _append_comparative(
+    sheet: Any,
+    rows: list[dict[str, Any]],
+    channels: list[int],
+    zone: ZoneInfo,
+    mode: str,
+) -> None:
+    sheet.append(
+        [
+            "Sessão",
+            "Tempo decorrido" if mode == "synchronized" else "Horário real",
+            "Horário elétrico original",
+            "Horário térmico original",
+            "Potência ativa (W)",
+            *[f"T{channel} (°C)" for channel in channels],
+        ]
+    )
+    for row in rows:
+        axis_value = row["axis_value"]
+        if mode == "synchronized":
+            axis_value = float(axis_value) / 86_400
+        else:
+            axis_value = _local_excel(axis_value, zone)
+        sheet.append(
+            [
+                row["session_id"],
+                axis_value,
+                _local_excel(row["electrical_timestamp"], zone)
+                if row.get("electrical_timestamp")
+                else None,
+                _local_excel(row["thermal_timestamp"], zone)
+                if row.get("thermal_timestamp")
+                else None,
+                row.get("active_power_w"),
+                *[row["channels"].get(channel) for channel in channels],
+            ]
+        )
+    _header(sheet, 1, sheet.max_column)
+    for cell in sheet["B"][1:]:
+        cell.number_format = "[h]:mm:ss" if mode == "synchronized" else "dd/mm/yyyy hh:mm:ss"
+    for column in ("C", "D"):
+        for cell in sheet[column][1:]:
+            cell.number_format = "dd/mm/yyyy hh:mm:ss.000"
+    _finish_sheet(sheet)
+
+
+def _add_curve_chart(
+    sheet: Any, channels: list[int], anchor: str, mode: str
+) -> None:
     if sheet.max_row < 3:
         return
     temperature_chart = LineChart()
-    temperature_chart.title = "Temperaturas e potência — período analisado"
+    temperature_chart.title = (
+        "Temperaturas e potência — início comum da sessão"
+        if mode == "synchronized"
+        else "Temperaturas e potência — horário real"
+    )
     temperature_chart.y_axis.title = "Temperatura (°C)"
-    temperature_chart.x_axis.title = "Tempo"
+    temperature_chart.x_axis.title = (
+        "Tempo decorrido (hh:mm:ss)" if mode == "synchronized" else "Horário real"
+    )
     temperature_chart.height = 11
     temperature_chart.width = 24
     categories = Reference(sheet, min_col=2, min_row=2, max_row=sheet.max_row)
@@ -154,19 +297,27 @@ def _add_curve_chart(sheet: Any, channels: list[int], anchor: str) -> None:
         temperature_chart.add_data(
             Reference(
                 sheet,
-                min_col=4,
-                max_col=3 + len(channels),
+                min_col=6,
+                max_col=5 + len(channels),
                 min_row=1,
                 max_row=sheet.max_row,
             ),
             titles_from_data=True,
         )
+        for series, channel in zip(temperature_chart.series, channels, strict=True):
+            series.graphicalProperties.line.solidFill = CHANNEL_COLORS[
+                (channel - 1) % len(CHANNEL_COLORS)
+            ].lstrip("#")
+            series.graphicalProperties.line.width = 19_050
     temperature_chart.set_categories(categories)
+    temperature_chart.display_blanks = "gap"
     power_chart = LineChart()
     power_chart.add_data(
-        Reference(sheet, min_col=3, min_row=1, max_row=sheet.max_row),
+        Reference(sheet, min_col=5, min_row=1, max_row=sheet.max_row),
         titles_from_data=True,
     )
+    power_chart.series[0].graphicalProperties.line.solidFill = POWER_COLOR.lstrip("#")
+    power_chart.series[0].graphicalProperties.line.width = 28_575
     power_chart.set_categories(categories)
     power_chart.y_axis.title = "Potência (W)"
     power_chart.y_axis.axId = 200
@@ -198,8 +349,11 @@ def render_period_xlsx(data: dict[str, Any], request: PeriodReportRequest) -> by
     summary["C5"] = _local_excel(request.end, zone)
     summary["B5"].number_format = summary["C5"].number_format = "dd/mm/yyyy hh:mm:ss"
     kpis = [
-        ("Amostras elétricas", general["electrical_sample_count"]),
-        ("Amostras térmicas", general["temperature_sample_count"]),
+        ("Período analisado", format_duration_pt(general["analyzed_period_seconds"])),
+        (
+            "Integridade dos dados",
+            "Íntegra" if not general["gap_count"] else f"{general['gap_count']} lacuna(s)",
+        ),
         ("Potência média (W)", electrical["active_power_w"]["mean"]),
         ("Potência máxima (W)", electrical["active_power_w"]["max"]),
         ("Energia (Wh)", electrical["energy_wh"]),
@@ -224,12 +378,12 @@ def render_period_xlsx(data: dict[str, Any], request: PeriodReportRequest) -> by
     summary.append([])
     summary.cell(table_row, 1, "Canal")
     summary.cell(table_row, 2, "Identificação")
-    summary.cell(table_row, 3, "Amostras")
+    summary.cell(table_row, 3, "Leituras")
     summary.cell(table_row, 4, "Média (°C)")
     summary.cell(table_row, 5, "Máx (°C)")
     summary.cell(table_row, 6, "Mín (°C)")
     summary.cell(table_row, 7, "ΔT (°C)")
-    summary.cell(table_row, 8, "P95 (°C)")
+    summary.cell(table_row, 8, "P95 (°C) — 95% abaixo")
     _header(summary, table_row, 8)
     for item in channel_stats:
         summary.append(
@@ -250,9 +404,12 @@ def render_period_xlsx(data: dict[str, Any], request: PeriodReportRequest) -> by
     summary.freeze_panes = "A5"
 
     synchronized = synchronized_rows(data)
+    comparative = comparative_rows(data, request)
     curves = workbook.create_sheet("Curvas do Ensaio")
-    _append_synchronized(curves, synchronized, channels, zone)
-    _add_curve_chart(curves, channels, "A4")
+    _append_comparative(
+        curves, comparative, channels, zone, request.time_axis_mode
+    )
+    _add_curve_chart(curves, channels, "A4", request.time_axis_mode)
 
     stabilized = workbook.create_sheet("Análise Estabilizada")
     _append_synchronized(stabilized, synchronized, channels, zone)
@@ -262,13 +419,13 @@ def render_period_xlsx(data: dict[str, Any], request: PeriodReportRequest) -> by
         [
             "Canal",
             "Nome",
-            "Amostras",
+            "Leituras",
             "Média",
             "Mínimo",
             "Máximo",
             "Mediana",
             "Desvio padrão",
-            "P95",
+            "P95 — 95% abaixo",
             "Amplitude",
             "Taxa °C/min",
             "Disponibilidade (%)",
@@ -296,7 +453,16 @@ def render_period_xlsx(data: dict[str, Any], request: PeriodReportRequest) -> by
 
     electric_sheet = workbook.create_sheet("Grandezas Elétricas")
     electric_sheet.append(
-        ["Grandeza", "Amostras", "Média", "Mínimo", "Máximo", "Mediana", "Desvio", "P95"]
+        [
+            "Grandeza",
+            "Leituras",
+            "Média",
+            "Mínimo",
+            "Máximo",
+            "Mediana",
+            "Desvio",
+            "P95 — 95% abaixo",
+        ]
     )
     electric_labels = {
         "active_power_w": "Potência ativa (W)",
@@ -325,7 +491,7 @@ def render_period_xlsx(data: dict[str, Any], request: PeriodReportRequest) -> by
     _header(electric_sheet, 1, electric_sheet.max_column)
     _finish_sheet(electric_sheet)
 
-    real_electrical = workbook.create_sheet("Amostras Elétricas Reais")
+    real_electrical = workbook.create_sheet("Leituras Elétricas Reais")
     real_electrical.append(
         [
             "Sessão",
@@ -362,7 +528,7 @@ def render_period_xlsx(data: dict[str, Any], request: PeriodReportRequest) -> by
         cell.number_format = "dd/mm/yyyy hh:mm:ss.000"
     _finish_sheet(real_electrical)
 
-    real_thermal = workbook.create_sheet("Amostras Térmicas Reais")
+    real_thermal = workbook.create_sheet("Leituras Térmicas Reais")
     real_thermal.append(
         [
             "Sessão",
@@ -394,6 +560,14 @@ def render_period_xlsx(data: dict[str, Any], request: PeriodReportRequest) -> by
     metadata_sheet.append(["Campo", "Valor"])
     metadata_sheet.append(["Versão", APPLICATION_VERSION])
     metadata_sheet.append(["Fuso horário", request.timezone])
+    metadata_sheet.append(
+        [
+            "Eixo dos gráficos",
+            "Início comum da sessão (apenas visual)"
+            if request.time_axis_mode == "synchronized"
+            else "Horário real",
+        ]
+    )
     metadata_sheet.append(["Início analisado", _local_excel(request.start, zone)])
     metadata_sheet.append(["Fim analisado", _local_excel(request.end, zone)])
     for session in data["sessions"]:

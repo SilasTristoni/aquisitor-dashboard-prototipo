@@ -23,13 +23,16 @@ from app.services.period_workbook import render_period_xlsx  # noqa: E402
 
 def fixture_data() -> tuple[dict, PeriodReportRequest]:
     start = datetime(2026, 9, 3, 13, 0, tzinfo=UTC)
-    end = start + timedelta(hours=2)
+    thermal_offset = timedelta(minutes=3)
+    end = start + timedelta(hours=2) + thermal_offset
     request = PeriodReportRequest(
         start=start,
         end=end,
         title="Ensaio combinado — validação térmica e elétrica",
         subtitle="Relatório Técnico de Ensaio Térmico e Elétrico",
-        description="Fixture sintética determinística para revisão visual da build de cliente.",
+        description=(
+            "Fixture sintética determinística com início térmico três minutos após o elétrico."
+        ),
         notes="Valores exclusivamente sintéticos; não representam uma amostra de produção.",
         channels=list(range(24, 33)),
         include_open_channels=True,
@@ -51,6 +54,7 @@ def fixture_data() -> tuple[dict, PeriodReportRequest]:
     temperatures = []
     for index in range(721):
         timestamp = start + timedelta(seconds=index * 10)
+        thermal_timestamp = timestamp + thermal_offset
         elapsed_minutes = index / 6
         cycle_on = (index // 30) % 2 == 0
         active_power = (1120 if cycle_on else 160) + 35 * math.sin(index / 13)
@@ -84,7 +88,7 @@ def fixture_data() -> tuple[dict, PeriodReportRequest]:
             {
                 "session_id": 1,
                 "device_id": 1,
-                "timestamp": timestamp,
+                "timestamp": thermal_timestamp,
                 "timestamp_source": "device",
                 "quality": "good",
                 "source": "fixture",
@@ -161,12 +165,16 @@ def main() -> None:
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     data, request = fixture_data()
+    real_time_request = request.model_copy(update={"time_axis_mode": "real"})
     artifacts = {
         "relatorio-tecnico.pdf": render_period_pdf(data, request),
         "resumo-executivo.pdf": render_executive_summary(data, request, "pdf"),
         "resumo-executivo.png": render_executive_summary(data, request, "png"),
+        "resumo-executivo.jpeg": render_executive_summary(data, request, "jpeg"),
         "curvas-do-ensaio.png": render_period_chart(data, request, "png"),
+        "curvas-horario-real.png": render_period_chart(data, real_time_request, "png"),
         "relatorio-tecnico.xlsx": render_period_xlsx(data, request),
+        "relatorio-horario-real.xlsx": render_period_xlsx(data, real_time_request),
     }
     for name, content in artifacts.items():
         (args.output / name).write_bytes(content)

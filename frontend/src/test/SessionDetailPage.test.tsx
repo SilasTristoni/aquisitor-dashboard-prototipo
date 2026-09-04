@@ -107,7 +107,15 @@ test("recalcula a visão executiva da sessão para o período selecionado", asyn
   expect(screen.getAllByText("T25 — Saída de ar").length).toBeGreaterThan(0);
   expect(screen.getByText("Operador não informado", { exact: false })).toBeInTheDocument();
   expect(screen.getByText(/inclinação ≤ 0,2 °C\/min/i)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Início da sessão" })).toHaveClass("active");
+  await waitFor(() => {
+    const initialPreview = apiMock.mock.calls.find(([path]) => path === "/reports/period/preview");
+    expect(JSON.parse(String(initialPreview?.[1]?.body))).toMatchObject({
+      time_axis_mode: "synchronized",
+    });
+  });
 
+  await userEvent.click(screen.getByRole("button", { name: "Horário real" }));
   await userEvent.click(screen.getByRole("button", { name: "Aplicar período" }));
   await waitFor(() => {
     const previewCalls = apiMock.mock.calls.filter(([path]) => path === "/reports/period/preview");
@@ -117,6 +125,7 @@ test("recalcula a visão executiva da sessão para o período selecionado", asyn
       channels: null,
       include_open_channels: false,
       timezone: "America/Sao_Paulo",
+      time_axis_mode: "real",
       start: "2026-09-03T10:00",
       end: "2026-09-03T10:03",
     });

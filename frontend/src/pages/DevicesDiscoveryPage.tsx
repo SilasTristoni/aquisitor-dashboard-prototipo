@@ -11,7 +11,7 @@ import {
   Usb,
 } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
-import { api, download, formatDate } from "../api";
+import { api, download, formatDate, friendlyApiMessage } from "../api";
 import { useAuth } from "../auth";
 import { Badge, Empty, ErrorNotice, PageHeader, Panel, Spinner } from "../components/ui";
 import type { Device } from "../types";
@@ -63,6 +63,13 @@ export default function DevicesDiscoveryPage() {
 
   const confirmedSerialParameters = Boolean(
     diagnosticDataBits && diagnosticParity && diagnosticStopBits,
+  );
+  const operatorTestResult = test?.result ?? (
+    test?.stages?.some((stage: any) => stage.status === "failed")
+      ? "failed"
+      : test?.stages?.some((stage: any) => stage.status === "warning")
+        ? "passed_with_warning"
+        : "passed"
   );
 
   const loadDevices = useCallback(async () => {
@@ -400,10 +407,10 @@ export default function DevicesDiscoveryPage() {
               </div>
               <div className="device-actions">
                 {device.protocol === "at4532_serial" || device.protocol === "gpm8213_serial" ? <>
-                  <button className="button secondary" onClick={() => void testConnection(device, "identity")}><FlaskConical /> Testar identificação</button>
-                  <button className="button secondary" onClick={() => void testConnection(device, "read")}><FlaskConical /> Testar leitura</button>
-                  <button className="button secondary" onClick={() => void testConnection(device, "full")}><FlaskConical /> Executar teste completo</button>
-                </> : <button className="button secondary" onClick={() => void testConnection(device, "full")}><FlaskConical /> Testar em etapas</button>}
+                  <button className="button secondary" disabled={Boolean(test?.loading)} onClick={() => void testConnection(device, "identity")}><FlaskConical /> Testar identificação</button>
+                  <button className="button secondary" disabled={Boolean(test?.loading)} onClick={() => void testConnection(device, "read")}><FlaskConical /> Testar leitura</button>
+                  <button className="button secondary" disabled={Boolean(test?.loading)} onClick={() => void testConnection(device, "full")}><FlaskConical /> Executar teste completo</button>
+                </> : <button className="button secondary" disabled={Boolean(test?.loading)} onClick={() => void testConnection(device, "full")}><FlaskConical /> Testar em etapas</button>}
                 {user?.role !== "viewer" && <button className="button ghost" onClick={() => void toggleConnection(device)}><PlugZap /> {status.connected ? "Desconectar" : "Conectar"}</button>}
                 {user?.role === "admin" && <button className="button ghost danger" onClick={() => void removeDevice(device)}><Trash2 /> Remover</button>}
               </div>
@@ -420,11 +427,13 @@ export default function DevicesDiscoveryPage() {
                 {test.stages?.map((stage: any) => (
                   <div key={stage.key}>
                     <Badge tone={stage.status === "passed" ? "success" : stage.status === "warning" ? "warning" : stage.status === "failed" ? "danger" : "neutral"}>{stage.status === "passed" ? "OK" : stage.status === "warning" ? "ATENÇÃO" : stage.status === "failed" ? "Falha" : "Não executado"}</Badge>
-                    <span>{stage.label}</span><small>{stage.message}</small>
+                    <span>{stage.label}</span><small>{stage.key === "identity" && stage.status === "warning" && test.protocol_status === "verified_by_measurement" ? "Identificação automática indisponível — comunicação validada pela leitura." : friendlyApiMessage(stage.message)}</small>
                   </div>
                 ))}
               </div>
-              <div className="safety-notice">Serão enviados somente comandos documentados oficialmente pelo fabricante. Validação física permanece pendente até a resposta do instrumento real.</div>
+              <div className={`test-result-summary ${operatorTestResult === "passed" ? "success" : operatorTestResult === "passed_with_warning" ? "warning" : "danger"}`}><strong>Resultado do teste</strong><span>{operatorTestResult === "passed" ? "Equipamento pronto para uso." : operatorTestResult === "passed_with_warning" ? "Comunicação validada com uma atenção não impeditiva." : "O teste precisa de verificação."}</span></div>
+              <details className="advanced-options diagnostic-technical-details"><summary>Mostrar detalhes técnicos</summary>
+              <div className="safety-notice">Esta seção registra comandos documentados, tempos e respostas para uso da engenharia.</div>
               {test.transactions?.map((transaction: any, index: number) => (
                 <div className="serial-diagnostic-result" key={`${transaction.command_name}-${index}`}>
                   <div className="inline-actions"><Badge tone={transaction.error ? "danger" : "success"}>vendor_documented</Badge><strong>{transaction.command_name}</strong><span>{transaction.elapsed_ms} ms · {transaction.bytes_received} byte(s) · {transaction.observed_terminator ?? "terminador não observado"} · {transaction.frame_count ?? 0} frame(s)</span></div>
@@ -453,7 +462,8 @@ export default function DevicesDiscoveryPage() {
                 </div>
               ))}
               {test.device_id && <button className="button secondary" onClick={() => void download(`/devices/${test.device_id}/diagnostic-export`, `ThermoPower-diagnostic-${test.device_id}.zip`)}>Exportar diagnóstico completo</button>}
-              <p className="hint">Resultado automatizado; homologação física: pendente.</p>
+              <p className="hint">Detalhes técnicos preservados para rastreabilidade e suporte.</p>
+              </details>
             </>
           )}
         </Panel>

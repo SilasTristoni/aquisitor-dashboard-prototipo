@@ -1,4 +1,5 @@
 import type { Reading } from "../types";
+import { mergeIndependentSeries, type TimeAxisMode } from "./chartPresentation";
 
 export type NumericStats = { min: number | null; max: number | null; avg: number | null };
 
@@ -23,41 +24,37 @@ export function isTemperatureReading(reading: Reading): boolean {
   return reading.source_role === "temperature" || reading.temperatures_c.length > 0;
 }
 
-export function buildCombinedView(readings: Reading[]) {
-  const electricalReadings = readings.filter(isElectricalReading);
-  const temperatureReadings = readings.filter(isTemperatureReading);
-  const rows = new Map<string, Record<string, string | number | null>>();
-
-  for (const reading of readings) {
-    const timestamp = reading.timestamp;
-    const row = rows.get(timestamp) ?? {
-      timestamp,
-      time: new Date(timestamp).toLocaleTimeString("pt-BR", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        timeZone: "America/Sao_Paulo",
-      }),
+export function buildCombinedView(
+  readings: Reading[],
+  timeAxisMode: TimeAxisMode = "synchronized",
+  sessionStartedAt?: string,
+) {
+  const byTimestamp = (left: Reading, right: Reading) =>
+    Date.parse(left.timestamp) - Date.parse(right.timestamp);
+  const electricalReadings = readings.filter(isElectricalReading).sort(byTimestamp);
+  const temperatureReadings = readings.filter(isTemperatureReading).sort(byTimestamp);
+  const electricalPoints = electricalReadings.map((reading) => ({
+    timestamp: reading.timestamp,
+    power: reading.power_w,
+  }));
+  const thermalPoints = temperatureReadings.map((reading) => {
+    const row: Record<string, string | number | null> & { timestamp: string } = {
+      timestamp: reading.timestamp,
+      avgTemp: numericStats(validTemperatures(reading)).avg,
     };
-    if (isElectricalReading(reading)) row.power = reading.power_w;
-    if (isTemperatureReading(reading)) {
-      const values = validTemperatures(reading);
-      row.avgTemp = numericStats(values).avg;
-      reading.temperatures_c.forEach((value, index) => {
-        row[`t${index + 1}`] = value;
-      });
-    }
-    rows.set(timestamp, row);
-  }
+    reading.temperatures_c.forEach((value, index) => {
+      row[`t${index + 1}`] = value;
+    });
+    return row;
+  });
 
   return {
     electricalReadings,
     temperatureReadings,
     latestElectrical: electricalReadings.at(-1),
     latestTemperature: temperatureReadings.at(-1),
-    chartData: [...rows.values()].sort(
-      (left, right) =>
-        new Date(String(left.timestamp)).getTime() - new Date(String(right.timestamp)).getTime(),
+    chartData: mergeIndependentSeries(
+      electricalPoints, thermalPoints, timeAxisMode, sessionStartedAt,
     ),
   };
 }

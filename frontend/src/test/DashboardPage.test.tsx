@@ -39,5 +39,7 @@ test("combina potência do GPM e temperatura do AT sem fabricar zero", async () 
   expect(screen.getByText("8 canais com leitura")).toBeInTheDocument();
   expect(screen.getAllByText("T32").length).toBeGreaterThanOrEqual(1);
   expect(screen.queryByText("0.0 °C")).not.toBeInTheDocument();
-  expect(screen.getByText("WebSocket conectado")).toBeInTheDocument();
+  expect(screen.getByText(/Atualização ao vivo conectada/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Início da sessão" })).toHaveClass("active");
+  expect(screen.getByText("Sincronização: ativa")).toBeInTheDocument();
 });

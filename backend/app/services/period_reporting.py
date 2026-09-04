@@ -516,6 +516,21 @@ def downsample_time_buckets(
     return [result[index] for index in sorted(protected)[:max_points]]
 
 
+def with_elapsed_seconds(
+    points: list[dict[str, Any]], origin: datetime
+) -> list[dict[str, Any]]:
+    """Add elapsed time from the session start without changing source timestamps."""
+    if not points:
+        return []
+    return [
+        {
+            **point,
+            "elapsed_seconds": (point["timestamp"] - origin).total_seconds(),
+        }
+        for point in points
+    ]
+
+
 class PeriodReportDataService:
     def __init__(self, db: Session):
         self.db = db
@@ -560,6 +575,17 @@ class PeriodReportDataService:
             snapshots,
             selected_channels,
         )
+        session_starts = {session.id: _utc(session.started_at) for session in sessions}
+        electrical = [
+            point
+            for point in electrical
+            if point["timestamp"] >= session_starts[point["session_id"]]
+        ]
+        temperatures = [
+            point
+            for point in temperatures
+            if point["timestamp"] >= session_starts[point["session_id"]]
+        ]
         if not request.include_open_channels:
             active_channels = sorted(
                 {
@@ -617,6 +643,7 @@ class PeriodReportDataService:
         series = []
         for session in data["sessions"]:
             session_id = session["id"]
+            session_start = datetime.fromisoformat(session["started_at"])
             electrical = [
                 point for point in data["electrical"] if point["session_id"] == session_id
             ]
@@ -634,19 +661,28 @@ class PeriodReportDataService:
                 }
                 for point in temperatures
             ]
+            reduced_electrical = with_elapsed_seconds(
+                downsample_time_buckets(electrical, ["active_power_w"], per_stream_limit),
+                session_start,
+            )
+            reduced_temperatures = with_elapsed_seconds(
+                downsample_time_buckets(
+                    flat_temperatures, temperature_keys, per_stream_limit
+                ),
+                session_start,
+            )
             series.append(
                 {
                     "session_id": session_id,
                     "session_name": session["name"],
+                    "session_started_at": session["started_at"],
                     "electrical": self._serialize_points(
-                        downsample_time_buckets(electrical, ["active_power_w"], per_stream_limit)
+                        reduced_electrical
                     )
                     if request.include_power or request.include_electrical_details
                     else [],
                     "temperatures": self._serialize_points(
-                        downsample_time_buckets(
-                            flat_temperatures, temperature_keys, per_stream_limit
-                        )
+                        reduced_temperatures
                     )
                     if request.include_temperatures
                     else [],
@@ -657,6 +693,7 @@ class PeriodReportDataService:
                 "start": request.start.isoformat(),
                 "end": request.end.isoformat(),
                 "timezone": request.timezone,
+                "time_axis_mode": request.time_axis_mode,
             },
             "sessions": data["sessions"],
             "statistics": data["statistics"],
@@ -1051,10 +1088,6 @@ class PeriodReportDataService:
         warnings = []
         general = data["statistics"]["general"]
         electrical = data["statistics"]["electrical"]
-        if general["timestamp_fallback_count"]:
-            warnings.append(
-                f"{general['timestamp_fallback_count']} amostras usaram o timestamp de recepção."
-            )
         if general["gap_count"]:
             warnings.append(f"Foram detectadas {general['gap_count']} lacunas de aquisição.")
         if electrical["excluded_energy_intervals"]:

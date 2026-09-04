@@ -259,6 +259,7 @@ class PeriodReportRequest(BaseModel):
     sync_tolerance_ms: int = Field(default=1500, ge=0, le=3000)
     use_device_timestamp: bool = True
     interpolation: Literal["none", "visual_only"] = "none"
+    time_axis_mode: Literal["synchronized", "real"] = "synchronized"
 
     @field_validator("timezone")
     @classmethod

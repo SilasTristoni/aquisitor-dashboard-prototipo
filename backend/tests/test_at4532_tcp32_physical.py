@@ -6,6 +6,9 @@ from typing import Any
 import pytest
 
 from app.adapters.specific import (
+    AT4532_CONTINUOUS_READ_GUARD_SECONDS,
+    AT4532_PHYSICAL_FRAME_BYTES,
+    AT4532_SERIAL_BITS_PER_BYTE,
     At4532Normalizer,
     At4532ParsedFrame,
     At4532Parser,
@@ -33,6 +36,17 @@ pytestmark = pytest.mark.physical_regression_fixtures
 
 PHYSICAL_CHANNEL_VALUES = [21.79, 21.62, 21.38, 21.34, 21.57, 21.71, 21.90, 22.19]
 PHYSICAL_AUXILIARY_FIELDS = ["0.00|K|℃"] * 32 + ["001", "068214"]
+
+
+def test_at4532_one_hertz_budget_accounts_for_the_full_physical_frame() -> None:
+    transmission_seconds = (
+        AT4532_PHYSICAL_FRAME_BYTES * AT4532_SERIAL_BITS_PER_BYTE / 19200
+    )
+
+    assert transmission_seconds == pytest.approx(0.361458, abs=0.000001)
+    assert AT4532_CONTINUOUS_READ_GUARD_SECONDS == 0.4
+    assert At4532SerialAdapter.expected_interval_seconds == 1.0
+    assert transmission_seconds + AT4532_CONTINUOUS_READ_GUARD_SECONDS < 1.0
 
 
 def tcp32_physical_fixture(
@@ -102,9 +116,9 @@ class FakeClock:
 
 
 class CadenceSensitiveAt4532Transport:
-    """Physical-like transport that rejects FETCH before the post-RX window."""
+    """Physical-like 1 Hz transport that rejects FETCH inside the post-RX guard."""
 
-    minimum_interval_after_rx_seconds = 3.4
+    minimum_interval_after_rx_seconds = 0.4
 
     def __init__(self, clock: FakeClock) -> None:
         self.clock = clock
@@ -168,7 +182,7 @@ class CadenceSensitiveAt4532Transport:
                 "protocol_timeout", "FETCH recebido antes da janela física simulada."
             )
 
-        device_timestamp = self.started_at + timedelta(seconds=self.fetch_count * 3)
+        device_timestamp = self.started_at + timedelta(seconds=self.fetch_count)
         payload_response = tcp32_physical_fixture(
             timestamp=device_timestamp.strftime("%Y/%m/%d %H:%M:%S"),
             channel_29=21.57 + self.fetch_count / 100,
@@ -911,7 +925,7 @@ async def test_tcp32_continuous_polling_reuses_handshake_and_tracks_ch29(
     await stream.aclose()
     await adapter.disconnect()
 
-    assert adapter.expected_interval_seconds == 3.0
+    assert adapter.expected_interval_seconds == 1.0
     assert transport.requests.count(b"*IDN?\n") == 1
     assert transport.requests.count(b"SYST:UNIT CEL\n") == 1
     assert transport.requests.count(b"FETCH?\n") == 3
@@ -919,14 +933,14 @@ async def test_tcp32_continuous_polling_reuses_handshake_and_tracks_ch29(
     assert [reading.raw_payload["device_timestamp_raw"] for reading in readings] == [
         f"T:{timestamp}" for timestamp in timestamps
     ]
-    assert all(3.3 <= delay <= 3.4 for delay in sleep_calls)
+    assert all(0.9 <= delay <= 1.0 for delay in sleep_calls)
     assert len(sleep_calls) == 2
     assert adapter.identity_status == "unconfirmed"
     assert adapter.protocol_status == "verified_by_measurement"
 
 
 @pytest.mark.asyncio
-async def test_at4532_continuous_acquisition_completes_100_samples_after_rx_window(
+async def test_at4532_continuous_acquisition_completes_100_samples_at_one_hertz(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = FakeClock()
@@ -982,9 +996,11 @@ async def test_at4532_continuous_acquisition_completes_100_samples_after_rx_wind
         for previous, current in zip(readings, readings[1:], strict=False)
     )
     assert all(
-        transaction["interval_since_previous_rx_ms"] >= 3400
+        999 <= transaction["interval_since_previous_tx_ms"] <= 1001
+        and transaction["interval_since_previous_rx_ms"] >= 400
         for transaction in fetch_transactions[1:]
     )
+    assert len({reading.raw_payload["device_timestamp_raw"] for reading in readings}) == 100
 
 
 @pytest.mark.parametrize(

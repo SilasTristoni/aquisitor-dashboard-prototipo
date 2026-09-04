@@ -1,18 +1,23 @@
 import { AlertTriangle, Pause, Play, Plug, Power, Radio, Square, Wifi, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { api, formatDuration } from "../api";
+import { api, formatDate, formatDuration } from "../api";
 import { ErrorNotice, Metric, PageHeader, Panel } from "../components/ui";
 import { useLive } from "../hooks/useLive";
 import type { Channel, Device, PageResult, Reading, RuntimeStatus, Session, SessionStartResult, SourceConnectionResult } from "../types";
 import { buildCombinedView, numericStats, validTemperatures } from "../utils/combinedReadings";
+import {
+  CHANNEL_COLORS,
+  POWER_COLOR,
+  formatTimeAxis,
+  type TimeAxisMode,
+} from "../utils/chartPresentation";
 
 const windows = [
   { label: "30 s", value: 30 }, { label: "1 min", value: 60 },
   { label: "5 min", value: 300 }, { label: "15 min", value: 900 },
   { label: "Sessão", value: 0 },
 ];
-const channelColors = ["#ef4444", "#10b981", "#f59e0b", "#3b82f6", "#8b5cf6", "#ec4899", "#0891b2", "#65a30d"];
 type ActiveSession = Pick<Session, "id" | "device_id" | "status" | "started_at">;
 
 function elapsedLabel(timestamp: string | undefined, now: number) {
@@ -43,6 +48,7 @@ export default function DashboardPage() {
   const [visualPaused, setVisualPaused] = useState(false);
   const [visualSnapshot, setVisualSnapshot] = useState<Reading[]>([]);
   const [windowSeconds, setWindowSeconds] = useState(300);
+  const [timeAxisMode, setTimeAxisMode] = useState<TimeAxisMode>("synchronized");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -86,7 +92,10 @@ export default function DashboardPage() {
     const cutoff = Date.now() - windowSeconds * 1000;
     return source.filter((reading) => new Date(reading.timestamp).getTime() >= cutoff);
   }, [readings, visualPaused, visualSnapshot, windowSeconds]);
-  const combined = useMemo(() => buildCombinedView(visibleReadings), [visibleReadings]);
+  const combined = useMemo(
+    () => buildCombinedView(visibleReadings, timeAxisMode, activeSession?.started_at),
+    [activeSession?.started_at, visibleReadings, timeAxisMode],
+  );
   const powerStats = numericStats(combined.electricalReadings.map((reading) => reading.power_w).filter((value): value is number => value != null));
   const temperatures = validTemperatures(combined.latestTemperature);
   const temperatureStats = numericStats(temperatures);
@@ -182,7 +191,7 @@ export default function DashboardPage() {
         <small>{sourceFailed ? "Falha nesta fonte" : status?.connected ? "Conectado" : "Desconectado"} · {elapsedLabel(reading?.timestamp ?? status?.last_message_at, now)}</small>
         {label === "AT4532" && <small>{values.length}/32 canais válidos</small>}
         {label === "GPM-8213" && <small>{reading?.power_w == null ? "Potência indisponível" : `${reading.power_w.toFixed(1)} W`}</small>}
-        <small>{status?.sample_count ?? (label === "AT4532" ? combined.temperatureReadings.length : combined.electricalReadings.length)} amostras nesta conexão</small>
+        <small>{status?.sample_count ?? (label === "AT4532" ? combined.temperatureReadings.length : combined.electricalReadings.length)} leituras nesta conexão</small>
         {status?.last_error && <small className="danger-text">{status.last_error}</small>}
       </div>
       {device && status?.connected && <button className="button ghost small" onClick={() => void disconnectOne(device.id)}><Power /> Desconectar</button>}
@@ -199,21 +208,20 @@ export default function DashboardPage() {
     </>} />
     {error && <ErrorNotice message={error} />}
     <div className="combined-source-status">{statusCard("GPM-8213", electricalDevice, combined.latestElectrical)}{statusCard("AT4532", temperatureDevice, combined.latestTemperature)}
-      <div className="source-status session-source-status"><span className="device-orb connected">{connection === "connected" ? <Wifi /> : <WifiOff />}</span><div><span>SESSÃO / WEBSOCKET</span><strong>{activeSession?.status === "running" ? "Em execução" : activeSession?.status === "paused" ? "Pausada" : "Sem sessão"}</strong><small>{connection === "connected" ? "WebSocket conectado" : "WebSocket reconectando"}</small><small>{activeSession ? formatDuration((now - new Date(activeSession.started_at).getTime()) / 1000) : "00:00:00"}</small></div></div>
+      <div className="source-status session-source-status"><span className="device-orb connected">{connection === "connected" ? <Wifi /> : <WifiOff />}</span><div><span>SESSÃO / CONEXÃO AO VIVO</span><strong>{activeSession?.status === "running" ? "Em execução" : activeSession?.status === "paused" ? "Pausada" : "Sem sessão"}</strong><small>GPM-8213 · ~1 leitura/s</small><small>AT4532 · ~1 leitura/s</small><small>Sincronização: ativa</small><small>{connection === "connected" ? "Atualização ao vivo conectada" : "Reconectando atualização ao vivo"} · {activeSession ? formatDuration((now - new Date(activeSession.started_at).getTime()) / 1000) : "0 s"}</small></div></div>
     </div>
     {lastAlert && <div className="notice warning"><AlertTriangle /><div><strong>Novo alerta crítico</strong><span>{lastAlert.metric === "power" ? "Potência" : `Termopar CH${String(lastAlert.channel).padStart(2, "0")}`} atingiu {lastAlert.measured_value.toFixed(1)}.</span></div></div>}
     <div className="metrics-grid six">
       <Metric label="Potência atual" value={combined.latestElectrical?.power_w == null ? "—" : `${combined.latestElectrical.power_w.toFixed(1)} W`} hint={combined.latestElectrical?.raw_power == null ? "Grandeza indisponível" : `Recebido: ${combined.latestElectrical.raw_power} ${combined.latestElectrical.raw_power_unit}`} tone="primary" />
       <Metric label="Potência média" value={powerStats.avg == null ? "—" : `${powerStats.avg.toFixed(1)} W`} hint={powerStats.min == null ? "Sem leitura elétrica" : `Mín ${powerStats.min.toFixed(1)} · Máx ${powerStats.max!.toFixed(1)}`} />
-      <Metric label="Energia monitorada" value={`${energyWh.toFixed(3)} Wh`} hint="Integração por tempo real" />
+      <Metric label="Energia monitorada" value={`${energyWh.toFixed(3)} Wh`} hint="Calculada com os horários reais" help="Energia estimada pela integração da potência medida ao longo do tempo." />
       <Metric label="Temperatura média" value={temperatureStats.avg == null ? "—" : `${temperatureStats.avg.toFixed(1)} °C`} hint={`${temperatures.length} canais com leitura`} />
       <Metric label="Temperatura máxima" value={temperatureStats.max == null ? "—" : `${temperatureStats.max.toFixed(1)} °C`} hint={hottestIndex ? channelLabel(hottestIndex) : "Sem leitura de temperatura"} tone="warm" />
-      <Metric label="ΔT entre canais" value={deltaTemperature == null ? "—" : `${deltaTemperature.toFixed(1)} °C`} hint="Leitura térmica mais recente" />
-      <Metric label="Amostras elétricas" value={combined.electricalReadings.length.toLocaleString("pt-BR")} hint="Timestamps reais do GPM" />
-      <Metric label="Amostras térmicas" value={combined.temperatureReadings.length.toLocaleString("pt-BR")} hint="Sem duplicação entre ciclos" />
+      <Metric label="ΔT entre canais" value={deltaTemperature == null ? "—" : `${deltaTemperature.toFixed(1)} °C`} hint="Leitura térmica mais recente" help="Diferença entre a maior e a menor temperatura observada entre os canais ativos." />
     </div>
-    <Panel title="Potência e temperatura na mesma janela" kicker="SÉRIES COM TIMESTAMPS REAIS" actions={<div className="chart-actions"><button onClick={toggleVisualPause}>{visualPaused ? <Play /> : <Pause />} {visualPaused ? "Retomar" : "Pausar visual"}</button></div>}>
-      <div className="chart-container combined-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={combined.chartData}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="time" minTickGap={35} /><YAxis yAxisId="temperature" width={58} unit=" °C" /><YAxis yAxisId="power" orientation="right" width={58} unit=" W" /><Tooltip contentStyle={{ borderRadius: 12 }} /><Legend verticalAlign="top" height={48} /><Line yAxisId="power" type="monotone" dataKey="power" name="Potência ativa" stroke="#2563EB" dot={false} strokeWidth={2.7} connectNulls={false} isAnimationActive={false} />{visibleTemperatureChannels.map((channel) => <Line key={channel} yAxisId="temperature" type="monotone" dataKey={`t${channel}`} name={channelLabel(channel)} stroke={channelColors[(channel - 1) % channelColors.length]} dot={false} connectNulls={false} isAnimationActive={false} />)}</LineChart></ResponsiveContainer></div>
+    <Panel title="Potência e temperatura na mesma janela" kicker={timeAxisMode === "synchronized" ? "LINHA DO TEMPO COMUM DA SESSÃO" : "HORÁRIOS REAIS DAS LEITURAS"} actions={<div className="chart-actions"><div className="axis-mode-toggle" aria-label="Modo do eixo de tempo"><button className={timeAxisMode === "synchronized" ? "active" : ""} onClick={() => setTimeAxisMode("synchronized")}>Início da sessão</button><button className={timeAxisMode === "real" ? "active" : ""} onClick={() => setTimeAxisMode("real")}>Horário real</button></div><button onClick={toggleVisualPause}>{visualPaused ? <Play /> : <Pause />} {visualPaused ? "Retomar" : "Pausar visual"}</button></div>}>
+      <div className="chart-container combined-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={combined.chartData}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="axisValue" type="number" domain={["dataMin", "dataMax"]} minTickGap={35} tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} /><YAxis yAxisId="temperature" width={58} unit=" °C" /><YAxis yAxisId="power" orientation="right" width={58} unit=" W" /><Tooltip contentStyle={{ borderRadius: 12 }} labelFormatter={(value) => timeAxisMode === "synchronized" ? `Tempo decorrido ${formatTimeAxis(Number(value), timeAxisMode)}` : formatDate(new Date(Number(value)).toISOString())} /><Legend verticalAlign="top" height={48} /><Line yAxisId="power" type="linear" dataKey="power" name="Potência ativa" stroke={POWER_COLOR} dot={false} strokeWidth={2.7} connectNulls={false} isAnimationActive={false} />{visibleTemperatureChannels.map((channel) => <Line key={channel} yAxisId="temperature" type="linear" dataKey={`t${channel}`} name={channelLabel(channel)} stroke={CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length]} dot={false} connectNulls={false} isAnimationActive={false} />)}</LineChart></ResponsiveContainer></div>
+      <p className="hint">O tempo decorrido usa o início real da sessão como marco comum. Cada fonte mantém seus próprios horários, leituras e cadência.</p>
     </Panel>
     <div className="dashboard-bottom"><Panel title="Mapa térmico dos 32 canais" kicker="LEITURA AT4532 MAIS RECENTE"><div className="heatmap">{Array.from({ length: 32 }, (_, index) => { const value = combined.latestTemperature?.temperatures_c[index]; const quality = combined.latestTemperature?.channel_quality?.[index] ?? (value == null ? "unavailable" : "good"); const level = value == null ? "missing" : value >= 80 ? "critical" : value >= 70 ? "warning" : "normal"; const reference = value != null ? " reference-channel" : ""; return <div key={index} className={`heat-cell ${level}${reference}`}><span>{channelLabel(index + 1)}</span><strong>{value == null ? "—" : `${value.toFixed(1)}°`}</strong><small>{quality === "good" ? "Boa" : quality === "open_sensor" ? "Open" : "Indisponível"}</small></div>; })}</div></Panel><Panel title="Janela de visualização" kicker="CONTROLES"><div className="segmented">{windows.map((item) => <button className={windowSeconds === item.value ? "active" : ""} key={item.value} onClick={() => setWindowSeconds(item.value)}>{item.label}</button>)}</div><p className="hint">Cada fonte preserva seu timestamp original; nenhum valor ausente é convertido em zero.</p><p className="hint">Os canais com leitura válida são incluídos dinamicamente nas curvas e na legenda.</p></Panel></div>
   </>;

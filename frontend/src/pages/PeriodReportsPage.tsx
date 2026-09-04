@@ -20,10 +20,17 @@ import {
 import { api, download, downloadWithBody, formatDate } from "../api";
 import { Badge, Empty, ErrorNotice, Metric, PageHeader, Panel, Spinner } from "../components/ui";
 import type { Device, PageResult, Session } from "../types";
+import {
+  CHANNEL_COLORS,
+  POWER_COLOR,
+  formatTimeAxis,
+  mergeIndependentSeries,
+  type TimeAxisMode,
+} from "../utils/chartPresentation";
 
 type Tab = "period" | "session" | "history";
 type Preview = {
-  period: { start: string; end: string; timezone: string };
+  period: { start: string; end: string; timezone: string; time_axis_mode: TimeAxisMode };
   sessions: Array<{ id: number; name: string; electrical_samples: number; temperature_samples: number }>;
   statistics: {
     general: {
@@ -49,27 +56,24 @@ type Preview = {
   series: Array<{
     session_id: number;
     session_name: string;
-    electrical: Array<Record<string, any>>;
-    temperatures: Array<Record<string, any>>;
+    session_started_at: string;
+    electrical: Array<{ timestamp: string; [key: string]: any }>;
+    temperatures: Array<{ timestamp: string; [key: string]: any }>;
   }>;
   warnings: string[];
 };
-
-const channelColors = [
-  "#2563EB", "#16A34A", "#D97706", "#DC2626", "#7C3AED", "#0891B2", "#DB2777", "#4F46E5",
-];
 
 function localInput(date: Date): string {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 }
 
-function mergedSeries(series: Preview["series"][number]): Array<Record<string, any>> {
-  const values = new Map<string, Record<string, any>>();
-  for (const point of [...series.electrical, ...series.temperatures]) {
-    const timestamp = String(point.timestamp);
-    values.set(timestamp, { ...(values.get(timestamp) ?? {}), ...point, timestamp });
-  }
-  return [...values.values()].sort((left, right) => String(left.timestamp).localeCompare(String(right.timestamp)));
+function mergedSeries(
+  series: Preview["series"][number],
+  mode: TimeAxisMode,
+): Array<Record<string, unknown>> {
+  return mergeIndependentSeries(
+    series.electrical, series.temperatures, mode, series.session_started_at,
+  );
 }
 
 export default function PeriodReportsPage() {
@@ -106,6 +110,7 @@ export default function PeriodReportsPage() {
   const [tolerance, setTolerance] = useState(1500);
   const [useDeviceTimestamp, setUseDeviceTimestamp] = useState(true);
   const [interpolation, setInterpolation] = useState("none");
+  const [timeAxisMode, setTimeAxisMode] = useState<TimeAxisMode>("synchronized");
   const periodValid = Boolean(
     start
     && end
@@ -169,6 +174,7 @@ export default function PeriodReportsPage() {
       sync_tolerance_ms: tolerance,
       use_device_timestamp: useDeviceTimestamp,
       interpolation,
+      time_axis_mode: timeAxisMode,
     };
   }
 
@@ -178,7 +184,7 @@ export default function PeriodReportsPage() {
       return;
     }
     setError("");
-    setBusy("Consultando amostras e calculando estatísticas…");
+    setBusy("Consultando leituras e calculando indicadores…");
     try {
       setPreview(await api<Preview>("/reports/period/preview", { method: "POST", body: JSON.stringify(payload()) }));
     } catch (reason) {
@@ -228,6 +234,11 @@ export default function PeriodReportsPage() {
           <div className="report-layout period-layout">
             <Panel title="Configurar período" kicker="NOVA GERAÇÃO">
               <div className="preset-row"><button className="button small ghost" onClick={() => applyPreset(1)}>Última hora</button><button className="button small ghost" onClick={() => applyPreset(24)}>24 horas</button><button className="button small ghost" onClick={() => applyPreset(168)}>7 dias</button><button className="button small ghost" onClick={() => applyPreset(720)}>30 dias</button></div>
+              <div className="comparison-mode">
+                <div><strong>Eixo dos gráficos</strong><span>Escolha como comparar potência e temperatura.</span></div>
+                <div className="axis-mode-toggle" aria-label="Modo do eixo de tempo"><button type="button" className={timeAxisMode === "synchronized" ? "active" : ""} onClick={() => setTimeAxisMode("synchronized")}>Início da sessão</button><button type="button" className={timeAxisMode === "real" ? "active" : ""} onClick={() => setTimeAxisMode("real")}>Horário real</button></div>
+              </div>
+              <p className="hint">Potência e temperatura usam o início real de cada sessão como marco comum. Dados brutos e horários originais permanecem inalterados.</p>
               <div className="form-grid">
                 <label className="field"><span>Início</span><input type="datetime-local" value={start} onChange={(event) => setStart(event.target.value)} /></label>
                 <label className="field"><span>Fim</span><input type="datetime-local" value={end} onChange={(event) => setEnd(event.target.value)} /></label>
@@ -256,7 +267,7 @@ export default function PeriodReportsPage() {
                 <label className="field"><span>Canais por gráfico</span><input type="number" min={1} max={16} value={channelGroupSize} onChange={(event) => setChannelGroupSize(Number(event.target.value))} /></label>
                 <label className="field"><span>Tolerância (ms)</span><input type="number" min={0} max={3000} value={tolerance} onChange={(event) => setTolerance(Number(event.target.value))} /></label>
                 <label className="field"><span>Interpolação</span><select value={interpolation} onChange={(event) => setInterpolation(event.target.value)}><option value="none">Nenhuma</option><option value="visual_only">Somente visual</option></select></label>
-                <label className="field check-field"><input type="checkbox" checked={useDeviceTimestamp} onChange={(event) => setUseDeviceTimestamp(event.target.checked)} /><span>Preferir timestamp do equipamento</span></label>
+                <label className="field check-field"><input type="checkbox" checked={useDeviceTimestamp} onChange={(event) => setUseDeviceTimestamp(event.target.checked)} /><span>Preferir horário informado pelo equipamento</span></label>
               </div></details>
               <div className="report-buttons">
                 <button className="button secondary" disabled={Boolean(busy) || !periodValid} onClick={() => void generatePreview()}><Search /> Gerar prévia</button>
@@ -275,11 +286,11 @@ export default function PeriodReportsPage() {
             <Panel title="Prévia do período" kicker="DADOS REDUZIDOS PARA VISUALIZAÇÃO">
               {!preview ? <Empty title="Configure o período e gere uma prévia" text="As estatísticas usarão todos os dados; apenas o gráfico será reduzido." /> : (
                 <div className="period-preview">
-                  <div className="metrics-grid four"><Metric label="Sessões" value={preview.statistics.general.session_count} /><Metric label="Potência média" value={preview.statistics.electrical.active_power_w.mean == null ? "—" : `${preview.statistics.electrical.active_power_w.mean.toFixed(2)} W`} /><Metric label="Temperatura máxima" value={preview.statistics.temperature.max == null ? "—" : `${preview.statistics.temperature.max.toFixed(2)} °C`} hint={preview.statistics.temperature.critical_channel_label} /><Metric label="Energia" value={`${preview.statistics.electrical.energy_wh.toFixed(3)} Wh`} /></div>
+                  <div className="metrics-grid four"><Metric label="Sessões" value={preview.statistics.general.session_count} /><Metric label="Potência média" value={preview.statistics.electrical.active_power_w.mean == null ? "—" : `${preview.statistics.electrical.active_power_w.mean.toFixed(2)} W`} /><Metric label="Temperatura máxima" value={preview.statistics.temperature.max == null ? "—" : `${preview.statistics.temperature.max.toFixed(2)} °C`} hint={preview.statistics.temperature.critical_channel_label} help="Maior temperatura registrada entre os canais ativos no período." /><Metric label="Energia" value={`${preview.statistics.electrical.energy_wh.toFixed(3)} Wh`} help="Energia estimada pela integração da potência medida ao longo do tempo." /></div>
                   {preview.warnings.map((warning) => <div className="preview-warning" key={warning}><AlertTriangle /> {warning}</div>)}
                   {preview.series.map((series) => {
-                    const points = mergedSeries(series);
-                    return <div className="preview-chart" key={series.session_id}><h3>{series.session_name}</h3><ResponsiveContainer width="100%" height={330}><LineChart data={points}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="timestamp" tickFormatter={(value) => new Date(value).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" })} minTickGap={45} /><YAxis yAxisId="temperature" unit=" °C" /><YAxis yAxisId="power" orientation="right" unit=" W" /><Tooltip labelFormatter={(value) => formatDate(String(value))} /><Legend /><Line yAxisId="power" type="linear" dataKey="active_power_w" name="Potência ativa" stroke="#2563EB" strokeWidth={2.5} dot={false} connectNulls={false} />{preview.selected_channels.map((channel) => <Line key={channel} yAxisId="temperature" type="linear" dataKey={`channel_${channel}`} name={preview.channel_labels[String(channel)] ?? `T${channel}`} stroke={channelColors[(channel - 1) % channelColors.length]} dot={false} connectNulls={false} />)}</LineChart></ResponsiveContainer></div>;
+                    const points = mergedSeries(series, timeAxisMode);
+                    return <div className="preview-chart" key={series.session_id}><div className="preview-chart-title"><h3>{series.session_name}</h3><Badge tone="neutral">{timeAxisMode === "synchronized" ? "Início comum da sessão" : "Horário real"}</Badge></div><ResponsiveContainer width="100%" height={330}><LineChart data={points}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="axisValue" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} minTickGap={45} /><YAxis yAxisId="temperature" unit=" °C" /><YAxis yAxisId="power" orientation="right" unit=" W" /><Tooltip labelFormatter={(value) => timeAxisMode === "synchronized" ? `Tempo decorrido ${formatTimeAxis(Number(value), timeAxisMode)}` : formatDate(new Date(Number(value)).toISOString())} /><Legend /><Line yAxisId="power" type="linear" dataKey="active_power_w" name="Potência ativa" stroke={POWER_COLOR} strokeWidth={2.5} dot={false} connectNulls={false} />{preview.selected_channels.map((channel) => <Line key={channel} yAxisId="temperature" type="linear" dataKey={`channel_${channel}`} name={preview.channel_labels[String(channel)] ?? `T${channel}`} stroke={CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length]} dot={false} connectNulls={false} />)}</LineChart></ResponsiveContainer></div>;
                   })}
                 </div>
               )}
@@ -294,7 +305,7 @@ export default function PeriodReportsPage() {
             <label className="field"><span>Sessão</span><select value={sessionId} onChange={(event) => setSessionId(Number(event.target.value))}>{sessions.map((session) => <option key={session.id} value={session.id}>{session.name}</option>)}</select></label>
             <div className="report-buttons"><button className="button primary" disabled={!selected} onClick={() => void download(`/reports/sessions/${sessionId}.pdf`, `sessao-${sessionId}.pdf`)}><FileText /> PDF</button><button className="button secondary" disabled={!selected} onClick={() => void download(`/reports/sessions/${sessionId}.xlsx`, `sessao-${sessionId}.xlsx`)}><FileSpreadsheet /> XLSX</button><button className="button ghost" disabled={!selected} onClick={() => void download(`/reports/sessions/${sessionId}.csv`, `sessao-${sessionId}.csv`)}><Download /> CSV</button></div>
           </Panel>
-          <Panel title="Sessão selecionada" kicker="RESUMO">{selected ? <div className="report-preview"><p>RELATÓRIO DE MEDIÇÃO</p><h2>{selected.name}</h2><div><span>Equipamento</span><strong>{selected.device_name}</strong></div><div><span>Operador</span><strong>{selected.operator}</strong></div><div><span>Amostras</span><strong>{selected.sample_count.toLocaleString("pt-BR")}</strong></div><div><span>Alertas</span><strong>{selected.alert_count}</strong></div></div> : <Empty />}</Panel>
+          <Panel title="Sessão selecionada" kicker="RESUMO">{selected ? <div className="report-preview"><p>RELATÓRIO DE MEDIÇÃO</p><h2>{selected.name}</h2><div><span>Equipamento</span><strong>{selected.device_name}</strong></div><div><span>Operador</span><strong>{selected.operator}</strong></div><div><span>Leituras</span><strong>{selected.sample_count.toLocaleString("pt-BR")}</strong></div><div><span>Alertas</span><strong>{selected.alert_count}</strong></div></div> : <Empty title="Nenhuma sessão registrada ainda" text="Inicie um ensaio para gerar relatórios por sessão." />}</Panel>
         </div>
       )}
 

@@ -31,7 +31,7 @@ export default function LoginPage() {
       <div className="login-brand"><span><Activity /></span><div><strong>ThermoPower</strong><small>MONITOR</small></div></div>
       <div className="login-copy"><p className="eyebrow light">MONITORAMENTO INDUSTRIAL</p><h1>Precisão que transforma dados em decisões.</h1><p>Aquisição confiável de potência e temperatura, rastreabilidade integral e análise em tempo real.</p><div className="login-benefits"><span><Zap /> Potência normalizada</span><span><Thermometer /> 32 termopares</span><span><ShieldCheck /> Operação auditável</span></div></div>
       <div className="signal-art" aria-hidden="true"><i /><i /><i /><i /><div className="signal-line" /></div>
-      <small className="login-version">ThermoPower Monitor · Versão {__APP_VERSION__} · Protocolos físicos pendentes</small>
+      <small className="login-version">ThermoPower Monitor · Versão {__APP_VERSION__} · Aquisição térmica e elétrica</small>
     </section>
     <section className="login-form-wrap"><form className="login-card" onSubmit={submit}><div className="login-icon"><LockKeyhole /></div><p className="eyebrow">ACESSO SEGURO</p><h2>Bem-vindo de volta</h2><p className="form-intro">Entre para acessar o ambiente de monitoramento.</p>
       <label><span>E-mail</span><input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required /></label>

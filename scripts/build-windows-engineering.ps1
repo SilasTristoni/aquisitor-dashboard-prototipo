@@ -5,6 +5,7 @@ Set-StrictMode -Version Latest
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Version = (Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot "VERSION.txt")).Trim()
 $Python = Join-Path $RepositoryRoot ".venv\Scripts\python.exe"
+$Vitest = Join-Path $RepositoryRoot "frontend\node_modules\.bin\vitest.cmd"
 $EngineeringRoot = Join-Path $RepositoryRoot "engineering\ThermoPower-$Version"
 $EngineeringZip = "$EngineeringRoot.zip"
 $StagingRoot = Join-Path $RepositoryRoot "dist\ThermoPowerMonitor"
@@ -70,7 +71,7 @@ try {
     npm run typecheck
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $FrontendTestOutput = @()
-    npm test -- --run |
+    & $Vitest run |
         Tee-Object -Variable FrontendTestOutput | ForEach-Object { Write-Host $_ }
     $FrontendTestExitCode = $LASTEXITCODE
     if ($FrontendTestExitCode -ne 0) { exit $FrontendTestExitCode }
@@ -135,6 +136,7 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "CLIENT-PREVIEW.txt") -Encoding
     "Primeiro acesso: senha aleatoria gerada localmente na primeira execucao.",
     "Dashboard executivo, periodo analisado e KPIs termicos/eletricos.",
     "Relatorio PDF tecnico, resumo executivo e XLSX profissional.",
+    "Graficos comparativos: inicios sincronizados por padrao e horario real opcional.",
     "GPM-8213: integracao fisica validada no firmware V1.05.",
     "AT4532: FETCH fisico TCP-32/CP936 suportado; IDN timeout permanece warning.",
     "AT4532 continuo: 3 s apos RX + guarda serial calculada de 0,4 s; soak 100 amostras.",
@@ -186,6 +188,7 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "TEST-RESULTS.txt") -Encoding u
     "Vite build: passed",
     "Client-preview without simulator: passed",
     "Professional PDF/XLSX/PNG/CSV report contracts: passed",
+    "Synchronized and real-time comparative axes: passed",
     "docker compose config: $DockerResult",
     "Packaged executable smoke: passed",
     "",
