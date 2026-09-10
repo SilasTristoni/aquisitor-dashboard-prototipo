@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
@@ -374,6 +374,49 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
         default=None,
     )
     request = data["request"]
+    source_quality = []
+    for session in data["sessions"]:
+        origin = max(_utc(datetime.fromisoformat(session["started_at"])), request.start)
+        end = min(
+            _utc(datetime.fromisoformat(session["ended_at"]))
+            if session["ended_at"]
+            else request.end,
+            request.end,
+        )
+        for role, points in [("electrical", electrical), ("temperature", temperatures)]:
+            devices = [d for d in session["devices"] if d.get("role") in {role, "combined"}]
+            if not devices:
+                continue
+            stream = sorted(
+                (p for p in points if p["session_id"] == session["id"]),
+                key=lambda p: p["timestamp"],
+            )
+            cadence = next((d.get("cadence_ms") for d in devices if d.get("cadence_ms")), None)
+            expected = (
+                max(0, int((end - origin).total_seconds() * 1000 / cadence)) if cadence else None
+            )
+            delay = (stream[0]["timestamp"] - origin).total_seconds() if stream else None
+            intervals = [
+                (b["timestamp"] - a["timestamp"]).total_seconds()
+                for a, b in zip(stream, stream[1:], strict=False)
+            ]
+            issue = not stream or (
+                delay is not None and delay > max(request.sync_tolerance_ms / 1000, 2)
+            )
+            issue = issue or bool(expected and expected >= 10 and len(stream) < expected * 0.8)
+            source_quality.append(
+                {
+                    "session_id": session["id"],
+                    "role": role,
+                    "count": len(stream),
+                    "expected_count": expected,
+                    "first_delay_seconds": delay,
+                    "observed_interval_seconds": statistics.median(intervals)
+                    if intervals
+                    else None,
+                    "has_issue": issue,
+                }
+            )
     analyzed_seconds = max(0.0, (request.end - request.start).total_seconds())
     full_session_seconds = sum(
         max(
@@ -392,6 +435,8 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "general": {
+            "source_quality": source_quality,
+            "source_issue_count": sum(item["has_issue"] for item in source_quality),
             "session_count": len(data["sessions"]),
             "electrical_sample_count": len(electrical),
             "temperature_sample_count": len(temperatures),
@@ -410,6 +455,32 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
             ),
         },
         "electrical": {
+            "peak": next(
+                (
+                    {
+                        "value_w": point["active_power_w"],
+                        "timestamp": point["timestamp"].isoformat(),
+                        "elapsed_seconds": (
+                            point["timestamp"]
+                            - _utc(
+                                datetime.fromisoformat(
+                                    next(
+                                        s["started_at"]
+                                        for s in data["sessions"]
+                                        if s["id"] == point["session_id"]
+                                    )
+                                )
+                            )
+                        ).total_seconds(),
+                    }
+                    for point in sorted(
+                        (p for p in electrical if p["active_power_w"] is not None),
+                        key=lambda p: p["active_power_w"],
+                        reverse=True,
+                    )
+                ),
+                None,
+            ),
             "active_power_w": _numeric_statistics(point["active_power_w"] for point in electrical),
             "voltage_v": _numeric_statistics(point["voltage_v"] for point in electrical),
             "current_a": _numeric_statistics(point["current_a"] for point in electrical),
@@ -516,9 +587,7 @@ def downsample_time_buckets(
     return [result[index] for index in sorted(protected)[:max_points]]
 
 
-def with_elapsed_seconds(
-    points: list[dict[str, Any]], origin: datetime
-) -> list[dict[str, Any]]:
+def with_elapsed_seconds(points: list[dict[str, Any]], origin: datetime) -> list[dict[str, Any]]:
     """Add elapsed time from the session start without changing source timestamps."""
     if not points:
         return []
@@ -576,15 +645,23 @@ class PeriodReportDataService:
             selected_channels,
         )
         session_starts = {session.id: _utc(session.started_at) for session in sessions}
+        session_ends = {
+            session.id: _utc(session.ended_at) if session.ended_at else request.end
+            for session in sessions
+        }
         electrical = [
             point
             for point in electrical
-            if point["timestamp"] >= session_starts[point["session_id"]]
+            if session_starts[point["session_id"]]
+            <= point["timestamp"]
+            <= session_ends[point["session_id"]]
         ]
         temperatures = [
             point
             for point in temperatures
-            if point["timestamp"] >= session_starts[point["session_id"]]
+            if session_starts[point["session_id"]]
+            <= point["timestamp"]
+            <= session_ends[point["session_id"]]
         ]
         if not request.include_open_channels:
             active_channels = sorted(
@@ -666,9 +743,7 @@ class PeriodReportDataService:
                 session_start,
             )
             reduced_temperatures = with_elapsed_seconds(
-                downsample_time_buckets(
-                    flat_temperatures, temperature_keys, per_stream_limit
-                ),
+                downsample_time_buckets(flat_temperatures, temperature_keys, per_stream_limit),
                 session_start,
             )
             series.append(
@@ -676,14 +751,10 @@ class PeriodReportDataService:
                     "session_id": session_id,
                     "session_name": session["name"],
                     "session_started_at": session["started_at"],
-                    "electrical": self._serialize_points(
-                        reduced_electrical
-                    )
+                    "electrical": self._serialize_points(reduced_electrical)
                     if request.include_power or request.include_electrical_details
                     else [],
-                    "temperatures": self._serialize_points(
-                        reduced_temperatures
-                    )
+                    "temperatures": self._serialize_points(reduced_temperatures)
                     if request.include_temperatures
                     else [],
                 }
@@ -751,7 +822,12 @@ class PeriodReportDataService:
         self, request: PeriodReportRequest, session_ids: list[int]
     ) -> tuple[list[dict[str, Any]], set[int]]:
         timestamp = (
-            func.coalesce(ElectricalSample.device_timestamp, ElectricalSample.received_timestamp)
+            case(
+                (ElectricalSample.source == "live", ElectricalSample.received_timestamp),
+                else_=func.coalesce(
+                    ElectricalSample.device_timestamp, ElectricalSample.received_timestamp
+                ),
+            )
             if request.use_device_timestamp
             else ElectricalSample.received_timestamp
         )
@@ -766,7 +842,9 @@ class PeriodReportDataService:
         points = []
         for row in rows:
             effective, timestamp_source = _effective_timestamp(
-                row.device_timestamp, row.received_timestamp, request.use_device_timestamp
+                row.device_timestamp,
+                row.received_timestamp,
+                request.use_device_timestamp and row.source != "live",
             )
             points.append(
                 {
@@ -774,6 +852,10 @@ class PeriodReportDataService:
                     "device_id": row.device_id,
                     "timestamp": effective,
                     "timestamp_source": timestamp_source,
+                    "device_timestamp": _utc(row.device_timestamp)
+                    if row.device_timestamp
+                    else None,
+                    "received_timestamp": _utc(row.received_timestamp),
                     "quality": row.quality,
                     "source": row.source,
                     "voltage_v": row.voltage_v,
@@ -796,7 +878,12 @@ class PeriodReportDataService:
         selected_channels: list[int],
     ) -> tuple[list[dict[str, Any]], set[int]]:
         timestamp = (
-            func.coalesce(TemperatureSample.device_timestamp, TemperatureSample.received_timestamp)
+            case(
+                (TemperatureSample.source == "live", TemperatureSample.received_timestamp),
+                else_=func.coalesce(
+                    TemperatureSample.device_timestamp, TemperatureSample.received_timestamp
+                ),
+            )
             if request.use_device_timestamp
             else TemperatureSample.received_timestamp
         )
@@ -815,7 +902,9 @@ class PeriodReportDataService:
         points = []
         for row in rows:
             effective, timestamp_source = _effective_timestamp(
-                row.device_timestamp, row.received_timestamp, request.use_device_timestamp
+                row.device_timestamp,
+                row.received_timestamp,
+                request.use_device_timestamp and row.source != "live",
             )
             values = {
                 item.channel: item.temperature_c
@@ -828,6 +917,10 @@ class PeriodReportDataService:
                     "device_id": row.device_id,
                     "timestamp": effective,
                     "timestamp_source": timestamp_source,
+                    "device_timestamp": _utc(row.device_timestamp)
+                    if row.device_timestamp
+                    else None,
+                    "received_timestamp": _utc(row.received_timestamp),
                     "quality": row.quality,
                     "source": row.source,
                     "ambient_temperature_c": row.ambient_temperature_c,
@@ -998,9 +1091,10 @@ class PeriodReportDataService:
                         else None,
                         "port": devices[device_id].port if device_id in devices else None,
                         "baud_rate": devices[device_id].baud_rate if device_id in devices else None,
-                        "cadence_ms": (devices[device_id].metadata_json or {}).get(
-                            "expected_interval_ms"
-                        )
+                        "cadence_ms": (session.metadata_json or {})
+                        .get("source_cadence_ms", {})
+                        .get(str(device_id))
+                        or (devices[device_id].metadata_json or {}).get("expected_interval_ms")
                         if device_id in devices
                         else None,
                     }
@@ -1090,6 +1184,13 @@ class PeriodReportDataService:
         electrical = data["statistics"]["electrical"]
         if general["gap_count"]:
             warnings.append(f"Foram detectadas {general['gap_count']} lacunas de aquisição.")
+        for source in general.get("source_quality", []):
+            if source["has_issue"]:
+                role = "térmica" if source["role"] == "temperature" else "elétrica"
+                warnings.append(
+                    f"Sessão #{source['session_id']}: cobertura da fonte {role} incompleta "
+                    f"({source['count']} leituras). Verifique o início e a cadência da aquisição."
+                )
         if electrical["excluded_energy_intervals"]:
             warnings.append(
                 "A integração de energia excluiu intervalos maiores que o limite de qualidade."

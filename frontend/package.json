@@ -1,7 +1,7 @@
 {
   "name": "thermopower-monitor-frontend",
   "private": true,
-  "version": "0.6.0-client-preview",
+  "version": "0.6.1-client-preview",
   "type": "module",
   "scripts": {
     "dev": "vite",

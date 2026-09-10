@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from time import monotonic
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
 from app.adapters import (
     At4532Adapter,
@@ -27,6 +27,7 @@ from app.models.entities import (
     Device,
     ElectricalSample,
     Measurement,
+    MeasurementSession,
     SessionDevice,
     SystemEvent,
     TemperatureChannelValue,
@@ -38,6 +39,7 @@ from app.services.device_policy import (
     at4532_identity_fallback_policy,
     mark_at4532_verified_by_measurement,
 )
+from app.services.session_clock import utc
 from app.services.usb_discovery import usb_discovery_service
 from app.services.websocket import websocket_hub
 
@@ -69,6 +71,8 @@ class DeviceRuntime:
     latest: DeviceReading | None = None
     sample_count: int = 0
     last_error: str | None = None
+    pending_start: list[DeviceReading] | None = None
+    persisted_count: int = 0
 
 
 class AcquisitionService:
@@ -78,6 +82,110 @@ class AcquisitionService:
         self._device_locks: dict[int, asyncio.Lock] = {}
         self._port_locks: dict[str, asyncio.Lock] = {}
         self.started_at = datetime.now(UTC)
+        self.session_start_lock = asyncio.Lock()
+
+    async def prepare_common_start(
+        self,
+        device_ids: list[int],
+        tolerance_ms: int,
+        timeout_seconds: float = 15,
+    ) -> datetime:
+        """Wait for actual new samples; do not reuse a preflight/latest value."""
+        for device_id in device_ids:
+            runtime = self.runtimes.get(device_id)
+            if runtime and runtime.session_id:
+                raise ValueError("Uma fonte já pertence a uma sessão ativa.")
+            await self.connect(device_id)
+        requested_at = datetime.now(UTC)
+        for device_id in device_ids:
+            self.runtimes[device_id].pending_start = []
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                while True:
+                    candidates = []
+                    for device_id in device_ids:
+                        runtime = self.runtimes.get(device_id)
+                        if (
+                            runtime is None
+                            or runtime.last_error
+                            or (runtime.task and runtime.task.done())
+                            or not (await runtime.adapter.get_status()).connected
+                        ):
+                            raise ConnectionError("Aquisição interrompida ao sincronizar fontes.")
+                        fresh = [
+                            r
+                            for r in runtime.pending_start or []
+                            if utc(r.received_timestamp) >= requested_at
+                            and (
+                                r.power_w is not None
+                                if runtime.source_role == "electrical"
+                                else any(v is not None for v in r.temperatures_c)
+                            )
+                        ]
+                        if fresh:
+                            candidates.append(fresh[-1])
+                    if len(candidates) == len(device_ids):
+                        times = [utc(r.received_timestamp) for r in candidates]
+                        if (max(times) - min(times)).total_seconds() * 1000 <= tolerance_ms and (
+                            datetime.now(UTC) - min(times)
+                        ).total_seconds() <= 3:
+                            return min(times)
+                    await asyncio.sleep(0.01)
+        except BaseException:
+            self.clear_pending_start(device_ids)
+            raise
+
+    def clear_pending_start(self, device_ids: list[int]) -> None:
+        for device_id in device_ids:
+            if runtime := self.runtimes.get(device_id):
+                runtime.pending_start = None
+
+    async def activate_common_start(
+        self,
+        session_id: int,
+        device_ids: list[int],
+        origin: datetime,
+    ) -> dict:
+        captured = []
+        # No await between assigning sources: both streams cross the same boundary.
+        for device_id in device_ids:
+            runtime = self.runtimes[device_id]
+            readings = [
+                r for r in runtime.pending_start or [] if utc(r.received_timestamp) >= origin
+            ]
+            runtime.session_id = session_id
+            runtime.paused = False
+            runtime.persisted_count = 0
+            runtime.buffer.extend(readings)
+            runtime.pending_start = None
+            captured.append((device_id, runtime, readings))
+        for device_id, runtime, readings in captured:
+            await self._flush(device_id, runtime)
+            for reading in readings:
+                await self._publish_reading(device_id, runtime, reading)
+        return await self._run_source_actions(
+            electrical_device_id=device_ids[0],
+            thermal_device_id=device_ids[1],
+            action=self.status,
+        )
+
+    async def _publish_reading(
+        self,
+        device_id: int,
+        runtime: DeviceRuntime,
+        reading: DeviceReading,
+    ) -> None:
+        payload = reading.model_dump(mode="json")
+        payload.update(
+            {
+                "device_id": device_id,
+                "device_name": runtime.device_name,
+                "device_protocol": runtime.protocol,
+                "source_role": runtime.source_role,
+                "session_id": runtime.session_id,
+            }
+        )
+        await websocket_hub.publish("measurement.created", payload)
 
     def _device_lock(self, device_id: int) -> asyncio.Lock:
         return self._device_locks.setdefault(device_id, asyncio.Lock())
@@ -220,6 +328,11 @@ class AcquisitionService:
             try:
                 await adapter.connect()
                 device.last_connected_at = datetime.now(UTC)
+                if hasattr(adapter, "expected_interval_seconds"):
+                    device.metadata_json = {
+                        **(device.metadata_json or {}),
+                        "expected_interval_ms": round(adapter.expected_interval_seconds * 1000),
+                    }
                 if (
                     device.protocol == "at4532_serial"
                     and getattr(adapter, "protocol_status", None) == "verified_by_measurement"
@@ -273,9 +386,7 @@ class AcquisitionService:
                     db.commit()
                 except Exception:
                     db.rollback()
-                    logger.exception(
-                        "failed to persist connection error device_id=%s", device_id
-                    )
+                    logger.exception("failed to persist connection error device_id=%s", device_id)
                 raise
         source_role = (
             "temperature"
@@ -290,6 +401,35 @@ class AcquisitionService:
             protocol=device.protocol,
             source_role=source_role,
         )
+        with SessionLocal() as db:
+            active_session = db.scalar(
+                select(MeasurementSession)
+                .outerjoin(SessionDevice, SessionDevice.session_id == MeasurementSession.id)
+                .where(
+                    or_(
+                        SessionDevice.device_id == device_id,
+                        MeasurementSession.device_id == device_id,
+                    ),
+                    MeasurementSession.status.in_(["running", "paused"]),
+                )
+            )
+            if active_session:
+                runtime.session_id = active_session.id
+                runtime.paused = active_session.status == "paused"
+                sample_model = (
+                    TemperatureSample if source_role == "temperature" else ElectricalSample
+                )
+                runtime.persisted_count = (
+                    db.scalar(
+                        select(func.count())
+                        .select_from(sample_model)
+                        .where(
+                            sample_model.session_id == active_session.id,
+                            sample_model.device_id == device_id,
+                        )
+                    )
+                    or 0
+                )
         self.runtimes[device_id] = runtime
         runtime.task = asyncio.create_task(self._read_loop(device_id, runtime))
         await websocket_hub.publish("device.status", {"device_id": device_id, "state": "connected"})
@@ -487,9 +627,7 @@ class AcquisitionService:
                     )
                     db.commit()
             except Exception:
-                logger.exception(
-                    "failed to persist disconnection error device_id=%s", device_id
-                )
+                logger.exception("failed to persist disconnection error device_id=%s", device_id)
             await websocket_hub.publish(
                 "device.status",
                 {
@@ -537,6 +675,8 @@ class AcquisitionService:
         ):
             await self.connect(device_id)
         runtime = self.runtimes[device_id]
+        if runtime.session_id != session_id:
+            runtime.persisted_count = 0
         runtime.session_id = session_id
         runtime.paused = False
         await websocket_hub.publish(
@@ -626,6 +766,11 @@ class AcquisitionService:
             "paused": runtime.paused,
             "buffered_measurements": len(runtime.buffer),
             "sample_count": runtime.sample_count,
+            "session_sample_count": runtime.persisted_count + len(runtime.buffer),
+            "persisted_sample_count": runtime.persisted_count,
+            "expected_interval_ms": round(
+                getattr(runtime.adapter, "expected_interval_seconds", 1) * 1000
+            ),
             "last_reading_age_seconds": age_seconds,
             "valid_channels": valid_channels,
             "channel_count": len(runtime.latest.temperatures_c) if runtime.latest else 0,
@@ -668,6 +813,7 @@ class AcquisitionService:
                 "temperature" if device["protocol"] == "at4532_serial" else "electrical",
             )
             statuses.append(status)
+
         def selected_status(protocol: str) -> dict | None:
             candidates = [status for status in statuses if status["protocol"] == protocol]
             if not candidates:
@@ -757,20 +903,21 @@ class AcquisitionService:
     async def _read_loop(self, device_id: int, runtime: DeviceRuntime) -> None:
         try:
             async for reading in runtime.adapter.start_reading():
+                # The instrument clock remains evidence, never the live session clock.
+                reading = reading.model_copy(
+                    update={
+                        "timestamp": utc(reading.received_timestamp),
+                        "received_timestamp": utc(reading.received_timestamp),
+                        "device_timestamp": utc(reading.device_timestamp)
+                        if reading.device_timestamp
+                        else None,
+                    }
+                )
                 runtime.latest = reading
                 runtime.sample_count += 1
                 runtime.last_error = None
-                payload = reading.model_dump(mode="json")
-                payload.update(
-                    {
-                        "device_id": device_id,
-                        "device_name": runtime.device_name,
-                        "device_protocol": runtime.protocol,
-                        "source_role": runtime.source_role,
-                        "session_id": runtime.session_id,
-                    }
-                )
-                await websocket_hub.publish("measurement.created", payload)
+                if runtime.pending_start is not None:
+                    runtime.pending_start.append(reading)
                 if runtime.session_id and not runtime.paused:
                     runtime.buffer.append(reading)
                     await self._evaluate_alerts(device_id, runtime, reading)
@@ -779,6 +926,8 @@ class AcquisitionService:
                         or monotonic() - runtime.last_flush >= 2
                     ):
                         await self._flush(device_id, runtime)
+                if runtime.pending_start is None:
+                    await self._publish_reading(device_id, runtime, reading)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -846,7 +995,7 @@ class AcquisitionService:
                     select(ChannelConfiguration).where(ChannelConfiguration.device_id == device_id)
                 )
             }
-            for sequence, reading in enumerate(readings, 1):
+            for sequence, reading in enumerate(readings, runtime.persisted_count + 1):
                 if role in {"combined", "electrical"}:
                     db.add(
                         ElectricalSample(
@@ -934,6 +1083,7 @@ class AcquisitionService:
                     db.add(measurement)
             db.commit()
         del runtime.buffer[: len(readings)]
+        runtime.persisted_count += len(readings)
         runtime.last_flush = monotonic()
 
     async def _evaluate_alerts(

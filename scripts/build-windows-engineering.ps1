@@ -11,8 +11,8 @@ $EngineeringZip = "$EngineeringRoot.zip"
 $StagingRoot = Join-Path $RepositoryRoot "dist\ThermoPowerMonitor"
 $ValidatedZip = Join-Path $RepositoryRoot "dist\ThermoPower-$Version.validated.zip"
 
-if ($Version -ne "0.6.0-client-preview") {
-    throw "Este script aceita somente a versao 0.6.0-client-preview."
+if ($Version -ne "0.6.1-client-preview") {
+    throw "Este script aceita somente a versao 0.6.1-client-preview."
 }
 if (-not (Test-Path -LiteralPath $Python)) { throw "Ambiente .venv ausente." }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw "npm nao encontrado." }
@@ -57,9 +57,12 @@ try {
         docker compose config --quiet
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         $DockerResult = "passed"
+    } elseif (Test-Path -LiteralPath (Join-Path $RepositoryRoot "build\tools\docker-compose.exe")) {
+        & (Join-Path $RepositoryRoot "build\tools\docker-compose.exe") config --quiet
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $DockerResult = "passed (official standalone Compose)"
     } else {
-        $DockerResult = "not available on build host (optional gate)"
-        Write-Warning "docker nao encontrado; docker compose config nao executado."
+        throw "Docker Compose ausente: configure docker compose ou build/tools/docker-compose.exe."
     }
 }
 finally { Pop-Location }
@@ -136,13 +139,14 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "CLIENT-PREVIEW.txt") -Encoding
     "Primeiro acesso: senha aleatoria gerada localmente na primeira execucao.",
     "Dashboard executivo, periodo analisado e KPIs termicos/eletricos.",
     "Relatorio PDF tecnico, resumo executivo e XLSX profissional.",
-    "Graficos comparativos: inicios sincronizados por padrao e horario real opcional.",
+    "Graficos: inicio real comum, UTC de recebimento e picos visiveis.",
     "GPM-8213: integracao fisica validada no firmware V1.05.",
     "AT4532: FETCH fisico TCP-32/CP936 suportado; IDN timeout permanece warning.",
-    "AT4532 continuo: 3 s apos RX + guarda serial calculada de 0,4 s; soak 100 amostras.",
+    "AT4532 continuo: intervalo efetivo do adapter (~1 s), preservando guarda serial.",
     "Cadastro AT duplicado: historico preservado e neutralizado; uma COM tem um controlador ativo.",
     "Fallback: somente associacao manual exata + 19200/8-N-1 + medicao estrutural valida.",
-    "Dashboard/sessao: fontes eletrica e termica simultaneas com ciclos independentes.",
+    "Dashboard/sessao: par fresco obrigatorio para confirmar inicio combinado.",
+    "Nova homologacao fisica de ponta a ponta: pendente no GPM + AT da cliente.",
     "Use o Teste de Protocolo Documentado somente apos fechar o software do fabricante."
 )
 Set-Content -LiteralPath (Join-Path $StagingRoot "PROTOCOL-SOURCES.txt") -Encoding utf8 -Value @(
@@ -152,7 +156,7 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "PROTOCOL-SOURCES.txt") -Encodi
     "Evidencia fisica: *IDN? em COM5 retornou 0 bytes; identidade permanece unconfirmed.",
     "FETCH fisico: frame TCP-32 com byte A1 E6 para Celsius, decodificado estritamente em CP936.",
     "Open|K|Celsius foi confirmado no RX para CH01-CH24; CH25-CH32 foram numericos.",
-    "Cadencia continua: FETCH ancorado no RX anterior + 0,4 s de guarda calculada para 694 bytes em 19200 8-N-1.",
+    "Cadencia continua: max(inicio FETCH anterior + intervalo, RX anterior + guarda serial).",
     "Campos posteriores ao bloco primario de 32 canais permanecem auxiliares sem semantica.",
     "",
     "GPM-8213 User Manual G_20230828:",
@@ -167,6 +171,7 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "PROTOCOL-SOURCES.txt") -Encodi
 )
 Set-Content -LiteralPath (Join-Path $StagingRoot "TEST-RESULTS.txt") -Encoding utf8 -Value @(
     "ThermoPower $Version",
+    "Source commit: $(git -C $RepositoryRoot rev-parse HEAD)",
     "Ruff: passed",
     "Physical regression fixtures gate: passed",
     "Pytest completo: passed",
@@ -174,11 +179,12 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "TEST-RESULTS.txt") -Encoding u
     "GPM fragmented, stale e multiple buffered responses: passed",
     "AT IDN timeout + manual COM5 + TCP-32 CP936 32 channels: passed",
     "AT continuous acquisition 100 samples with fake clock: passed",
-    "AT FETCH cadence anchored after RX with calculated serial guard: passed",
+    "AT FETCH cadence with start interval and calculated post-RX serial guard: passed",
     "AT duplicate COM registration neutralization and warning: passed",
     "AT unknown COM fallback rejection: passed",
     "AT CH25-CH32 mapping and CH29 heating series: passed",
-    "Combined and partial-source acquisition: passed",
+    "Combined 100/120 samples per source through database/API/WebSocket/reports: passed",
+    "Fresh common start and explicit single-source acquisition: passed",
     "Runtime diagnostic log export: passed",
     "Alembic upgrade/check: passed",
     "pip check: passed",

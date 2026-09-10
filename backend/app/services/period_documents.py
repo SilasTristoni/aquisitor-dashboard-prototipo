@@ -111,9 +111,7 @@ def format_duration_pt(seconds: float | int | None) -> str:
             parts.append(f"{remaining_seconds} s")
         return " ".join(parts)
     if minutes:
-        return f"{minutes} min" + (
-            f" {remaining_seconds} s" if remaining_seconds else ""
-        )
+        return f"{minutes} min" + (f" {remaining_seconds} s" if remaining_seconds else "")
     return f"{remaining_seconds} s"
 
 
@@ -132,6 +130,53 @@ def _configure_time_axis(axis: Any, request: PeriodReportRequest, zone: ZoneInfo
         axis.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m\n%H:%M", tz=zone))
         axis.set_xlabel(f"Horário real ({request.timezone})")
     axis.xaxis.label.set_size(7)
+
+
+def padded_bounds(values: list[float]) -> tuple[float, float]:
+    if not values:
+        return 0, 1
+    low, high = min(values), max(values)
+    margin = max(abs(high) * 0.08, (high - low) * 0.08, 0.5)
+    return (0 if low >= 0 else low - margin), high + margin
+
+
+def mark_peaks(data, request, power_axis, temperature_axis, channels, power_scale=1):
+    origins = {s["id"]: datetime.fromisoformat(s["started_at"]) for s in data["sessions"]}
+    power = [
+        (p, p["active_power_w"] / power_scale, "Pico de pot\u00eancia")
+        for p in data["electrical"]
+        if p["active_power_w"] is not None and request.include_power
+    ]
+    thermal = [
+        (p, v, f"M\u00e1x. T{c}")
+        for p in data["temperatures"]
+        for c, v in p["channels"].items()
+        if c in channels and v is not None
+    ]
+    for axis, candidates, color in [
+        (power_axis, power, POWER_COLOR),
+        (temperature_axis, thermal, "#D97706"),
+    ]:
+        if axis is None or not candidates:
+            continue
+        axis.set_ylim(*padded_bounds([v for _, v, _ in candidates]))
+        point, value, label = max(candidates, key=lambda item: item[1])
+        x = presentation_axis_values([point], request.time_axis_mode, origins)[0]
+        elapsed = (point["timestamp"] - origins[point["session_id"]]).total_seconds()
+        axis.plot([x], [value], marker="o", markersize=4, color=color)
+        right = point["timestamp"] > min(p["timestamp"] for p, _, _ in candidates)
+        unit = ("W" if power_scale == 1 else "kW") if axis is power_axis else "\u00b0C"
+        axis.annotate(
+            f"{label}\n{value:.2f} {unit} \u00b7 {format_duration_pt(elapsed)}",
+            xy=(x, value),
+            xytext=(-8 if right else 8, -12),
+            textcoords="offset points",
+            ha="right" if right else "left",
+            va="top",
+            fontsize=7,
+            color=color,
+            bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none", "pad": 2},
+        )
 
 
 def render_period_chart(
@@ -198,12 +243,12 @@ def render_period_chart(
                     _segments(power_points, visual_gap_seconds)
                 ):
                     power_axis.plot(
-                        presentation_axis_values(
-                            segment, request.time_axis_mode, session_origin
-                        ),
+                        presentation_axis_values(segment, request.time_axis_mode, session_origin),
                         [point["active_power_w"] / power_scale for point in segment],
                         color=POWER_COLOR,
                         linewidth=1.35,
+                        marker=".",
+                        markersize=2,
                         alpha=0.9,
                         linestyle=line_styles[session_index % len(line_styles)],
                         label=(
@@ -252,6 +297,8 @@ def render_period_chart(
                             [point[key] for point in segment],
                             color=CHANNEL_COLORS[(channel - 1) % len(CHANNEL_COLORS)],
                             linewidth=1.05,
+                            marker=".",
+                            markersize=2,
                             linestyle=line_styles[session_index % len(line_styles)],
                             label=(
                                 f"T{channel} · {name}"
@@ -261,6 +308,7 @@ def render_period_chart(
                             if segment_index == 0
                             else None,
                         )
+        mark_peaks(data, request, power_axis, temperature_axis, group, power_scale)
         power_axis.set_ylabel(f"Potência ativa ({power_unit})", color=POWER_COLOR)
         power_axis.grid(True, color=grid, alpha=0.6, linewidth=0.55)
         power_axis.tick_params(colors=foreground, labelsize=8)
@@ -307,9 +355,7 @@ def render_period_chart(
                 candidates = [point for point in points if point.get(field) is not None]
                 for segment_index, segment in enumerate(_segments(candidates, visual_gap_seconds)):
                     target_axis.plot(
-                        presentation_axis_values(
-                            segment, request.time_axis_mode, session_origin
-                        ),
+                        presentation_axis_values(segment, request.time_axis_mode, session_origin),
                         [point[field] for point in segment],
                         label=(label if single_session else f"{label} · {session['name']}")
                         if segment_index == 0
@@ -399,8 +445,7 @@ def render_executive_summary(
     axis = figure.add_axes((0.06, 0.17, 0.59, 0.44), facecolor="#FFFFFF")
     power_axis = axis.twinx()
     session_origins = {
-        session["id"]: datetime.fromisoformat(session["started_at"])
-        for session in data["sessions"]
+        session["id"]: datetime.fromisoformat(session["started_at"]) for session in data["sessions"]
     }
     power_points = downsample_time_buckets(data["electrical"], ["active_power_w"], 600)
     if power_points:
@@ -428,6 +473,7 @@ def render_executive_summary(
             linewidth=1.25,
             label=item["label"],
         )
+    mark_peaks(data, request, power_axis, axis, [item["channel"] for item in channel_items])
     axis.set_ylabel("Temperatura (°C)", fontsize=8, color="#D97706")
     power_axis.set_ylabel("Potência (W)", fontsize=8, color=POWER_COLOR)
     _configure_time_axis(axis, request, zone)
@@ -457,7 +503,13 @@ def render_executive_summary(
         figure.text(0.77, y, item["friendly_name"] or "—", color="#475569", fontsize=7)
         figure.text(0.89, y, _format_number(item["mean"]), color="#17233F", fontsize=7)
         figure.text(0.955, y, _format_number(item["max"]), color="#17233F", fontsize=7)
-    integrity = "Íntegra" if not general["gap_count"] else f"{general['gap_count']} lacuna(s)"
+    integrity = (
+        "Cobertura incompleta"
+        if general.get("source_issue_count")
+        else "Íntegra"
+        if not general["gap_count"]
+        else f"{general['gap_count']} lacuna(s)"
+    )
     figure.text(
         0.70,
         0.125,
@@ -634,7 +686,11 @@ def render_period_pdf(data: dict[str, Any], request: PeriodReportRequest) -> byt
             "Período analisado",
             format_duration_pt(general["analyzed_period_seconds"]),
             "Integridade dos dados",
-            "Íntegra" if not general["gap_count"] else f"{general['gap_count']} lacuna(s)",
+            "Cobertura incompleta"
+            if general.get("source_issue_count")
+            else "Íntegra"
+            if not general["gap_count"]
+            else f"{general['gap_count']} lacuna(s)",
         ],
         [
             "Potência média",
@@ -749,7 +805,8 @@ def render_period_pdf(data: dict[str, Any], request: PeriodReportRequest) -> byt
                 "As linhas são interrompidas em lacunas e nas fronteiras de sessão. "
                 "A redução de pontos afeta somente esta visualização. "
                 + (
-                    "O primeiro ponto válido de cada fonte é exibido em 00:00; "
+                    "00:00 representa o início real comum da sessão; "
+                    "atrasos e lacunas permanecem visíveis. "
                     "timestamps e cadências originais permanecem inalterados."
                     if request.time_axis_mode == "synchronized"
                     else "O eixo usa o horário real registrado para cada leitura."
@@ -762,6 +819,25 @@ def render_period_pdf(data: dict[str, Any], request: PeriodReportRequest) -> byt
     )
     if request.include_power or request.include_electrical_details:
         story.append(Paragraph("Estatísticas elétricas", styles["Section"]))
+    if electrical.get("peak"):
+        peak = electrical["peak"]
+        story.append(
+            Paragraph(
+                f"Pico de potência: {_format_number(peak['value_w'], ' W')} · "
+                f"{format_duration_pt(peak['elapsed_seconds'])} desde o início da sessão.",
+                styles["BodyText"],
+            )
+        )
+    if temperature.get("critical_timestamp"):
+        critical_time = datetime.fromisoformat(temperature["critical_timestamp"]).astimezone(zone)
+        story.append(
+            Paragraph(
+                f"Temperatura máxima: {_format_number(temperature['critical_value_c'], ' °C')} · "
+                f"{escape(temperature['critical_channel_label'] or '')} · "
+                f"{critical_time:%d/%m/%Y %H:%M:%S}.",
+                styles["BodyText"],
+            )
+        )
     electric_rows = [["Grandeza", "Leituras", "Mínimo", "Média", "Mediana", "Máximo", "P95"]]
     electrical_labels = {
         "active_power_w": ("Potência ativa (W)", ""),

@@ -98,6 +98,7 @@ from app.services.period_workbook import render_period_csv, render_period_xlsx
 from app.services.protocol_probe import protocol_probe_service
 from app.services.reporting import create_chart_image, create_csv, create_pdf, create_xlsx
 from app.services.serial_diagnostic import real_serial_diagnostic_service
+from app.services.session_clock import utc
 from app.services.statistics import executive_statistics, session_statistics
 from app.services.synchronization import synchronized_series
 from app.services.usb_discovery import usb_discovery_service
@@ -966,8 +967,8 @@ def list_sessions(
                 "device_name": " + ".join(row[1] for row in linked_devices) or session.device.name,
                 "devices": [{"role": row[0], "name": row[1]} for row in linked_devices],
                 "operator": session.user.name,
-                "started_at": session.started_at,
-                "ended_at": session.ended_at,
+                "started_at": utc(session.started_at),
+                "ended_at": utc(session.ended_at) if session.ended_at else None,
                 "duration_seconds": _duration_seconds(session.started_at, session.ended_at),
                 "sample_count": max(aggregates[0], electrical_aggregates[0], temperature_count),
                 "electrical_sample_count": electrical_aggregates[0],
@@ -987,6 +988,15 @@ def list_sessions(
 async def start_session(
     payload: SessionCreate, db: Db, user: User = Depends(require_roles("admin", "operator"))
 ) -> SessionStartResult:
+    async with acquisition_service.session_start_lock:
+        ids = [i for i in [payload.electrical_device_id, payload.temperature_device_id] if i]
+        try:
+            return await _start_session(payload, db, user)
+        finally:
+            acquisition_service.clear_pending_start(ids)
+
+
+async def _start_session(payload: SessionCreate, db: Db, user: User) -> SessionStartResult:
     roles: list[tuple[str, int]] = []
     if payload.temperature_device_id:
         roles.append(("temperature", payload.temperature_device_id))
@@ -1040,6 +1050,24 @@ async def start_session(
                 "sources": preflight_failures,
             },
         )
+    common_origin = None
+    common_ids = [payload.electrical_device_id, payload.temperature_device_id]
+    if all(common_ids):
+        if preflight_failures or len(set(common_ids)) != 2:
+            raise HTTPException(
+                status_code=422,
+                detail="As duas fontes devem estar disponíveis para o ensaio combinado.",
+            )
+        try:
+            common_origin = await acquisition_service.prepare_common_start(
+                common_ids,
+                payload.sync_tolerance_ms,
+            )
+        except (ValueError, ConnectionError, TimeoutError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Não foi possível sincronizar leituras frescas das duas fontes. " + str(exc),
+            ) from exc
     primary_device = devices[0][1]
     values = payload.model_dump(
         exclude={"device_id", "temperature_device_id", "electrical_device_id", "metadata"}
@@ -1051,6 +1079,23 @@ async def start_session(
         user_id=user.id,
         status="running",
     )
+    if common_origin is not None:
+        session.started_at = common_origin
+        session.metadata_json = {
+            **session.metadata_json,
+            "clock_source": "received_utc",
+            "source_cadence_ms": {
+                str(device_id): round(
+                    getattr(
+                        acquisition_service.runtimes[device_id].adapter,
+                        "expected_interval_seconds",
+                        1,
+                    )
+                    * 1000
+                )
+                for device_id in common_ids
+            },
+        }
     db.add(session)
     db.flush()
     for role, device in devices:
@@ -1091,7 +1136,11 @@ async def start_session(
     )
     db.commit()
     db.refresh(session)
-    if payload.device_id and not (payload.temperature_device_id or payload.electrical_device_id):
+    if common_origin is not None:
+        connection = await acquisition_service.activate_common_start(
+            session.id, common_ids, common_origin
+        )
+    elif payload.device_id and not (payload.temperature_device_id or payload.electrical_device_id):
         device_id = payload.device_id
         try:
             await acquisition_service.attach_session(device_id, session.id)
@@ -1201,7 +1250,7 @@ async def start_session(
             "id": session.id,
             "device_id": session.device_id,
             "status": session.status,
-            "started_at": session.started_at,
+            "started_at": utc(session.started_at),
             "devices": [
                 {"role": role, "device": _device_dict(device)}
                 for role, device in devices
@@ -1234,8 +1283,8 @@ def get_session(session_id: int, db: Db, _: CurrentUser) -> dict:
         "notes": session.notes,
         "metadata": session.metadata_json or {},
         "status": session.status,
-        "started_at": session.started_at,
-        "ended_at": session.ended_at,
+        "started_at": utc(session.started_at),
+        "ended_at": utc(session.ended_at) if session.ended_at else None,
         "sample_interval_ms": session.sample_interval_ms,
         "sync_grid_ms": session.sync_grid_ms,
         "sync_tolerance_ms": session.sync_tolerance_ms,
@@ -1281,7 +1330,12 @@ def update_session(
         if value is not None:
             setattr(session, field, value)
     if payload.metadata is not None:
-        session.metadata_json = payload.metadata.model_dump(exclude_none=True)
+        clock_metadata = {
+            key: value
+            for key, value in (session.metadata_json or {}).items()
+            if key in {"clock_source", "source_cadence_ms"}
+        }
+        session.metadata_json = {**payload.metadata.model_dump(exclude_none=True), **clock_metadata}
     if payload.channel_names is not None:
         snapshots = {
             row.channel: row
@@ -1437,7 +1491,11 @@ async def finish_session(
     session_id: int, db: Db, _: User = Depends(require_roles("admin", "operator"))
 ) -> dict:
     session = await _transition(session_id, "finished", db)
-    return {"id": session.id, "status": session.status, "ended_at": session.ended_at}
+    return {
+        "id": session.id,
+        "status": session.status,
+        "ended_at": utc(session.ended_at) if session.ended_at else None,
+    }
 
 
 @router.post("/sessions/{session_id}/cancel")

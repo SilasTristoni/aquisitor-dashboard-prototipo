@@ -7,7 +7,7 @@ vi.mock("recharts", () => {
   const Container = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
   const Chart = () => <div data-testid="chart" />;
   const Primitive = () => null;
-  return { Area: Primitive, AreaChart: Chart, CartesianGrid: Primitive, Legend: Primitive, Line: Primitive, LineChart: Chart, ReferenceLine: Primitive, ResponsiveContainer: Container, Tooltip: Primitive, XAxis: Primitive, YAxis: Primitive };
+  return { Area: Primitive, AreaChart: Chart, CartesianGrid: Primitive, Legend: Primitive, Line: Primitive, LineChart: Chart, ReferenceLine: Primitive, ReferenceDot: Primitive, ResponsiveContainer: Container, Tooltip: Primitive, XAxis: Primitive, YAxis: Primitive };
 });
 const now = Date.now();
 const temperatures = Array<number | null>(32).fill(null);

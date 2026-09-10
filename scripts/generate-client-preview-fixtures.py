@@ -23,15 +23,15 @@ from app.services.period_workbook import render_period_xlsx  # noqa: E402
 
 def fixture_data() -> tuple[dict, PeriodReportRequest]:
     start = datetime(2026, 9, 3, 13, 0, tzinfo=UTC)
-    thermal_offset = timedelta(minutes=3)
-    end = start + timedelta(hours=2) + thermal_offset
+    thermal_offset = timedelta(milliseconds=150)
+    end = start + timedelta(seconds=120) + thermal_offset
     request = PeriodReportRequest(
         start=start,
         end=end,
         title="Ensaio combinado — validação térmica e elétrica",
         subtitle="Relatório Técnico de Ensaio Térmico e Elétrico",
         description=(
-            "Fixture sintética determinística com início térmico três minutos após o elétrico."
+            "Fixture sintética determinística com 120 leituras por fonte e início comum."
         ),
         notes="Valores exclusivamente sintéticos; não representam uma amostra de produção.",
         channels=list(range(24, 33)),
@@ -52,12 +52,12 @@ def fixture_data() -> tuple[dict, PeriodReportRequest]:
     }
     electrical = []
     temperatures = []
-    for index in range(721):
-        timestamp = start + timedelta(seconds=index * 10)
+    for index in range(120):
+        timestamp = start + timedelta(seconds=index)
         thermal_timestamp = timestamp + thermal_offset
-        elapsed_minutes = index / 6
+        elapsed_minutes = index / 60
         cycle_on = (index // 30) % 2 == 0
-        active_power = (1120 if cycle_on else 160) + 35 * math.sin(index / 13)
+        active_power = 190 * math.exp(-index / 18) + (60 if cycle_on else 30)
         electrical.append(
             {
                 "session_id": 1,
@@ -79,8 +79,8 @@ def fixture_data() -> tuple[dict, PeriodReportRequest]:
         values = {24: None}
         for channel in range(25, 33):
             target = 58 + (channel - 25) * 3.2
-            if elapsed_minutes < 48:
-                value = 24 + (target - 24) * elapsed_minutes / 48
+            if elapsed_minutes < 1.5:
+                value = 24 + (target - 24) * elapsed_minutes / 1.5
             else:
                 value = target + 0.15 * math.sin(index / 23 + channel)
             values[channel] = value
@@ -124,7 +124,7 @@ def fixture_data() -> tuple[dict, PeriodReportRequest]:
                 "serial_number": "FIXTURE-AT",
                 "port": "COM5",
                 "baud_rate": 19200,
-                "cadence_ms": 3000,
+                "cadence_ms": 1000,
             },
             {
                 "id": 2,

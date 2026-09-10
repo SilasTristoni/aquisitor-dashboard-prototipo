@@ -37,16 +37,13 @@ PHYSICAL_TEMPERATURES = [21.79, 21.62, 21.38, 21.34, 21.57, 21.71, 21.90, 22.19]
 PHYSICAL_AUXILIARY_FIELDS = ["0.00|K|℃"] * 32 + ["001", "068214"]
 GPM_PHYSICAL_HEADERS = b"Urms,Irms,P,S,fU,PF,Q,fI\r\n"
 GPM_PHYSICAL_VALUES = (
-    b"127.58E+00,240.02E-03,17.688E+00,30.622E+00,59.993E+00,"
-    b"0.5776E+00,24.997E+00,NAN\r\n"
+    b"127.58E+00,240.02E-03,17.688E+00,30.622E+00,59.993E+00,0.5776E+00,24.997E+00,NAN\r\n"
 )
 
 
 def _tcp32_physical_frame(timestamp: datetime) -> bytes:
     local_timestamp = timestamp.astimezone(ZoneInfo("America/Sao_Paulo"))
-    channels = ["Open|K|℃"] * 24 + [
-        f"{value:.2f}|K|℃" for value in PHYSICAL_TEMPERATURES
-    ]
+    channels = ["Open|K|℃"] * 24 + [f"{value:.2f}|K|℃" for value in PHYSICAL_TEMPERATURES]
     fields = [
         "TCP-32",
         f"T:{local_timestamp:%Y/%m/%d %H:%M:%S}",
@@ -143,11 +140,7 @@ class PhysicalStreamFixtureAdapter:
 
     async def get_status(self) -> DeviceStatus:
         return DeviceStatus(
-            state="reading"
-            if self.reading
-            else "connected"
-            if self.connected
-            else "disconnected",
+            state="reading" if self.reading else "connected" if self.connected else "disconnected",
             connected=self.connected,
             reading=self.reading,
             last_message_at=self.last_message_at,
@@ -158,16 +151,12 @@ class PhysicalStreamFixtureAdapter:
         return DeviceInformation(adapter=f"physical-{self.role}-fixture")
 
 
-def _physical_device_ids(
-    client: TestClient, auth_headers: dict[str, str]
-) -> tuple[int, int]:
+def _physical_device_ids(client: TestClient, auth_headers: dict[str, str]) -> tuple[int, int]:
     devices = client.get("/api/v1/devices", headers=auth_headers).json()
     electrical_id = next(
         device["id"] for device in devices if device["protocol"] == "gpm8213_serial"
     )
-    thermal_id = next(
-        device["id"] for device in devices if device["protocol"] == "at4532_serial"
-    )
+    thermal_id = next(device["id"] for device in devices if device["protocol"] == "at4532_serial")
     return electrical_id, thermal_id
 
 
@@ -232,6 +221,52 @@ def _start_session(
     )
 
 
+@pytest.mark.parametrize("paused", [False, True])
+def test_reconnection_restores_session_binding_and_pause_state(
+    client, auth_headers, monkeypatch, paused
+):
+    _install_fixture_adapters(monkeypatch)
+    electrical_id, thermal_id = _physical_device_ids(client, auth_headers)
+    response = _start_session(client, auth_headers, electrical_id, thermal_id)
+    assert response.status_code == 201, response.text
+    session_id = response.json()["id"]
+    time.sleep(0.1)
+    if paused:
+        assert (
+            client.post(f"/api/v1/sessions/{session_id}/pause", headers=auth_headers).status_code
+            == 200
+        )
+    assert (
+        client.post(f"/api/v1/devices/{thermal_id}/disconnect", headers=auth_headers).status_code
+        == 200
+    )
+    with SessionLocal() as db:
+        before = db.scalar(
+            select(func.count())
+            .select_from(TemperatureSample)
+            .where(TemperatureSample.session_id == session_id)
+        )
+    assert (
+        client.post(f"/api/v1/devices/{thermal_id}/connect", headers=auth_headers).status_code
+        == 200
+    )
+    status = client.get(f"/api/v1/devices/{thermal_id}/status", headers=auth_headers).json()
+    assert status["session_id"] == session_id
+    assert status["paused"] is paused
+    time.sleep(0.12)
+    assert (
+        client.post(f"/api/v1/sessions/{session_id}/finish", headers=auth_headers).status_code
+        == 200
+    )
+    with SessionLocal() as db:
+        after = db.scalar(
+            select(func.count())
+            .select_from(TemperatureSample)
+            .where(TemperatureSample.session_id == session_id)
+        )
+    assert after == before if paused else after > before
+
+
 def test_both_sources_persist_independent_physical_series_and_dashboard_values(
     client: TestClient,
     auth_headers: dict[str, str],
@@ -256,25 +291,19 @@ def test_both_sources_persist_independent_physical_series_and_dashboard_values(
     electrical_status = client.get(
         f"/api/v1/devices/{electrical_id}/status", headers=auth_headers
     ).json()
-    thermal_status = client.get(
-        f"/api/v1/devices/{thermal_id}/status", headers=auth_headers
-    ).json()
+    thermal_status = client.get(f"/api/v1/devices/{thermal_id}/status", headers=auth_headers).json()
     assert electrical_status["sample_count"] > thermal_status["sample_count"] >= 2
     assert electrical_status["latest_reading"]["power_w"] == pytest.approx(17.688)
     assert thermal_status["latest_reading"]["raw_payload"]["valid_channels"] == 8
 
-    snapshot = client.get(
-        "/api/v1/acquisition/combined-status", headers=auth_headers
-    ).json()
+    snapshot = client.get("/api/v1/acquisition/combined-status", headers=auth_headers).json()
     assert snapshot["overall"] == "both"
     assert snapshot["electrical"]["sample_count"] >= electrical_status["sample_count"]
     assert snapshot["thermal"]["sample_count"] >= thermal_status["sample_count"]
     assert snapshot["electrical"]["last_reading"]["power_w"] == pytest.approx(17.688)
     assert snapshot["thermal"]["last_reading"]["raw_payload"]["valid_channels"] == 8
 
-    finished = client.post(
-        f"/api/v1/sessions/{session_id}/finish", headers=auth_headers
-    )
+    finished = client.post(f"/api/v1/sessions/{session_id}/finish", headers=auth_headers)
     assert finished.status_code == 200, finished.text
 
     with SessionLocal() as db:
@@ -296,9 +325,7 @@ def test_both_sources_persist_independent_physical_series_and_dashboard_values(
         assert len({row.received_timestamp for row in thermal_rows}) == len(thermal_rows)
         assert len({row.device_timestamp for row in thermal_rows}) == len(thermal_rows)
         assert all(row.device_timestamp is None for row in electrical_rows)
-        assert all(
-            row.received_timestamp != row.device_timestamp for row in thermal_rows
-        )
+        assert all(row.received_timestamp != row.device_timestamp for row in thermal_rows)
         assert {row.active_power_w for row in electrical_rows} == {17.688}
 
         latest_thermal = thermal_rows[-1]
@@ -356,13 +383,19 @@ def test_partial_connection_and_session_keep_the_healthy_source(
     assert failed_status["state"] == "error"
     assert failed_status["last_error"] == result[failed_role]["error"]
 
-    started = _start_session(client, auth_headers, electrical_id, thermal_id)
+    rejected = _start_session(client, auth_headers, electrical_id, thermal_id)
+    assert rejected.status_code == 409, rejected.text
+    started = client.post(
+        "/api/v1/sessions",
+        headers=auth_headers,
+        json={
+            "name": "Explicit single source",
+            f"{expected_session_role}_device_id": ids[healthy_role],
+        },
+    )
     assert started.status_code == 201, started.text
     body = started.json()
     assert body["status"] == "running"
-    assert body["connection"]["overall"] == "partial"
-    assert body["connection"][healthy_role]["success"] is True
-    assert body["connection"][failed_role]["success"] is False
     assert [source["role"] for source in body["devices"]] == [expected_session_role]
     session_id = body["id"]
 
@@ -373,17 +406,13 @@ def test_partial_connection_and_session_keep_the_healthy_source(
     assert healthy_status["connected"] is True
     assert healthy_status["sample_count"] >= 2
 
-    snapshot = client.get(
-        "/api/v1/acquisition/combined-status", headers=auth_headers
-    ).json()
+    snapshot = client.get("/api/v1/acquisition/combined-status", headers=auth_headers).json()
     assert snapshot["overall"] == "partial"
     assert snapshot[healthy_role]["success"] is True
     assert snapshot[failed_role]["status"] == "error"
     assert snapshot[failed_role]["connect_result"]["error"] == result[failed_role]["error"]
 
-    finished = client.post(
-        f"/api/v1/sessions/{session_id}/finish", headers=auth_headers
-    )
+    finished = client.post(f"/api/v1/sessions/{session_id}/finish", headers=auth_headers)
     assert finished.status_code == 200, finished.text
     with SessionLocal() as db:
         roles = set(
@@ -427,9 +456,7 @@ def test_read_failure_during_session_does_not_stop_the_other_source(
     session_id = started.json()["id"]
 
     time.sleep(0.27)
-    thermal_status = client.get(
-        f"/api/v1/devices/{thermal_id}/status", headers=auth_headers
-    ).json()
+    thermal_status = client.get(f"/api/v1/devices/{thermal_id}/status", headers=auth_headers).json()
     electrical_before = client.get(
         f"/api/v1/devices/{electrical_id}/status", headers=auth_headers
     ).json()
@@ -444,9 +471,7 @@ def test_read_failure_during_session_does_not_stop_the_other_source(
     ).json()
     assert electrical_after["sample_count"] > electrical_before["sample_count"]
 
-    finished = client.post(
-        f"/api/v1/sessions/{session_id}/finish", headers=auth_headers
-    )
+    finished = client.post(f"/api/v1/sessions/{session_id}/finish", headers=auth_headers)
     assert finished.status_code == 200, finished.text
     with SessionLocal() as db:
         electrical_count = db.scalar(
@@ -508,26 +533,10 @@ def test_session_preflight_failure_keeps_the_other_valid_source(
         db.commit()
 
     started = _start_session(client, auth_headers, electrical_id, thermal_id)
-    assert started.status_code == 201, started.text
-    body = started.json()
-    assert body["status"] == "running"
-    assert body["device_id"] == electrical_id
-    assert body["connection"]["overall"] == "partial"
-    assert body["connection"]["electrical"]["success"] is True
-    assert body["connection"]["thermal"]["success"] is False
-    assert "inativo" in body["connection"]["thermal"]["error"]
+    assert started.status_code == 422, started.text
     assert created["thermal"] == []
-    assert [item["role"] for item in body["devices"]] == ["electrical"]
-
     with SessionLocal() as db:
-        assert db.scalar(
-            select(func.count())
-            .select_from(SessionChannelConfiguration)
-            .where(SessionChannelConfiguration.session_id == body["id"])
-        ) == 0
-    assert client.post(
-        f"/api/v1/sessions/{body['id']}/finish", headers=auth_headers
-    ).status_code == 200
+        assert db.scalar(select(func.count()).select_from(MeasurementSession)) == 0
 
 
 @pytest.mark.asyncio
@@ -561,9 +570,7 @@ async def test_flush_failure_retains_buffer_and_restores_pause_state(
     )
     service = AcquisitionService()
     service.runtimes[913349] = runtime
-    monkeypatch.setattr(
-        "app.services.acquisition.SessionLocal", lambda: CommitFailureSession()
-    )
+    monkeypatch.setattr("app.services.acquisition.SessionLocal", lambda: CommitFailureSession())
 
     with pytest.raises(RuntimeError, match="fixture commit failure"):
         await service.pause_session(913349)
@@ -608,9 +615,7 @@ async def test_connection_commit_failure_closes_adapter_before_runtime_registrat
     adapter = PhysicalStreamFixtureAdapter("electrical")
     service = AcquisitionService()
     monkeypatch.setattr(service, "_adapter_for", lambda _device: adapter)
-    monkeypatch.setattr(
-        "app.services.acquisition.SessionLocal", lambda: CommitFailureSession()
-    )
+    monkeypatch.setattr("app.services.acquisition.SessionLocal", lambda: CommitFailureSession())
 
     with pytest.raises(RuntimeError, match="fixture connection commit failure"):
         await service.connect(device.id)
@@ -655,9 +660,7 @@ async def test_connection_cleanup_failure_retains_adapter_for_close_retry(
     adapter = PhysicalStreamFixtureAdapter("electrical", fail_disconnect_attempts=1)
     service = AcquisitionService()
     monkeypatch.setattr(service, "_adapter_for", lambda _device: adapter)
-    monkeypatch.setattr(
-        "app.services.acquisition.SessionLocal", lambda: CommitFailureSession()
-    )
+    monkeypatch.setattr("app.services.acquisition.SessionLocal", lambda: CommitFailureSession())
 
     with pytest.raises(RuntimeError, match="fixture connection commit failure"):
         await service.connect(device.id)
@@ -685,6 +688,9 @@ async def test_concurrent_connect_uses_one_adapter_and_one_acquisition_task(
     )
 
     class SuccessfulSession:
+        def scalar(self, _statement):
+            return None
+
         def __enter__(self):
             return self
 
@@ -753,6 +759,9 @@ async def test_only_explicitly_connected_registration_controls_a_physical_port(
     }
 
     class SuccessfulSession:
+        def scalar(self, _statement):
+            return None
+
         def __enter__(self):
             return self
 
@@ -827,9 +836,7 @@ async def test_disconnect_flush_failure_retains_runtime_until_retry_succeeds(
     runtime = DeviceRuntime(adapter=adapter, session_id=99, buffer=[reading])
     service = AcquisitionService()
     service.runtimes[913349] = runtime
-    monkeypatch.setattr(
-        "app.services.acquisition.SessionLocal", lambda: CommitFailureSession()
-    )
+    monkeypatch.setattr("app.services.acquisition.SessionLocal", lambda: CommitFailureSession())
 
     with pytest.raises(RuntimeError, match="fixture disconnect flush failure"):
         await service.disconnect(913349)
@@ -868,9 +875,10 @@ def test_failed_pause_and_finish_do_not_publish_inconsistent_session_state(
     monkeypatch.setattr(acquisition_service, "pause_session", fail_thermal_pause)
     paused = client.post(f"/api/v1/sessions/{session_id}/pause", headers=auth_headers)
     assert paused.status_code == 422, paused.text
-    assert client.get(
-        f"/api/v1/sessions/{session_id}", headers=auth_headers
-    ).json()["status"] == "running"
+    assert (
+        client.get(f"/api/v1/sessions/{session_id}", headers=auth_headers).json()["status"]
+        == "running"
+    )
     assert acquisition_service.runtimes[electrical_id].paused is False
     assert acquisition_service.runtimes[thermal_id].paused is False
 
@@ -893,9 +901,10 @@ def test_failed_pause_and_finish_do_not_publish_inconsistent_session_state(
     assert acquisition_service.runtimes[thermal_id].session_id == session_id
 
     monkeypatch.setattr(acquisition_service, "detach_session", original_detach)
-    assert client.post(
-        f"/api/v1/sessions/{session_id}/finish", headers=auth_headers
-    ).status_code == 200
+    assert (
+        client.post(f"/api/v1/sessions/{session_id}/finish", headers=auth_headers).status_code
+        == 200
+    )
 
 
 def test_read_cleanup_closes_adapter_even_when_stop_reading_fails(
@@ -915,16 +924,18 @@ def test_read_cleanup_closes_adapter_even_when_stop_reading_fails(
 
     time.sleep(0.3)
     thermal_adapter = created["thermal"][0]
-    thermal_status = client.get(
-        f"/api/v1/devices/{thermal_id}/status", headers=auth_headers
-    ).json()
+    thermal_status = client.get(f"/api/v1/devices/{thermal_id}/status", headers=auth_headers).json()
     assert thermal_adapter.disconnect_calls >= 1
     assert thermal_adapter.connected is False
     assert "stop=RuntimeError" in thermal_status["last_error"]
-    assert client.get(
-        f"/api/v1/devices/{electrical_id}/status", headers=auth_headers
-    ).json()["connected"] is True
+    assert (
+        client.get(f"/api/v1/devices/{electrical_id}/status", headers=auth_headers).json()[
+            "connected"
+        ]
+        is True
+    )
 
-    assert client.post(
-        f"/api/v1/sessions/{session_id}/finish", headers=auth_headers
-    ).status_code == 200
+    assert (
+        client.post(f"/api/v1/sessions/{session_id}/finish", headers=auth_headers).status_code
+        == 200
+    )

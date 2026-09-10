@@ -1,3 +1,4 @@
+import { PeakMarkers } from "../components/PeakMarkers";
 import {
   AlertTriangle,
   Download,
@@ -23,6 +24,8 @@ import type { Device, PageResult, Session } from "../types";
 import {
   CHANNEL_COLORS,
   POWER_COLOR,
+  paddedDomain,
+  formatMeasureAxis,
   formatTimeAxis,
   mergeIndependentSeries,
   type TimeAxisMode,
@@ -267,7 +270,7 @@ export default function PeriodReportsPage() {
                 <label className="field"><span>Canais por gráfico</span><input type="number" min={1} max={16} value={channelGroupSize} onChange={(event) => setChannelGroupSize(Number(event.target.value))} /></label>
                 <label className="field"><span>Tolerância (ms)</span><input type="number" min={0} max={3000} value={tolerance} onChange={(event) => setTolerance(Number(event.target.value))} /></label>
                 <label className="field"><span>Interpolação</span><select value={interpolation} onChange={(event) => setInterpolation(event.target.value)}><option value="none">Nenhuma</option><option value="visual_only">Somente visual</option></select></label>
-                <label className="field check-field"><input type="checkbox" checked={useDeviceTimestamp} onChange={(event) => setUseDeviceTimestamp(event.target.checked)} /><span>Preferir horário informado pelo equipamento</span></label>
+                <label className="field check-field"><input type="checkbox" checked={useDeviceTimestamp} onChange={(event) => setUseDeviceTimestamp(event.target.checked)} /><span>Preferir horário do equipamento nos dados importados</span></label>
               </div></details>
               <div className="report-buttons">
                 <button className="button secondary" disabled={Boolean(busy) || !periodValid} onClick={() => void generatePreview()}><Search /> Gerar prévia</button>
@@ -290,7 +293,7 @@ export default function PeriodReportsPage() {
                   {preview.warnings.map((warning) => <div className="preview-warning" key={warning}><AlertTriangle /> {warning}</div>)}
                   {preview.series.map((series) => {
                     const points = mergedSeries(series, timeAxisMode);
-                    return <div className="preview-chart" key={series.session_id}><div className="preview-chart-title"><h3>{series.session_name}</h3><Badge tone="neutral">{timeAxisMode === "synchronized" ? "Início comum da sessão" : "Horário real"}</Badge></div><ResponsiveContainer width="100%" height={330}><LineChart data={points}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="axisValue" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} minTickGap={45} /><YAxis yAxisId="temperature" unit=" °C" /><YAxis yAxisId="power" orientation="right" unit=" W" /><Tooltip labelFormatter={(value) => timeAxisMode === "synchronized" ? `Tempo decorrido ${formatTimeAxis(Number(value), timeAxisMode)}` : formatDate(new Date(Number(value)).toISOString())} /><Legend /><Line yAxisId="power" type="linear" dataKey="active_power_w" name="Potência ativa" stroke={POWER_COLOR} strokeWidth={2.5} dot={false} connectNulls={false} />{preview.selected_channels.map((channel) => <Line key={channel} yAxisId="temperature" type="linear" dataKey={`channel_${channel}`} name={preview.channel_labels[String(channel)] ?? `T${channel}`} stroke={CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length]} dot={false} connectNulls={false} />)}</LineChart></ResponsiveContainer></div>;
+                    return <div className="preview-chart" key={series.session_id}><div className="preview-chart-title"><h3>{series.session_name}</h3><Badge tone="neutral">{timeAxisMode === "synchronized" ? "Início comum da sessão" : "Horário real"}</Badge></div><ResponsiveContainer width="100%" height={330}><LineChart data={points}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="axisValue" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} minTickGap={45} /><YAxis tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="temperature" unit=" °C" /><YAxis tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="power" orientation="right" unit=" W" /><Tooltip labelFormatter={(value) => timeAxisMode === "synchronized" ? `Tempo decorrido ${formatTimeAxis(Number(value), timeAxisMode)}` : formatDate(new Date(Number(value)).toISOString())} /><Legend /><Line data={points.filter((row) => row.electricalTimestamp)} yAxisId="power" type="linear" dataKey="active_power_w" name="Potência ativa" stroke={POWER_COLOR} strokeWidth={2.5} dot={{ r: 1.5, strokeWidth: 0, fill: POWER_COLOR }} connectNulls={false} />{preview.selected_channels.map((channel) => <Line data={points.filter((row) => row.thermalTimestamp)} key={channel} yAxisId="temperature" type="linear" dataKey={`channel_${channel}`} name={preview.channel_labels[String(channel)] ?? `T${channel}`} stroke={CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length]} dot={{ r: 1.5, strokeWidth: 0, fill: CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length] }} connectNulls={false} />)}<PeakMarkers rows={points} powerKey="active_power_w" channels={preview.selected_channels.map((channel) => `channel_${channel}`)} /></LineChart></ResponsiveContainer></div>;
                   })}
                 </div>
               )}

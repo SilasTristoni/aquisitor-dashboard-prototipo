@@ -7,6 +7,32 @@ export const CHANNEL_COLORS = [
   "#EA580C", "#0D9488", "#9333EA", "#E11D48", "#0284C7", "#CA8A04", "#475569", "#B45309",
 ];
 
+// API dates from older SQLite builds are UTC even when the suffix was omitted.
+export function parseUtcTimestamp(value: string): number {
+  const normalized = value.trim();
+  return Date.parse(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(normalized) ? normalized : `${normalized}Z`);
+}
+
+export function formatMeasureAxis(value: number): string {
+  return Number(value).toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+}
+
+export function paddedDomain([minimum, maximum]: [number, number]): [number, number] {
+  const margin = Math.max(Math.abs(maximum) * 0.08, (maximum - minimum) * 0.08, 0.5);
+  return [minimum >= 0 ? 0 : minimum - margin, maximum + margin];
+}
+
+export function seriesPeak(rows: Array<Record<string, unknown>>, keys: string[]) {
+  let peak: { axisValue: number; value: number; key: string } | undefined;
+  for (const row of rows) for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "number" && Number.isFinite(value) && (!peak || value > peak.value)) {
+      peak = { axisValue: Number(row.axisValue), value, key };
+    }
+  }
+  return peak;
+}
+
 type ChartPoint = Record<string, unknown> & { timestamp: string };
 
 export function mergeIndependentSeries(
@@ -15,15 +41,16 @@ export function mergeIndependentSeries(
   mode: TimeAxisMode,
   sessionStartedAt?: string,
 ): Array<Record<string, unknown>> {
-  const sessionOrigin = sessionStartedAt ? Date.parse(sessionStartedAt) : Number.NaN;
+  const sessionOrigin = sessionStartedAt ? parseUtcTimestamp(sessionStartedAt) : Number.NaN;
   const validSessionOrigin = Number.isFinite(sessionOrigin) ? sessionOrigin : Math.min(
-    ...[...electrical, ...thermal].map((point) => Date.parse(point.timestamp)),
+    ...[...electrical, ...thermal].map((point) => parseUtcTimestamp(point.timestamp)).filter(Number.isFinite),
   );
   const rows = new Map<number, Record<string, unknown>>();
 
   function add(points: ChartPoint[], source: "electrical" | "thermal") {
     for (const point of points) {
-      const originalTime = Date.parse(point.timestamp);
+      const originalTime = parseUtcTimestamp(point.timestamp);
+      if (!Number.isFinite(originalTime)) continue;
       if (Number.isFinite(validSessionOrigin) && originalTime < validSessionOrigin) continue;
       const axisValue = mode === "synchronized"
         ? (originalTime - validSessionOrigin) / 1000

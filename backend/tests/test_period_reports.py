@@ -418,7 +418,7 @@ def test_client_preview_outputs_keep_raw_streams_and_professional_workbook(
     )
     assert spreadsheet.status_code == 200, spreadsheet.text
     workbook = load_workbook(io.BytesIO(spreadsheet.content), data_only=True)
-    assert workbook.sheetnames == [
+    assert [s.title for s in workbook if s.sheet_state == "visible"] == [
         "Resumo Executivo",
         "Curvas do Ensaio",
         "Análise Estabilizada",
@@ -438,10 +438,11 @@ def test_client_preview_outputs_keep_raw_streams_and_professional_workbook(
     assert len(workbook["Resumo Executivo"]._charts) == 1
     curves = workbook["Curvas do Ensaio"]
     assert curves["B1"].value == "Tempo decorrido"
-    assert curves["B2"].value == timedelta(milliseconds=350)
+    assert curves["B2"].value == timedelta(0)
     assert curves["C2"].value != curves["D2"].value
     assert curves["E2"].value is not None
-    assert curves["F2"].value is not None
+    assert curves["F2"].value is None
+    assert curves["F3"].value is not None
 
     thermal_csv = client.post(
         "/api/v1/reports/period/csv?dataset=thermal", headers=auth_headers, json=payload

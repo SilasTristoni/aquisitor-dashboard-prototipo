@@ -17,7 +17,7 @@ vi.mock("recharts", () => {
     CartesianGrid: Primitive,
     ComposedChart: Chart,
     Legend: Primitive,
-    Line: Primitive,
+    Line: Primitive, ReferenceDot: Primitive,
     ResponsiveContainer: Container,
     Tooltip: Primitive,
     XAxis: Primitive,

@@ -1,5 +1,5 @@
 import type { Reading } from "../types";
-import { mergeIndependentSeries, type TimeAxisMode } from "./chartPresentation";
+import { mergeIndependentSeries, parseUtcTimestamp, type TimeAxisMode } from "./chartPresentation";
 
 export type NumericStats = { min: number | null; max: number | null; avg: number | null };
 
@@ -29,8 +29,11 @@ export function buildCombinedView(
   timeAxisMode: TimeAxisMode = "synchronized",
   sessionStartedAt?: string,
 ) {
+  const origin = sessionStartedAt ? parseUtcTimestamp(sessionStartedAt) : -Infinity;
+  readings = readings.map((reading) => ({ ...reading, timestamp: reading.received_timestamp ?? reading.timestamp }))
+    .filter((reading) => parseUtcTimestamp(reading.timestamp) >= origin);
   const byTimestamp = (left: Reading, right: Reading) =>
-    Date.parse(left.timestamp) - Date.parse(right.timestamp);
+    parseUtcTimestamp(left.timestamp) - parseUtcTimestamp(right.timestamp);
   const electricalReadings = readings.filter(isElectricalReading).sort(byTimestamp);
   const temperatureReadings = readings.filter(isTemperatureReading).sort(byTimestamp);
   const electricalPoints = electricalReadings.map((reading) => ({

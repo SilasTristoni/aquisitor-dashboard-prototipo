@@ -14,6 +14,7 @@ vi.mock("recharts", () => {
     CartesianGrid: Primitive,
     Legend: Primitive,
     Line: Primitive,
+    ReferenceDot: Primitive,
     LineChart: Chart,
     ResponsiveContainer: Container,
     Tooltip: Primitive,
@@ -116,22 +117,7 @@ function installApi(failedRole: FailedRole) {
     if (path === "/devices") return devices;
     if (path === "/sessions" && options?.method === "POST") {
       attempted = true;
-      const healthyId = failedRole === "thermal" ? 2 : 1;
-      return {
-        id: 55,
-        device_id: healthyId,
-        status: "running",
-        started_at: new Date().toISOString(),
-        devices: [{
-          role: failedRole === "thermal" ? "electrical" : "temperature",
-          device: devices.find((device) => device.id === healthyId),
-        }],
-        connection: {
-          electrical: source(2, failedRole !== "electrical", failedRole === "electrical" ? error : null),
-          thermal: source(1, failedRole !== "thermal", failedRole === "thermal" ? error : null),
-          overall: "partial",
-        },
-      };
+      throw new Error("Não foi possível sincronizar leituras frescas das duas fontes.");
     }
     if (path.startsWith("/sessions")) {
       return { items: [], page: 1, page_size: 10, total: 0, pages: 0 };
@@ -198,29 +184,15 @@ describe("conexão parcial da dashboard", () => {
     expect(within(healthyCard!).getByText(/^Conectado ·/)).toBeInTheDocument();
   });
 
-  test.each([
-    ["thermal", "17.7 W"],
-    ["electrical", "21.7 °C"],
-  ] as const)("inicia sessão com o ID e a leitura da fonte sobrevivente quando %s falha", async (failedRole, visibleValue) => {
-    const error = installApi(failedRole);
+  test.each(["thermal", "electrical"] as const)("não confirma sessão combinada quando %s falha", async (failedRole) => {
+    installApi(failedRole);
     liveState.readings = physicalReadings();
     render(<DashboardPage />);
-
     expect(await screen.findAllByText("AT4532 LAB")).not.toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: /Iniciar sessão/i }));
-
-    expect(await screen.findByText("Sessão iniciada com a fonte disponível; a outra apresentou falha.")).toBeInTheDocument();
-    expect(await screen.findByText(error)).toBeInTheDocument();
-    expect(screen.getByText("Em execução")).toBeInTheDocument();
-    expect(screen.getAllByText(visibleValue).length).toBeGreaterThan(0);
-    const startCall = apiMock.mock.calls.find(
-      ([path, options]) => path === "/sessions" && options?.method === "POST",
-    );
-    expect(startCall).toBeTruthy();
-    expect(JSON.parse(String(startCall?.[1]?.body))).toMatchObject({
-      electrical_device_id: 2,
-      temperature_device_id: 1,
-    });
+    expect(await screen.findByText("Não foi possível sincronizar leituras frescas das duas fontes.")).toBeInTheDocument();
+    expect(screen.queryByText("Em execução")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Iniciar sessão/i })).toBeEnabled();
   });
 
   test("não exibe falha quando somente uma fonte foi solicitada", async () => {

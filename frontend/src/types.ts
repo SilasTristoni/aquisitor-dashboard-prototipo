@@ -70,6 +70,9 @@ export type RuntimeStatus = {
   last_message_at?: string;
   messages_per_second?: number;
   sample_count?: number;
+  session_sample_count?: number;
+  persisted_sample_count?: number;
+  expected_interval_ms?: number;
   valid_channels?: number;
   last_error?: string | null;
   identity_status?: string;
