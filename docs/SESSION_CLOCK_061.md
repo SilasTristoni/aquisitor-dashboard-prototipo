@@ -97,3 +97,41 @@ ponta a ponta** permanece pendente no conjunto GPM + AT da cliente.
 A saída nova é `engineering/ThermoPower-0.6.1-client-preview.zip`; versões anteriores
 não são promovidas, substituídas nem removidas por essa entrega. O ZIP inclui manifesto
 SHA-256, identificação do commit de origem e resultados do smoke.
+
+## Resultado da entrega — 10/09/2026
+
+Build concluída e ZIP final promovido somente depois das verificações:
+
+| Verificação | Resultado |
+| --- | --- |
+| Regressões de protocolo com fixtures físicas | 57 passaram; não substituem novo ensaio físico |
+| Backend completo | 146 passaram; 14 avisos de depreciação de dependências |
+| Frontend | 30 testes em 10 arquivos passaram |
+| Ruff, ESLint e TypeScript | Passaram |
+| Alembic upgrade/check e pip check | Passaram; nenhuma migration nova necessária |
+| Build Vite e executável PyInstaller | Passaram |
+| Configuração Compose | Passou com o binário oficial standalone; execução de containers não testada |
+| Smoke do executável empacotado | Passou: saúde, autenticação, SPA, versão e rotas de relatórios |
+| Revisão Chrome em America/Sao_Paulo | 120 leituras por fonte, nove curvas, nenhum erro de navegador |
+| Documentos e revisão visual | PDF, PNG/JPEG e XLSX conferidos; 120 leituras reais por fonte na fixture |
+| Integridade do pacote | ZIP extraído e manifesto SHA-256 conferido pelo empacotador |
+
+Commits de implementação: `9d2276d` e `c1dce0c`.
+Commit de origem registrado no pacote:
+`c1dce0cbfb9698bbd7308941b329b43db211d5f0`.
+A atualização deste registro de entrega é posterior ao empacotamento e não altera
+o código executável validado.
+
+- Versão: **0.6.1-client-preview**.
+- ZIP: `engineering/ThermoPower-0.6.1-client-preview.zip`.
+- Tamanho: **56.166.823 bytes**.
+- SHA-256: `A445E5727ACD0783F4BD906EB116E09DF324780264C34403D70920998E260D65`.
+- Resultados embarcados: `TEST-RESULTS.txt`; integridade: `SHA256SUMS.txt`.
+- Evidência visual local: `build/session-clock-review/dashboard.png` e documentos
+  sintéticos no mesmo diretório.
+
+O buffer ao vivo existente permanece limitado a 3.600 mensagens; esta entrega não
+adiciona recarga de todo o histórico ao reabrir o dashboard. Os relatórios consultam
+as leituras persistidas. A causa histórica exata das 11 temperaturas continua sem
+comprovação na ausência do banco e logs da sessão 8. A homologação física da nova
+build, incluindo contagens próximas de 120/120 em dois minutos, permanece pendente.
