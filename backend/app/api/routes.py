@@ -1063,7 +1063,7 @@ async def _start_session(payload: SessionCreate, db: Db, user: User) -> SessionS
                 common_ids,
                 payload.sync_tolerance_ms,
             )
-        except (ValueError, ConnectionError, TimeoutError) as exc:
+        except (ValueError, ConnectionError, TimeoutError, SerialTransportError) as exc:
             raise HTTPException(
                 status_code=409,
                 detail="Não foi possível sincronizar leituras frescas das duas fontes. " + str(exc),

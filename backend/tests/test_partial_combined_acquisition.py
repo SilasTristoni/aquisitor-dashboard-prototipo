@@ -238,7 +238,7 @@ def test_reconnection_restores_session_binding_and_pause_state(
         )
     assert (
         client.post(f"/api/v1/devices/{thermal_id}/disconnect", headers=auth_headers).status_code
-        == 200
+        == 204
     )
     with SessionLocal() as db:
         before = db.scalar(
