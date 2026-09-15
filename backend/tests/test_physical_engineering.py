@@ -117,7 +117,8 @@ async def test_raw_serial_diagnostic_reports_busy_port():
     with pytest.raises(SerialTransportError) as caught:
         await service.open(_configuration())
     assert caught.value.code == "port_busy"
-    assert "software do fabricante" in str(caught.value)
+    assert "processo externo ao ThermoPower" in str(caught.value)
+    assert "software do fabricante" not in str(caught.value)
 
 
 def test_at4532_normalizer_preserves_32_channels_and_marks_undocumented_sentinel_invalid():

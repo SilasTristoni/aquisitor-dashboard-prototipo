@@ -16,7 +16,7 @@ idade. Confirma somente um par dentro da tolerância com ambas as tarefas em exe
 Uma tarefa encerrada não inicia sessão com suas últimas leituras. Um timeout limpa
 apenas a preparação da sessão e preserva a aquisição da outra fonte.
 
-São registrados a cada segundo, ao sucesso e ao timeout:
+São registrados a cada segundo, em transições de estado, ao sucesso e ao timeout:
 
 - Por dispositivo: protocolo, papel da fonte, `connected`, `task_running`,
   `last_error`, `latest_received_timestamp` e `fresh_samples`.

@@ -105,6 +105,7 @@ class AcquisitionService:
         for device_id in device_ids:
             self.runtimes[device_id].pending_start = []
         next_log = 0.0
+        previous_state = None
         try:
             async with asyncio.timeout(timeout_seconds):
                 while True:
@@ -114,7 +115,12 @@ class AcquisitionService:
                     readers_running = True
                     for device_id in device_ids:
                         runtime = self.runtimes.get(device_id)
-                        task_running = bool(runtime and runtime.task and not runtime.task.done())
+                        task_running = bool(
+                            runtime
+                            and runtime.task
+                            and not runtime.task.done()
+                            and not runtime.task.cancelling()
+                        )
                         readers_running = readers_running and task_running
                         status_error = None
                         try:
@@ -174,6 +180,14 @@ class AcquisitionService:
                     )
                     times = [utc(r.received_timestamp) for r in best] if best else []
                     delta_ms = (max(times) - min(times)).total_seconds() * 1000 if times else None
+                    # Status calls may yield: recheck task liveness before accepting.
+                    readers_running = readers_running and all(
+                        (runtime := self.runtimes.get(device_id))
+                        and runtime.task
+                        and not runtime.task.done()
+                        and not runtime.task.cancelling()
+                        for device_id in device_ids
+                    )
                     matched = readers_running and delta_ms is not None and delta_ms <= tolerance_ms
                     self.common_start_diagnostic = {
                         "requested_at": requested_at.isoformat(),
@@ -183,9 +197,20 @@ class AcquisitionService:
                         "tolerance_ms": tolerance_ms,
                         "state": "matched" if matched else "waiting",
                     }
-                    if matched or monotonic() >= next_log:
+                    observed_state = tuple(
+                        (
+                            key,
+                            source["connected"],
+                            source["task_running"],
+                            source["last_error"],
+                            source["status_error"],
+                        )
+                        for key, source in sources.items()
+                    )
+                    if matched or observed_state != previous_state or monotonic() >= next_log:
                         logger.info("common start diagnostic %s", self.common_start_diagnostic)
                         next_log = monotonic() + 1
+                        previous_state = observed_state
                     if matched:
                         return min(times)
                     await asyncio.sleep(0.01)
