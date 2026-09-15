@@ -39,6 +39,12 @@ class ProtocolProbeService:
             ) from failures[0]
 
     async def run(self, device: Device, mode: ProbeMode) -> dict[str, Any]:
+        from app.services.acquisition import acquisition_service
+
+        async with acquisition_service.diagnostic_port(device.port or ""):
+            return await self._run(device, mode)
+
+    async def _run(self, device: Device, mode: ProbeMode) -> dict[str, Any]:
         await self._retry_pending_closes(device.id)
         if device.protocol == "at4532_serial":
             policy = at4532_identity_fallback_policy(device)
@@ -109,6 +115,11 @@ class ProtocolProbeService:
         except Exception as exc:
             logger.exception("protocol probe failed device_id=%s mode=%s", device.id, mode)
             error = {"code": getattr(exc, "code", type(exc).__name__), "message": str(exc)}
+            if error["code"] == "port_busy":
+                error["message"] = (
+                    "Porta ocupada por processo externo ao ThermoPower. "
+                    "Feche o programa que está usando a porta e tente novamente."
+                )
             error.update(getattr(exc, "details", {}))
             if adapter.transactions:
                 parser_error = adapter.transactions[-1].get("parser_error")

@@ -1,8 +1,10 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from itertools import product
 from time import monotonic
 
 from sqlalchemy import func, or_, select
@@ -83,6 +85,7 @@ class AcquisitionService:
         self._port_locks: dict[str, asyncio.Lock] = {}
         self.started_at = datetime.now(UTC)
         self.session_start_lock = asyncio.Lock()
+        self.common_start_diagnostic: dict = {}
 
     async def prepare_common_start(
         self,
@@ -95,44 +98,110 @@ class AcquisitionService:
             runtime = self.runtimes.get(device_id)
             if runtime and runtime.session_id:
                 raise ValueError("Uma fonte já pertence a uma sessão ativa.")
-            await self.connect(device_id)
+            # Do not reconnect a running reader because of a transient status flag.
+            if not runtime or not runtime.task or runtime.task.done():
+                await self.connect(device_id)
         requested_at = datetime.now(UTC)
         for device_id in device_ids:
             self.runtimes[device_id].pending_start = []
+        next_log = 0.0
         try:
             async with asyncio.timeout(timeout_seconds):
                 while True:
-                    candidates = []
+                    now = datetime.now(UTC)
+                    queues = []
+                    sources = {}
+                    readers_running = True
                     for device_id in device_ids:
                         runtime = self.runtimes.get(device_id)
-                        if (
-                            runtime is None
-                            or runtime.last_error
-                            or (runtime.task and runtime.task.done())
-                            or not (await runtime.adapter.get_status()).connected
-                        ):
-                            raise ConnectionError("Aquisição interrompida ao sincronizar fontes.")
-                        fresh = [
-                            r
-                            for r in runtime.pending_start or []
-                            if utc(r.received_timestamp) >= requested_at
-                            and (
-                                r.power_w is not None
-                                if runtime.source_role == "electrical"
-                                else any(v is not None for v in r.temperatures_c)
+                        task_running = bool(runtime and runtime.task and not runtime.task.done())
+                        readers_running = readers_running and task_running
+                        status_error = None
+                        try:
+                            connected = bool(
+                                runtime and (await runtime.adapter.get_status()).connected
                             )
-                        ]
-                        if fresh:
-                            candidates.append(fresh[-1])
-                    if len(candidates) == len(device_ids):
-                        times = [utc(r.received_timestamp) for r in candidates]
-                        if (max(times) - min(times)).total_seconds() * 1000 <= tolerance_ms and (
-                            datetime.now(UTC) - min(times)
-                        ).total_seconds() <= 3:
-                            return min(times)
+                        except Exception as exc:
+                            connected = False
+                            status_error = f"{type(exc).__name__}: {exc}"
+                        fresh = (
+                            [
+                                r
+                                for r in (runtime.pending_start or [])
+                                if requested_at <= utc(r.received_timestamp)
+                                and 0 <= (now - utc(r.received_timestamp)).total_seconds() <= 3
+                                and (
+                                    r.power_w is not None
+                                    if runtime.source_role == "electrical"
+                                    else any(v is not None for v in r.temperatures_c)
+                                )
+                            ]
+                            if runtime
+                            else []
+                        )
+                        queues.append(fresh)
+                        sources[str(device_id)] = {
+                            "protocol": runtime.protocol if runtime else None,
+                            "source_role": runtime.source_role if runtime else None,
+                            "connected": connected,
+                            "task_running": task_running,
+                            "last_error": runtime.last_error if runtime else "runtime_missing",
+                            "status_error": status_error,
+                            "latest_received_timestamp": (
+                                utc(runtime.latest.received_timestamp).isoformat()
+                                if runtime and runtime.latest
+                                else None
+                            ),
+                            "fresh_samples": len(fresh),
+                            "interruption_flags": [
+                                name
+                                for name, active in {
+                                    "runtime_missing": runtime is None,
+                                    "last_error": bool(runtime and runtime.last_error),
+                                    "task_not_running": not task_running,
+                                    "not_connected": not connected,
+                                }.items()
+                                if active
+                            ],
+                        }
+                    best = min(
+                        product(*queues),
+                        key=lambda pair: (
+                            max(utc(r.received_timestamp) for r in pair)
+                            - min(utc(r.received_timestamp) for r in pair)
+                        ).total_seconds(),
+                        default=None,
+                    )
+                    times = [utc(r.received_timestamp) for r in best] if best else []
+                    delta_ms = (max(times) - min(times)).total_seconds() * 1000 if times else None
+                    matched = readers_running and delta_ms is not None and delta_ms <= tolerance_ms
+                    self.common_start_diagnostic = {
+                        "requested_at": requested_at.isoformat(),
+                        "timestamp": now.isoformat(),
+                        "sources": sources,
+                        "best_delta_ms": delta_ms,
+                        "tolerance_ms": tolerance_ms,
+                        "state": "matched" if matched else "waiting",
+                    }
+                    if matched or monotonic() >= next_log:
+                        logger.info("common start diagnostic %s", self.common_start_diagnostic)
+                        next_log = monotonic() + 1
+                    if matched:
+                        return min(times)
                     await asyncio.sleep(0.01)
-        except BaseException:
+        except BaseException as exc:
+            self.common_start_diagnostic = {
+                **self.common_start_diagnostic,
+                "state": "timeout" if isinstance(exc, TimeoutError) else "cancelled",
+            }
+            logger.info("common start diagnostic %s", self.common_start_diagnostic)
             self.clear_pending_start(device_ids)
+            if isinstance(exc, TimeoutError):
+                raise TimeoutError(
+                    "Tempo de espera esgotado sem par novo de fontes em aquisição "
+                    f"dentro da tolerância de {tolerance_ms} ms. "
+                    "Consulte common_start_diagnostic no diagnóstico da aquisição."
+                ) from exc
             raise
 
     def clear_pending_start(self, device_ids: list[int]) -> None:
@@ -192,6 +261,30 @@ class AcquisitionService:
 
     def _port_lock(self, port: str) -> asyncio.Lock:
         return self._port_locks.setdefault(port.casefold(), asyncio.Lock())
+
+    @asynccontextmanager
+    async def diagnostic_port(self, port: str):
+        """Serialize against connection and refuse to touch a runtime-owned port."""
+        async with self._port_lock(port):
+            self.assert_diagnostic_port_available(port)
+            yield
+
+    def assert_diagnostic_port_available(self, port: str) -> None:
+        owner = next(
+            (
+                device_id
+                for device_id, runtime in self.runtimes.items()
+                if str(getattr(runtime.adapter, "port", "")).casefold() == port.casefold()
+            ),
+            None,
+        )
+        if owner is not None:
+            logger.info("diagnostic blocked port=%s runtime_device_id=%s", port, owner)
+            raise SerialTransportError(
+                "port_owned_by_thermopower",
+                "O equipamento está atualmente em aquisição pelo ThermoPower. "
+                "Desconecte-o antes de executar o diagnóstico de comunicação.",
+            )
 
     @staticmethod
     def _device_port_key(device_id: int) -> str | None:
@@ -316,7 +409,14 @@ class AcquisitionService:
                     )
             if device.protocol == "gpm8213_serial" and device.serial_number:
                 # The USB serial is stable; Windows may assign a different COM port.
-                usb_discovery_service.discover(db)
+                usb_discovery_service.discover(
+                    db,
+                    {
+                        port
+                        for runtime in self.runtimes.values()
+                        if (port := getattr(runtime.adapter, "port", None))
+                    },
+                )
                 db.refresh(device)
             adapter = self._adapter_for(device)
             logger.info(
@@ -887,6 +987,7 @@ class AcquisitionService:
             if connected_sources
             else "none",
             "devices": statuses,
+            "common_start_diagnostic": self.common_start_diagnostic,
             "sample_counts": {
                 str(status["device_id"]): status.get("sample_count", 0) for status in statuses
             },

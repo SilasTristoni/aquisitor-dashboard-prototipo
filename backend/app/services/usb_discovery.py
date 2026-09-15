@@ -253,7 +253,8 @@ class UsbDeviceDiscoveryService:
             ):
                 result = (
                     "port_busy",
-                    "Porta ocupada pelo software do fabricante. Feche-o antes de continuar.",
+                    "Porta ocupada por processo externo ao ThermoPower. "
+                    "Feche o programa antes de continuar.",
                 )
             else:
                 result = (

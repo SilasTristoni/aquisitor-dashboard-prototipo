@@ -59,6 +59,26 @@ class RealSerialDiagnosticService:
         parameters_source: str = "user_confirmed",
         physical_validation: str = "parameters_confirmed",
     ) -> dict[str, Any]:
+        from app.services.acquisition import acquisition_service
+
+        async with acquisition_service.diagnostic_port(configuration.port):
+            try:
+                return await self._open(configuration, parameters_source, physical_validation)
+            except SerialTransportError as exc:
+                if exc.code == "port_busy":
+                    raise SerialTransportError(
+                        "port_busy",
+                        "Porta ocupada por processo externo ao ThermoPower. "
+                        "Feche o programa que está usando a porta e tente novamente.",
+                    ) from exc
+                raise
+
+    async def _open(
+        self,
+        configuration: SerialTransportConfiguration,
+        parameters_source: str,
+        physical_validation: str,
+    ) -> dict[str, Any]:
         async with self._lock:
             if not await self._retry_pending_closes(configuration.port):
                 raise SerialTransportError(

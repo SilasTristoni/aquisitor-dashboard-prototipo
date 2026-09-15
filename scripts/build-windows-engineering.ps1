@@ -11,8 +11,8 @@ $EngineeringZip = "$EngineeringRoot.zip"
 $StagingRoot = Join-Path $RepositoryRoot "dist\ThermoPowerMonitor"
 $ValidatedZip = Join-Path $RepositoryRoot "dist\ThermoPower-$Version.validated.zip"
 
-if ($Version -ne "0.6.1-client-preview") {
-    throw "Este script aceita somente a versao 0.6.1-client-preview."
+if ($Version -ne "0.6.2-client-preview") {
+    throw "Este script aceita somente a versao 0.6.2-client-preview."
 }
 if (-not (Test-Path -LiteralPath $Python)) { throw "Ambiente .venv ausente." }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw "npm nao encontrado." }
@@ -147,7 +147,8 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "CLIENT-PREVIEW.txt") -Encoding
     "Fallback: somente associacao manual exata + 19200/8-N-1 + medicao estrutural valida.",
     "Dashboard/sessao: par fresco obrigatorio para confirmar inicio combinado.",
     "Nova homologacao fisica de ponta a ponta: pendente no GPM + AT da cliente.",
-    "Use o Teste de Protocolo Documentado somente apos fechar o software do fabricante."
+    "Diagnostico bloqueado quando a COM pertence ao runtime do ThermoPower.",
+    "Desconecte o equipamento antes do diagnostico; feche outros programas que usem a COM."
 )
 Set-Content -LiteralPath (Join-Path $StagingRoot "PROTOCOL-SOURCES.txt") -Encoding utf8 -Value @(
     "AT4532 User's Guide Rev.A6:",
@@ -185,6 +186,8 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "TEST-RESULTS.txt") -Encoding u
     "AT CH25-CH32 mapping and CH29 heating series: passed",
     "Combined 100/120 samples per source through database/API/WebSocket/reports: passed",
     "Fresh common start and explicit single-source acquisition: passed",
+    "Running 1 Hz sources: best fresh pair and transient status regression: passed",
+    "Runtime-owned serial diagnostics blocked without interrupting acquisition: passed",
     "Runtime diagnostic log export: passed",
     "Alembic upgrade/check: passed",
     "pip check: passed",

@@ -394,7 +394,11 @@ def _active_device_ports(db: Session) -> set[str]:
     device_ids = list(acquisition_service.runtimes)
     if not device_ids:
         return set()
-    return {
+    runtime_ports = {
+        port for runtime in acquisition_service.runtimes.values()
+        if (port := getattr(runtime.adapter, "port", None))
+    }
+    return runtime_ports | {
         port for port in db.scalars(select(Device.port).where(Device.id.in_(device_ids))) if port
     }
 
@@ -419,6 +423,7 @@ def associate_discovered_hardware(
 def _serial_diagnostic_http_error(exc: SerialTransportError) -> HTTPException:
     status = {
         "port_busy": 409,
+        "port_owned_by_thermopower": 409,
         "diagnostic_already_open": 409,
         "port_not_found": 404,
         "diagnostic_session_not_found": 404,
@@ -633,6 +638,8 @@ async def run_documented_protocol_probe(
             mark_at4532_verified_by_measurement(device, report["timestamp"])
             db.commit()
         return report
+    except SerialTransportError as exc:
+        raise _serial_diagnostic_http_error(exc) from exc
     except (ValueError, RuntimeError, ConnectionError, OSError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -681,6 +688,10 @@ async def test_device_connection(
     device = db.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+    try:
+        acquisition_service.assert_diagnostic_port_available(device.port or "")
+    except SerialTransportError as exc:
+        raise _serial_diagnostic_http_error(exc) from exc
     stages = [
         {"key": "usb", "label": "USB detectado", "status": "passed" if device.port else "failed"},
         {
