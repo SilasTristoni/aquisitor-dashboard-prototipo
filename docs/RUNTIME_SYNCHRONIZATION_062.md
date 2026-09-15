@@ -66,3 +66,31 @@ O transporte serial e sua classificação interna original não foram alterados.
 
 SCPI, parsers, SerialTransport e cadência física não foram modificados. A validação
 física desta correção no conjunto GPM + AT4532 permanece pendente.
+
+## Entrega validada em 15/09/2026
+
+- Backend completo: **154 testes passaram**, incluindo os oito novos; 14 avisos de
+  depreciação de dependências.
+- Gate de regressões com fixtures físicas: **57 passaram** (subconjunto do backend).
+- Frontend: **30 testes passaram**, em dez arquivos; ESLint, TypeScript e Vite passaram.
+- Ruff, Alembic upgrade/check e pip check passaram; nenhuma migration nova necessária.
+- Configuração Compose validada pelo binário oficial standalone disponível neste
+  ambiente; não foi realizada execução de containers.
+- Executável PyInstaller e smoke isolado passaram: saúde, login, SPA, versão e rotas.
+- ZIP extraído e todos os arquivos conferidos contra o manifesto SHA-256 pelo
+  empacotador. A integridade do ZIP final foi confirmada após sua promoção.
+- O checksum do ZIP anterior da 0.6.1 permanece idêntico ao registrado na entrega anterior.
+
+Commit de origem da build: `4fb50d4fdc7c96de940d73dd2f736ba570691752`.
+Implementação principal: `55d3a04`; ajuste de cancelamento e transições: `4fb50d4`.
+Este registro final de resultados é posterior ao empacotamento, sem alteração do executável.
+
+Pacote: `engineering/ThermoPower-0.6.2-client-preview.zip`.
+Tamanho: **56.173.059 bytes**.
+SHA-256: `C8B5EEC52A711C73E5810C4FE67F9C4EE8AD40DB3CF5E4D5F2453A1792055508`.
+O pacote contém `TEST-RESULTS.txt` e `SHA256SUMS.txt`.
+
+Para analisar uma nova tentativa física, consultar o campo `common_start_diagnostic`
+em `GET /api/v1/acquisition/combined-status`, ou as entradas `common start diagnostic`
+do log da aplicação. O log local disponível durante esta correção estava vazio;
+não foi possível determinar qual flag específico ocorreu no episódio relatado.
