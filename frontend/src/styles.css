@@ -560,3 +560,99 @@ tbody tr:hover { background: color-mix(in srgb, var(--primary) 2.5%, var(--surfa
 .metrics-grid.seven { grid-template-columns: repeat(7, minmax(0, 1fr)); }
 @media (max-width: 1600px) { .metrics-grid.seven { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 @media (max-width: 900px) { .metrics-grid.seven { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* Operator layout: content can shrink and wrap without changing chart scales. */
+.page, .page-header > div, .page-actions, .metric-card, .detail-strip > div,
+.analysis-window-controls > *, .chart-actions, .source-status, .form-grid > *,
+.report-layout > *, .period-layout > *, .device-card, .instrument-list > div { min-width: 0; }
+.page-header { gap: 20px; flex-wrap: wrap; }
+.page-actions { flex-wrap: wrap; max-width: 100%; }
+.page-header h1 { font-size: clamp(25px, 2.2vw, 34px); overflow-wrap: anywhere; }
+.compact-field { max-width: 230px; }
+.compact-field select { width: 100%; min-width: 150px; }
+.metric-card > strong { white-space: normal; overflow-wrap: anywhere; font-size: clamp(21px, 1.8vw, 27px); line-height: 1.25; }
+.metric-card > span, .metric-label { font-size: 12px; line-height: 1.4; }
+.metric-card small { display: block; font-size: 11px; line-height: 1.5; }
+.operator-kpis .metric-card:last-child strong { font-size: 20px; }
+.button, .field input, .field select, .field textarea, .compact-field select { font-size: 13px; }
+.field > span, .compact-field > span, .subtitle, .hint { font-size: 12px; line-height: 1.6; }
+.button:disabled, button:disabled { opacity: .55; cursor: not-allowed; }
+:is(button, a, input, select, textarea, summary):focus-visible { outline: 3px solid #638ef6; outline-offset: 3px; }
+.nav-group { padding-bottom: 9px; }
+.nav-group-label, .nav-group > summary { display: block; padding: 10px 12px 7px; color: #b9c6e0; font-size: 11px; font-weight: 700; letter-spacing: .06em; }
+.nav-group > summary { cursor: pointer; list-style: disclosure-closed; display: list-item; margin-left: 12px; padding-left: 0; }
+.nav-group[open] > summary { list-style: disclosure-open; }
+.sidebar nav a { font-size: 13px; min-height: 39px; }
+.sidebar nav { flex: 1; min-height: 0; display: block; }
+.sidebar-status { margin-top: 12px; }
+.source-status { align-items: flex-start; flex-wrap: wrap; padding: 16px; }
+.source-status > div > strong { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.source-status small { font-size: 12px; line-height: 1.5; }
+.source-status > div > span { font-size: 11px; }
+.source-status .button { margin-left: auto; }
+.source-reading-details summary { font-size: 11px; cursor: pointer; color: var(--muted); }
+.operator-progress { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: -4px 0 18px; color: var(--muted); font-size: 12px; }
+.operator-progress span { padding-bottom: 8px; border-bottom: 2px solid transparent; }
+.operator-progress .current { color: var(--primary); border-color: var(--primary); font-weight: 750; }
+.operator-progress .complete { color: #148358; }
+.secondary-metrics, .quality-details { margin: 0 0 16px; padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.secondary-metrics > summary, .quality-details > summary { cursor: pointer; font-size: 13px; font-weight: 650; }
+.secondary-metrics[open] > summary, .quality-details[open] > summary { margin-bottom: 15px; }
+.quality-details p { font-size: 12px; line-height: 1.6; }
+.quality-source { display: grid; gap: 6px; padding: 10px 0; font-size: 12px; border-bottom: 1px solid var(--border); }
+.period-presets { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+.period-presets label { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 13px; cursor: pointer; }
+.period-presets label:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); }
+.period-presets input[type="radio"] { width: 17px; height: 17px; min-height: 0; padding: 0; margin: 0; flex: 0 0 17px; accent-color: var(--primary); }
+.analysis-window-controls { grid-template-columns: minmax(0,1fr) auto minmax(0,1fr) auto; }
+.stability-note, .panel-head { flex-wrap: wrap; gap: 12px; }
+.detail-strip { grid-template-columns: minmax(100px,.6fr) minmax(0,2fr) minmax(100px,.8fr) minmax(100px,.8fr); }
+.detail-strip strong { font-size: 12px; overflow-wrap: anywhere; }
+.detail-strip span { font-size: 10px; }
+.export-menu { position: relative; }
+.export-menu > summary { list-style: none; cursor: pointer; }
+.export-menu > summary::-webkit-details-marker { display: none; }
+.export-options { position: absolute; z-index: 35; right: 0; top: calc(100% + 8px); min-width: 215px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); padding: 6px; }
+.export-options button { display: block; width: 100%; text-align: left; border: 0; border-radius: 6px; background: transparent; color: var(--text); padding: 11px; font-size: 13px; }
+.export-options button:hover { background: var(--primary-soft); }
+.series-controls { display: flex; gap: 8px 16px; align-items: center; justify-content: center; flex-wrap: wrap; margin-bottom: 12px; }
+.series-legend { display: flex; justify-content: center; gap: 4px 10px; flex-wrap: wrap; }
+.series-legend button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text); padding: 6px; font-size: 12px; }
+.series-legend button:hover, .series-legend button:focus-visible { border-color: var(--border-strong); }
+.series-legend button[aria-pressed="false"] { opacity: .5; text-decoration: line-through; }
+.series-legend i, .measurement-tooltip i { display: inline-block; width: 16px; height: 3px; border-radius: 2px; }
+.measurement-tooltip { max-width: 270px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); font-size: 12px; }
+.measurement-tooltip > div { display: flex; align-items: center; gap: 7px; margin-top: 6px; }
+.measurement-tooltip small { display: block; margin-top: 8px; color: var(--muted); }
+.chart-container { min-width: 0; }
+.info-tip { flex-shrink: 0; }
+.info-tip-content { font-size: 12px; width: 230px; max-width: min(230px, 70vw); }
+.table-scroll { max-width: 100%; }
+.technical-metrics { display: grid; grid-template-columns: repeat(auto-fit,minmax(190px,1fr)); gap: 12px; }
+.technical-metrics > div { padding: 12px; background: var(--surface-soft); border-radius: 8px; display: grid; gap: 6px; font-size: 12px; overflow-wrap: anywhere; }
+.button.small, .chart-actions button, .axis-mode-toggle button, .segmented button { font-size: 11px; min-height: 32px; }
+.notice strong { font-size: 13px; }
+.notice span, .device-card > p, .empty p, .spinner-wrap, .back-link { font-size: 12px; }
+.recharts-text { font-size: 11px; }
+.heat-cell span, .heat-cell small, .device-specs strong, .channel-meta, .channel-card > small { font-size: 10px; }
+.heatmap { grid-template-columns: repeat(auto-fit, minmax(95px, 1fr)); }
+table, .insight-list span, .health-list span, .check-grid label, .session-select-grid strong { font-size: 12px; }
+th, td small, .pagination, .pagination button, .timeline time, .timeline small, .session-select-grid span { font-size: 11px; }
+.insight-list strong, .timeline strong { font-size: 13px; }
+.period-layout { grid-template-columns: minmax(0,.9fr) minmax(0,1.1fr); }
+@media (max-width: 1600px) { .period-layout { grid-template-columns: minmax(0,1fr); } }
+@media (max-width: 1600px) {
+  .metrics-grid.six { grid-template-columns: repeat(3,minmax(0,1fr)); }
+  .page { padding: 24px 22px 40px; }
+  .page-header { align-items: flex-start; }
+  .combined-source-status { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .session-source-status { grid-column: 1 / -1; }
+  .session-source-status > div { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 18px; }
+}
+@media (max-width: 760px) {
+  .metrics-grid.six, .metrics-grid.three { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .combined-source-status, .analysis-window-controls, .detail-strip { grid-template-columns: minmax(0,1fr); }
+  .compact-field { max-width: none; }
+  .analysis-arrow { display: none; }
+  .chart-actions { flex-wrap: wrap; }
+}

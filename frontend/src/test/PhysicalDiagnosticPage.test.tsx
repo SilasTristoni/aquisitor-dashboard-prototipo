@@ -182,7 +182,7 @@ test("mantém parâmetros desconhecidos e exige consentimento explícito para 8-
   localStorage.setItem("thermopower.token", "test-token");
   render(<MemoryRouter><AuthProvider><DevicesDiscoveryPage /></AuthProvider></MemoryRouter>);
 
-  await screen.findByText("Diagnóstico serial avançado");
+  await user.click(await screen.findByText("Diagnóstico serial avançado"));
   const dataBits = screen.getByLabelText("Data bits");
   const parity = screen.getByLabelText("Parity");
   const stopBits = screen.getByLabelText("Stop bits");
@@ -220,4 +220,21 @@ test("mantém parâmetros desconhecidos e exige consentimento explícito para 8-
     timeout_s: 1.25,
     read_timeout_s: 4.5,
   });
+});
+
+test("diagnóstico com runtime conectado não confirma TX nem envia nova abertura", async () => {
+  const original = vi.mocked(api).getMockImplementation()!;
+  vi.mocked(api).mockImplementation(async (path, options) => path.includes("/status") ? { connected: true, reading: true } : original(path, options));
+  const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+  localStorage.setItem("thermopower.token", "test-token");
+  render(<MemoryRouter><AuthProvider><DevicesDiscoveryPage /></AuthProvider></MemoryRouter>);
+  await screen.findByText("Conectado", { exact: true });
+  const initialCalls = vi.mocked(api).mock.calls.length;
+  await userEvent.click(screen.getByRole("button", { name: "Testar leitura" }));
+  expect(await screen.findByText(/atualmente em aquisição pelo ThermoPower/)).toBeVisible();
+  expect(confirmSpy).not.toHaveBeenCalled();
+  expect(vi.mocked(api).mock.calls.slice(initialCalls).filter(([, options]) => options?.method === "POST")).toHaveLength(0);
+  expect(screen.getByText("Conectado", { exact: true })).toBeVisible();
+  vi.mocked(api).mockImplementation(original);
+  confirmSpy.mockRestore();
 });

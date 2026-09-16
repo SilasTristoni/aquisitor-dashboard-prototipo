@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import statistics
+from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -75,6 +77,7 @@ class DeviceRuntime:
     last_error: str | None = None
     pending_start: list[DeviceReading] | None = None
     persisted_count: int = 0
+    received_times: deque[datetime] = field(default_factory=lambda: deque(maxlen=61))
 
 
 class AcquisitionService:
@@ -879,12 +882,23 @@ class AcquisitionService:
         runtime_failed = runtime.last_error is not None or bool(
             runtime.task and runtime.task.done() and not runtime.task.cancelled()
         )
+        intervals = [
+            (b - a).total_seconds() * 1000
+            for a, b in zip(runtime.received_times, list(runtime.received_times)[1:], strict=False)
+            if b > a
+        ]
+        observed = statistics.median(intervals) if intervals else None
+        expected = round(getattr(runtime.adapter, "expected_interval_seconds", 1) * 1000)
+        metrics = getattr(runtime.adapter, "fetch_diagnostics", None)
         return {
             "device_id": device_id,
             **status.model_dump(mode="json"),
             "state": "error" if runtime_failed else status.state,
             "reading": False if runtime_failed else status.reading,
             "device_name": runtime.device_name,
+            "observed_interval_ms": observed,
+            "cadence_degraded": len(intervals) >= 4 and observed > expected * 1.5,
+            "acquisition_diagnostics": metrics.snapshot() if metrics else None,
             "protocol": runtime.protocol,
             "source_role": runtime.source_role,
             "session_id": runtime.session_id,
@@ -1040,6 +1054,7 @@ class AcquisitionService:
                     }
                 )
                 runtime.latest = reading
+                runtime.received_times.append(utc(reading.received_timestamp))
                 runtime.sample_count += 1
                 runtime.last_error = None
                 if runtime.pending_start is not None:

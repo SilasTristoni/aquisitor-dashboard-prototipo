@@ -11,8 +11,8 @@ $EngineeringZip = "$EngineeringRoot.zip"
 $StagingRoot = Join-Path $RepositoryRoot "dist\ThermoPowerMonitor"
 $ValidatedZip = Join-Path $RepositoryRoot "dist\ThermoPower-$Version.validated.zip"
 
-if ($Version -ne "0.6.2-client-preview") {
-    throw "Este script aceita somente a versao 0.6.2-client-preview."
+if ($Version -ne "0.6.3-client-preview") {
+    throw "Este script aceita somente a versao 0.6.3-client-preview."
 }
 if (-not (Test-Path -LiteralPath $Python)) { throw "Ambiente .venv ausente." }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw "npm nao encontrado." }
@@ -184,7 +184,10 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "TEST-RESULTS.txt") -Encoding u
     "AT duplicate COM registration neutralization and warning: passed",
     "AT unknown COM fallback rejection: passed",
     "AT CH25-CH32 mapping and CH29 heating series: passed",
-    "Combined 100/120 samples per source through database/API/WebSocket/reports: passed",
+    "Combined 100/120/300 samples per source through database/API/WebSocket/reports: passed",
+    "AT isolated FETCH timeout retries without reopening serial; three consecutive timeouts reconnect: passed",
+    "AT recovery preserves session and unique persisted sequences: passed",
+    "Configured/observed cadence, human quality details and precise session analysis period: passed",
     "Fresh common start and explicit single-source acquisition: passed",
     "Running 1 Hz sources: best fresh pair and transient status regression: passed",
     "Runtime-owned serial diagnostics blocked without interrupting acquisition: passed",

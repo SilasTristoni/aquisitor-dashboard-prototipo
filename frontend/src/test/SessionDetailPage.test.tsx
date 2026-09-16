@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -23,6 +23,29 @@ vi.mock("recharts", () => {
     XAxis: Primitive,
     YAxis: Primitive,
   };
+});
+
+test("preserva segundos, exige confirmação da estabilização e exporta somente a janela aplicada", async () => {
+  apiMock.mockClear(); downloadMock.mockClear();
+  const precise = { ...session, started_at: "2026-09-03T13:00:17.125Z", ended_at: "2026-09-03T13:03:42.250Z" };
+  apiMock.mockImplementation((path: string) => Promise.resolve(
+    path === "/sessions/42" ? precise : path === "/reports/period/preview" ? analysis : { items: [] },
+  ));
+  render(<MemoryRouter initialEntries={["/sessoes/42"]}><Routes><Route path="/sessoes/:id" element={<SessionDetailPage />} /></Routes></MemoryRouter>);
+  await screen.findByRole("radio", { name: "Sessão completa" });
+  const previews = () => apiMock.mock.calls.filter(([path]) => path === "/reports/period/preview");
+  expect(JSON.parse(previews()[0][1].body)).toMatchObject({ start: precise.started_at, end: precise.ended_at });
+  await userEvent.click(screen.getByRole("radio", { name: "Após estabilização" }));
+  expect(previews()).toHaveLength(1);
+  await userEvent.click(screen.getByRole("button", { name: "Usar este período" }));
+  await waitFor(() => expect(previews()).toHaveLength(2));
+  expect(JSON.parse(previews()[1][1].body)).toMatchObject({ start: analysis.statistics.temperature.stabilization.start, end: precise.ended_at });
+  await userEvent.click(screen.getByRole("radio", { name: "Personalizado" }));
+  fireEvent.change(screen.getByLabelText("Início"), { target: { value: "2026-09-03T10:02:12" } });
+  await userEvent.click(screen.getByText("Exportar", { exact: true }));
+  await userEvent.click(screen.getByRole("button", { name: "XLSX técnico" }));
+  expect(downloadMock.mock.calls.at(-1)?.[2]).toMatchObject({ start: analysis.statistics.temperature.stabilization.start, end: precise.ended_at });
+  expect(previews()).toHaveLength(2);
 });
 
 vi.mock("../api", async () => {
@@ -88,6 +111,7 @@ const analysis = {
 };
 
 test("recalcula a visão executiva da sessão para o período selecionado", async () => {
+  apiMock.mockClear();
   apiMock.mockImplementation((path: string) => {
     if (path === "/sessions/42") return Promise.resolve(session);
     if (path === "/alerts?page_size=100") return Promise.resolve({ items: [] });
@@ -106,6 +130,7 @@ test("recalcula a visão executiva da sessão para o período selecionado", asyn
   expect(screen.getAllByText("60,70 °C").length).toBeGreaterThan(0);
   expect(screen.getAllByText("T25 — Saída de ar").length).toBeGreaterThan(0);
   expect(screen.getByText("Operador não informado", { exact: false })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("radio", { name: "Após estabilização" }));
   expect(screen.getByText(/inclinação ≤ 0,2 °C\/min/i)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Início da sessão" })).toHaveClass("active");
   await waitFor(() => {
@@ -116,6 +141,7 @@ test("recalcula a visão executiva da sessão para o período selecionado", asyn
   });
 
   await userEvent.click(screen.getByRole("button", { name: "Horário real" }));
+  await userEvent.click(screen.getByRole("radio", { name: "Personalizado" }));
   await userEvent.click(screen.getByRole("button", { name: "Aplicar período" }));
   await waitFor(() => {
     const previewCalls = apiMock.mock.calls.filter(([path]) => path === "/reports/period/preview");
@@ -126,8 +152,8 @@ test("recalcula a visão executiva da sessão para o período selecionado", asyn
       include_open_channels: false,
       timezone: "America/Sao_Paulo",
       time_axis_mode: "real",
-      start: "2026-09-03T10:00",
-      end: "2026-09-03T10:03",
+      start: "2026-09-03T10:00:00",
+      end: "2026-09-03T10:03:00",
     });
   });
 });

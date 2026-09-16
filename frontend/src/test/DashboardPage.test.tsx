@@ -24,7 +24,7 @@ vi.mock("../api", async () => {
       { id: 2, name: "GPM-8213 GES913349", protocol: "gpm8213_serial", connection_type: "usb", baud_rate: 9600, active: true },
     ];
     if (path.startsWith("/sessions")) return { items: [], page: 1, page_size: 10, total: 0, pages: 0 };
-    if (path.includes("/status")) return { state: "connected", connected: true };
+    if (path.includes("/status")) return { state: "connected", connected: true, cadence_degraded: path.includes("/1/"), observed_interval_ms: 6000, expected_interval_ms: 1000 };
     return {};
   }) };
 });
@@ -41,5 +41,7 @@ test("combina potência do GPM e temperatura do AT sem fabricar zero", async () 
   expect(screen.queryByText("0.0 °C")).not.toBeInTheDocument();
   expect(screen.getByText(/Atualização ao vivo conectada/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Início da sessão" })).toHaveClass("active");
-  expect(screen.getByText("Sincronização: ativa")).toBeInTheDocument();
+  expect((await screen.findAllByText("Fontes prontas")).length).toBeGreaterThan(0);
+  expect(screen.getByText("Leitura térmica abaixo da frequência esperada", { exact: false })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Ver detalhes" })).toHaveAttribute("href", "/diagnostico");
 });

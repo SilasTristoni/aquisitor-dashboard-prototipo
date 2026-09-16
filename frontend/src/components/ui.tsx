@@ -29,7 +29,7 @@ export function Spinner({ label = "Carregando" }: { label?: string }) {
 }
 
 export function ErrorNotice({ message, retry }: { message: string; retry?: () => void }) {
-  return <div className="notice error" role="alert"><div><strong>Não foi possível concluir</strong><span>{message}</span></div>{retry && <button className="button ghost" onClick={retry}>Tentar novamente</button>}</div>;
+  return <div className="notice error" role="alert"><div><strong>Ação necessária</strong><span>{message}</span></div>{retry && <button className="button ghost" onClick={retry}>Tentar novamente</button>}</div>;
 }
 
 export function Pagination({ page, pages, total, onChange }: { page: number; pages: number; total: number; onChange: (page: number) => void }) {

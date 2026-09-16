@@ -67,7 +67,7 @@ class ClockedStream:
             await asyncio.sleep(0.01)
 
 
-@pytest.mark.parametrize("count", [100, 120])
+@pytest.mark.parametrize("count", [100, 120, 300])
 def test_fresh_pair_to_database_api_websocket_and_reports(client, auth_headers, monkeypatch, count):
     with SessionLocal() as db:
         devices = [

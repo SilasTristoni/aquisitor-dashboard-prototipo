@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 from datetime import UTC, datetime, timedelta
@@ -17,21 +18,21 @@ from app.services.period_documents import (  # noqa: E402
     render_period_chart,
     render_period_pdf,
 )
-from app.services.period_reporting import period_statistics  # noqa: E402
+from app.services.period_reporting import PeriodReportDataService, period_statistics  # noqa: E402
 from app.services.period_workbook import render_period_xlsx  # noqa: E402
 
 
-def fixture_data() -> tuple[dict, PeriodReportRequest]:
+def fixture_data(sample_count: int = 120) -> tuple[dict, PeriodReportRequest]:
     start = datetime(2026, 9, 3, 13, 0, tzinfo=UTC)
     thermal_offset = timedelta(milliseconds=150)
-    end = start + timedelta(seconds=120) + thermal_offset
+    end = start + timedelta(seconds=sample_count) + thermal_offset
     request = PeriodReportRequest(
         start=start,
         end=end,
         title="Ensaio combinado — validação térmica e elétrica",
         subtitle="Relatório Técnico de Ensaio Térmico e Elétrico",
         description=(
-            "Fixture sintética determinística com 120 leituras por fonte e início comum."
+            f"Fixture sintética determinística com {sample_count} leituras por fonte e início comum."
         ),
         notes="Valores exclusivamente sintéticos; não representam uma amostra de produção.",
         channels=list(range(24, 33)),
@@ -52,7 +53,7 @@ def fixture_data() -> tuple[dict, PeriodReportRequest]:
     }
     electrical = []
     temperatures = []
-    for index in range(120):
+    for index in range(sample_count):
         timestamp = start + timedelta(seconds=index)
         thermal_timestamp = timestamp + thermal_offset
         elapsed_minutes = index / 60
@@ -162,9 +163,15 @@ def main() -> None:
         type=Path,
         default=REPOSITORY_ROOT / "build" / "client-preview-review",
     )
+    parser.add_argument("--samples", type=int, default=120)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    data, request = fixture_data()
+    data, request = fixture_data(args.samples)
+    preview_service = PeriodReportDataService(None)
+    preview_service.collect = lambda _: data
+    (args.output / "preview.json").write_text(
+        json.dumps(preview_service.preview(request), ensure_ascii=False), encoding="utf-8"
+    )
     real_time_request = request.model_copy(update={"time_axis_mode": "real"})
     artifacts = {
         "relatorio-tecnico.pdf": render_period_pdf(data, request),

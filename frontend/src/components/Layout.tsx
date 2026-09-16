@@ -23,6 +23,12 @@ const navigation = [
   { to: "/diagnostico", label: "Diagnóstico", icon: CircleGauge },
 ];
 
+const navigationGroups = [
+  { label: "Operação", paths: ["/", "/sessoes", "/relatorios", "/comparacao"] },
+  { label: "Configuração", paths: ["/equipamentos", "/canais", "/alertas"] },
+  { label: "Avançado", paths: ["/executivo", "/medicoes", "/eventos", "/diagnostico", "/importar", "/usuarios"], collapsed: true },
+];
+
 const titles: Record<string, string> = { executivo: "Visão executiva", sessoes: "Sessões", medicoes: "Medições", importar: "Importar arquivos", equipamentos: "Equipamentos", canais: "Termopares", alertas: "Alertas", eventos: "Eventos", relatorios: "Relatórios", comparacao: "Comparação", usuarios: "Usuários", diagnostico: "Diagnóstico", "configuracao-inicial": "Configuração inicial" };
 
 export default function Layout() {
@@ -36,8 +42,11 @@ export default function Layout() {
   return <div className="app-shell">
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <div className="brand"><span className="brand-mark"><Activity /></span><div><strong>ThermoPower</strong><small>MONITOR</small></div><button className="mobile-close" aria-label="Fechar menu" onClick={() => setOpen(false)}><X /></button></div>
-      <nav aria-label="Navegação principal">{navigation.filter((item) => !item.admin || user?.role === "admin").map((item) => <NavLink key={item.to} to={item.to} end={item.to === "/"}><item.icon /><span>{item.label}</span></NavLink>)}</nav>
-      <div className="sidebar-status"><i /><div><strong>Sistema operacional</strong><small>Backend monitorado</small></div></div>
+      <nav aria-label="Navegação principal">{navigationGroups.map((group) => {
+        const links = group.paths.map((path) => navigation.find((item) => item.to === path)!).filter((item) => (!item.admin || user?.role === "admin") && (item.to !== "/importar" || user?.role !== "viewer")).map((item) => <NavLink key={item.to} to={item.to} end={item.to === "/"}><item.icon /><span>{item.label}</span></NavLink>);
+        return group.collapsed ? <details className="nav-group" key={group.label} open={group.paths.includes(location.pathname) || undefined}><summary>{group.label}</summary>{links}</details> : <div className="nav-group" key={group.label}><span className="nav-group-label">{group.label}</span>{links}</div>;
+      })}</nav>
+      <div className="sidebar-status"><i /><div><strong>ThermoPower Monitor</strong><small>Laboratório · aquisição e análise</small></div></div>
       <div className="profile"><span>{user?.name.slice(0, 2).toUpperCase()}</span><div><strong>{user?.name}</strong><small>{user?.role === "admin" ? "Administrador" : user?.role === "operator" ? "Operador" : "Visualizador"}</small></div><button onClick={logout} aria-label="Sair"><LogOut /></button></div>
     </aside>
     {open && <button className="sidebar-backdrop" onClick={() => setOpen(false)} aria-label="Fechar menu" />}

@@ -106,7 +106,7 @@ function physicalReadings() {
   ];
 }
 
-function installApi(failedRole: FailedRole) {
+function installApi(failedRole: FailedRole, initiallyReady = false) {
   const failedId = failedRole === "thermal" ? 1 : 2;
   const error = failedRole === "thermal"
     ? "AT4532 fixture connection failed"
@@ -135,7 +135,7 @@ function installApi(failedRole: FailedRole) {
       if (attempted && deviceId === failedId) {
         return { device_id: deviceId, state: "error", connected: false, last_error: error };
       }
-      return attempted
+      return attempted || initiallyReady
         ? { device_id: deviceId, state: "connected", connected: true }
         : { device_id: deviceId, state: "disconnected", connected: false };
     }
@@ -185,14 +185,14 @@ describe("conexão parcial da dashboard", () => {
   });
 
   test.each(["thermal", "electrical"] as const)("não confirma sessão combinada quando %s falha", async (failedRole) => {
-    installApi(failedRole);
+    installApi(failedRole, true);
     liveState.readings = physicalReadings();
     render(<DashboardPage />);
     expect(await screen.findAllByText("AT4532 LAB")).not.toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: /Iniciar sessão/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Iniciar ensaio/i }));
     expect(await screen.findByText("Não foi possível sincronizar leituras frescas das duas fontes.")).toBeInTheDocument();
     expect(screen.queryByText("Em execução")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Iniciar sessão/i })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: /Conectar fontes/i }, { timeout: 2000 })).toBeEnabled();
   });
 
   test("não exibe falha quando somente uma fonte foi solicitada", async () => {

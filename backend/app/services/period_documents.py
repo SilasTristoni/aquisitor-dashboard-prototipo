@@ -608,6 +608,7 @@ def render_period_pdf(data: dict[str, Any], request: PeriodReportRequest) -> byt
         ParagraphStyle(
             name="Section",
             parent=styles["Heading2"],
+            keepWithNext=True,
             fontSize=14,
             textColor=colors.HexColor("#234FCE"),
             spaceBefore=5 * mm,
@@ -619,7 +620,7 @@ def render_period_pdf(data: dict[str, Any], request: PeriodReportRequest) -> byt
     local_end = request.end.astimezone(zone)
     generated = datetime.now(UTC).astimezone(zone)
     story: list[Any] = [
-        Spacer(1, 16 * mm),
+        Spacer(1, 4 * mm),
         Paragraph("THERMOPOWER MONITOR", styles["Heading3"]),
         Paragraph(
             "Relatório Técnico de Ensaio Térmico e Elétrico",
@@ -673,7 +674,7 @@ def render_period_pdf(data: dict[str, Any], request: PeriodReportRequest) -> byt
     story.extend(
         [
             _styled_table(metadata_rows, [55 * mm, 125 * mm]),
-            PageBreak(),
+            Spacer(1, 4 * mm),
             Paragraph("Resumo executivo", styles["Section"]),
         ]
     )
@@ -741,7 +742,9 @@ def render_period_pdf(data: dict[str, Any], request: PeriodReportRequest) -> byt
                 Paragraph(escape(request.notes), styles["BodyText"]),
             ]
         )
-    source_rows = [["Fonte", "Instrumento", "Identificação", "Conexão", "Cadência"]]
+    source_rows = [
+        ["Fonte", "Instrumento", "Identificação", "Conexão", "Intervalo configurado / observado"]
+    ]
     seen_sources: set[tuple[int, str]] = set()
     role_labels = {
         "electrical": "Fonte elétrica",
@@ -778,6 +781,18 @@ def render_period_pdf(data: dict[str, Any], request: PeriodReportRequest) -> byt
                 f"{device['cadence_ms'] / 1000:g} s"
                 if device.get("cadence_ms") is not None
                 else "Não informada"
+            )
+            observed_values = [
+                item["observed_interval_seconds"]
+                for item in general.get("source_quality", [])
+                if item["session_id"] == session["id"]
+                and item["role"] == device.get("role")
+                and item.get("observed_interval_seconds") is not None
+            ]
+            cadence += " / " + (
+                _format_number(observed_values[0], " s", 2)
+                if observed_values
+                else "sem amostras suficientes"
             )
             source_rows.append(
                 [
@@ -949,11 +964,22 @@ def render_period_pdf(data: dict[str, Any], request: PeriodReportRequest) -> byt
         story.append(_styled_table(alert_rows))
 
     if request.include_quality:
+        quality_labels = {
+            "good": "válidas",
+            "missing": "com campos ausentes",
+            "invalid": "inválidas",
+            "open_sensor": "canal Open",
+        }
         story.extend(
             [
                 Paragraph("Qualidade e rastreabilidade", styles["Section"]),
                 Paragraph(
-                    f"Qualidades registradas: {escape(str(general['quality_counts']))}. "
+                    "Qualidade das leituras: "
+                    + "; ".join(
+                        f"{escape(quality_labels.get(key, key))}: {value}"
+                        for key, value in general["quality_counts"].items()
+                    )
+                    + ". "
                     f"Lacunas detectadas: {general['gap_count']}; duração acumulada: "
                     f"{format_duration_pt(general['gap_seconds'])}. "
                     "Horário atribuído pelo sistema: "
@@ -963,6 +989,28 @@ def render_period_pdf(data: dict[str, Any], request: PeriodReportRequest) -> byt
                     styles["BodyText"],
                 ),
             ]
+        )
+        for item in general.get("source_quality", []):
+            role = "Térmica" if item["role"] == "temperature" else "Elétrica"
+            text = (
+                f"{role}: {item['count']} leituras. Intervalo configurado: "
+                f"{_format_number(item.get('expected_interval_seconds'), ' s', 2)}; observado: "
+                f"{_format_number(item.get('observed_interval_seconds'), ' s', 2)}. "
+            )
+            if item.get("frequency_reduced"):
+                text += (
+                    "Frequência reduzida: as leituras existentes continuam válidas; "
+                    "há menos pontos no tempo. "
+                )
+            story.append(Paragraph(escape(text), styles["BodyText"]))
+        story.append(
+            Paragraph(
+                "Campo ausente não invalida as demais grandezas da leitura. Canal Open indica "
+                "termopar aberto/sem leitura; lacuna indica ausência de amostras, "
+                "sem provar por si só uma desconexão. "
+                "Consulte o diagnóstico para identificar sua causa.",
+                styles["BodyText"],
+            )
         )
 
     if request.include_table and data["table_rows"]:

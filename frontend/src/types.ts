@@ -73,6 +73,9 @@ export type RuntimeStatus = {
   session_sample_count?: number;
   persisted_sample_count?: number;
   expected_interval_ms?: number;
+  observed_interval_ms?: number;
+  cadence_degraded?: boolean;
+  acquisition_diagnostics?: Record<string, unknown>;
   valid_channels?: number;
   last_error?: string | null;
   identity_status?: string;

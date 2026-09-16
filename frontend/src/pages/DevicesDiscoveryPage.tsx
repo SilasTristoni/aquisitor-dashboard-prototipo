@@ -155,6 +155,10 @@ export default function DevicesDiscoveryPage() {
   }
 
   async function testConnection(device: Device, mode: "identity" | "read" | "full") {
+    if (statuses[device.id]?.connected) {
+      setTest({ error: "O equipamento está atualmente em aquisição pelo ThermoPower. Desconecte-o antes de executar o diagnóstico de comunicação." });
+      return;
+    }
     const isAt4532 = device.protocol === "at4532_serial";
     const isPhysicalVendor = isAt4532 || device.protocol === "gpm8213_serial";
     if (!isPhysicalVendor) {
@@ -348,7 +352,8 @@ export default function DevicesDiscoveryPage() {
       </Panel>
 
       {user?.role === "admin" && (
-        <Panel title="Diagnóstico serial avançado" kicker="READ-ONLY · NENHUM COMANDO É ENVIADO">
+        <details className="secondary-metrics"><summary>Diagnóstico serial avançado</summary>
+        <Panel title="Parâmetros de comunicação" kicker="READ-ONLY · NENHUM COMANDO É ENVIADO">
           <div className="safety-notice">Informe os parâmetros observados no software ou manual. Campos desconhecidos não são preenchidos automaticamente. Feche Instrument V1.8.7 ou Power Meter Series se estiverem usando a porta.</div>
           <form className="serial-diagnostic-form" onSubmit={openDiagnostic}>
             <label className="field"><span>Porta</span><select name="diagnostic_port" required defaultValue=""><option value="">Selecionar…</option>{discoveries.map((item) => <option key={item.port} value={item.port}>{item.port} · {item.description}</option>)}</select></label>
@@ -358,7 +363,7 @@ export default function DevicesDiscoveryPage() {
             <label className="field"><span>Parity</span><select name="diagnostic_parity" value={diagnosticParity} disabled={useEngineeringAssumption} onChange={(event) => setDiagnosticParity(event.target.value)}><option value="">Não confirmada</option><option value="N">None (N)</option><option value="E">Even (E)</option><option value="O">Odd (O)</option><option value="M">Mark (M)</option><option value="S">Space (S)</option></select></label>
             <label className="field"><span>Stop bits</span><select name="diagnostic_stop_bits" value={diagnosticStopBits} disabled={useEngineeringAssumption} onChange={(event) => setDiagnosticStopBits(event.target.value)}><option value="">Não confirmado</option><option value="1">1</option><option value="1.5">1,5</option><option value="2">2</option></select></label>
             <label className="field"><span>Timeout do diagnóstico (s)</span><input name="diagnostic_timeout" type="number" step="0.05" min="0.05" max="30" required /><small>Não é o intervalo de aquisição do AT4532.</small></label>
-            <label className="field"><span>Read timeout do diagnóstico (s)</span><input name="diagnostic_read_timeout" type="number" step="0.05" min="0.05" max="30" required /><small>Não altera o intervalo esperado de 3 s.</small></label>
+            <label className="field"><span>Read timeout do diagnóstico (s)</span><input name="diagnostic_read_timeout" type="number" step="0.05" min="0.05" max="30" required /><small>Não altera a cadência configurada da aquisição.</small></label>
             <label className="field"><span>Terminador informado</span><input name="diagnostic_terminator" placeholder="Opcional; apenas registro" /></label>
             <label className="field"><span>Framing informado</span><input name="diagnostic_framing" placeholder="Opcional; não interpretado" /></label>
             <label className="serial-diagnostic-assumption"><input type="checkbox" checked={useEngineeringAssumption} onChange={(event) => setUseEngineeringAssumption(event.target.checked)} /><span><strong>Modo B — Teste exploratório com padrão serial</strong>Usar 8 data bits, sem paridade e 1 stop bit apenas como hipótese técnica</span></label>
@@ -377,7 +382,7 @@ export default function DevicesDiscoveryPage() {
               <div className="inline-actions">{diagnosticSession && <><button className="button secondary" onClick={() => void readDiagnostic()}>Ler até 4096 bytes</button><button className="button ghost" onClick={() => void closeDiagnostic()}>Fechar porta</button></>}</div>
             </div>
           )}
-        </Panel>
+        </Panel></details>
       )}
 
       <div className="device-grid">

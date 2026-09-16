@@ -1,8 +1,9 @@
 import { AlertTriangle, Pause, Play, Plug, Power, Radio, Square, Wifi, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { api, formatDate, formatDuration } from "../api";
+import { CartesianGrid, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { api, formatDuration } from "../api";
 import { ErrorNotice, Metric, PageHeader, Panel } from "../components/ui";
+import { SeriesControls, MeasurementTooltip } from "../components/SeriesControls";
 import { useLive } from "../hooks/useLive";
 import type { Channel, Device, PageResult, Reading, RuntimeStatus, Session, SessionStartResult, SourceConnectionResult } from "../types";
 import { buildCombinedView, numericStats, validTemperatures } from "../utils/combinedReadings";
@@ -48,6 +49,9 @@ export default function DashboardPage() {
   const [temperatureDeviceId, setTemperatureDeviceId] = useState(0);
   const [statuses, setStatuses] = useState<Record<number, RuntimeStatus>>({});
   const [channelConfigurations, setChannelConfigurations] = useState<Channel[]>([]);
+  const [finishedSessionId, setFinishedSessionId] = useState<number | null>(null);
+  const [hiddenSeries, setHiddenSeries] = useState<string[]>([]);
+  const [operation, setOperation] = useState("");
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const [visualPaused, setVisualPaused] = useState(false);
   const [visualSnapshot, setVisualSnapshot] = useState<Reading[]>([]);
@@ -59,15 +63,15 @@ export default function DashboardPage() {
   const { connection, readings, lastAlert } = useLive(3600);
 
   useEffect(() => {
-    Promise.all([api<Device[]>("/devices"), api<PageResult<Session>>("/sessions?status=running&page_size=10")])
-      .then(([allDevices, sessions]) => {
+    Promise.all([api<Device[]>("/devices"), api<PageResult<Session>>("/sessions?status=running&page_size=10"), api<PageResult<Session>>("/sessions?status=paused&page_size=10")])
+      .then(([allDevices, sessions, paused]) => {
         setDevices(allDevices);
         const at = allDevices.find((device) => device.protocol === "at4532_serial");
         const gpm = allDevices.find((device) => device.protocol === "gpm8213_serial");
         const simulator = allDevices.find((device) => device.protocol === "simulator");
         setTemperatureDeviceId(at?.id ?? simulator?.id ?? 0);
         setElectricalDeviceId(gpm?.id ?? simulator?.id ?? 0);
-        if (sessions.items[0]) setActiveSession(sessions.items[0]);
+        if (sessions.items[0] || paused.items[0]) setActiveSession(sessions.items[0] ?? paused.items[0]);
       })
       .catch((caught) => setError(caught.message));
   }, []);
@@ -122,6 +126,8 @@ export default function DashboardPage() {
       ? `T${channel} — ${configured}` : `T${channel}`;
   };
 
+  const chartSeries = [{ key: "power", label: "Potência ativa", color: POWER_COLOR }, ...visibleTemperatureChannels.map((channel) => ({ key: `t${channel}`, label: channelLabel(channel), color: CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length] }))];
+
   async function action(run: () => Promise<void>) {
     setBusy(true); setError("");
     try { await run(); }
@@ -149,7 +155,7 @@ export default function DashboardPage() {
     return [result.electrical, result.thermal].filter((source) => source.requested && !source.success);
   }
 
-  const connectAll = () => action(async () => {
+  const connectAll = () => { setOperation("connect"); return action(async () => {
     const result = await api<SourceConnectionResult>("/devices/connect-sources", {
       method: "POST",
       body: JSON.stringify({
@@ -160,12 +166,12 @@ export default function DashboardPage() {
     applyConnectionStatuses(result);
     if (result.overall === "none") setError("Nenhuma fonte pôde ser conectada.");
     else if (requestedFailures(result).length) setError("Uma fonte falhou; a outra permanece disponível.");
-  });
+  }); };
   const disconnectOne = (deviceId: number) => action(async () => {
     await api(`/devices/${deviceId}/disconnect`, { method: "POST" });
     setStatuses((current) => ({ ...current, [deviceId]: { device_id: deviceId, state: "disconnected", connected: false } }));
   });
-  const start = () => action(async () => {
+  const start = () => { setOperation("start"); return action(async () => {
     const sameDevice = electricalDeviceId > 0 && electricalDeviceId === temperatureDeviceId;
     const sources = sameDevice ? { device_id: electricalDeviceId } : {
       electrical_device_id: electricalDeviceId || undefined,
@@ -177,11 +183,12 @@ export default function DashboardPage() {
     applyConnectionStatuses(created.connection);
     if (created.status === "failed") throw new Error("Nenhuma fonte está disponível para iniciar a sessão.");
     if (requestedFailures(created.connection).length) setError("Sessão iniciada com a fonte disponível; a outra apresentou falha.");
+    setFinishedSessionId(null);
     setActiveSession(created);
-  });
+  }); };
   const transition = (name: "pause" | "resume" | "finish") => action(async () => {
     const result = await api<any>(`/sessions/${activeSession!.id}/${name}`, { method: "POST" });
-    if (name === "finish") setActiveSession(null);
+    if (name === "finish") { setFinishedSessionId(activeSession!.id); setActiveSession(null); }
     else setActiveSession((current) => current ? { ...current, status: result.status } : null);
   });
   function toggleVisualPause() { if (!visualPaused) setVisualSnapshot(readings); setVisualPaused(!visualPaused); }
@@ -196,11 +203,11 @@ export default function DashboardPage() {
         <small>{sourceFailed ? "Falha nesta fonte" : status?.connected ? "Conectado" : "Desconectado"} · {elapsedLabel(reading?.timestamp ?? status?.last_message_at, now)}</small>
         {label === "AT4532" && <small>{values.length}/32 canais válidos</small>}
         {label === "GPM-8213" && <small>{reading?.power_w == null ? "Potência indisponível" : `${reading.power_w.toFixed(1)} W`}</small>}
-        <small>{status?.sample_count ?? (label === "AT4532" ? combined.temperatureReadings.length : combined.electricalReadings.length)} leituras nesta conexão</small>
-        {activeSession && <small>{status?.session_sample_count ?? 0} leituras nesta sessão · {status?.persisted_sample_count ?? 0} gravadas</small>}
+        <details className="source-reading-details"><summary>Contagem de leituras</summary><small>{status?.sample_count ?? (label === "AT4532" ? combined.temperatureReadings.length : combined.electricalReadings.length)} leituras nesta conexão</small>
+        {activeSession && <small>{status?.session_sample_count ?? 0} leituras nesta sessão · {status?.persisted_sample_count ?? 0} gravadas</small>}</details>
         {status?.last_error && <small className="danger-text">{status.last_error}</small>}
       </div>
-      {device && status?.connected && <button className="button ghost small" onClick={() => void disconnectOne(device.id)}><Power /> Desconectar</button>}
+      {device && status?.connected && <button className="button ghost small" disabled={busy || Boolean(activeSession)} onClick={() => void disconnectOne(device.id)}><Power /> Desconectar</button>}
     </div>;
   };
 
@@ -208,26 +215,34 @@ export default function DashboardPage() {
     <PageHeader eyebrow="OPERAÇÃO EM TEMPO REAL" title="Ensaio térmico e elétrico" description="Acompanhe potência e cada ponteira ativa em uma única visão operacional." actions={<>
       <label className="compact-field"><span>Fonte elétrica</span><select value={electricalDeviceId} onChange={(event) => setElectricalDeviceId(Number(event.target.value))} disabled={Boolean(activeSession)}><option value={0}>Não selecionada</option>{devices.filter((device) => device.protocol !== "at4532_serial").map((device) => <option key={device.id} value={device.id}>{device.name}</option>)}</select></label>
       <label className="compact-field"><span>Fonte térmica</span><select value={temperatureDeviceId} onChange={(event) => setTemperatureDeviceId(Number(event.target.value))} disabled={Boolean(activeSession)}><option value={0}>Não selecionada</option>{devices.filter((device) => device.protocol !== "gpm8213_serial").map((device) => <option key={device.id} value={device.id}>{device.name}</option>)}</select></label>
-      <button className="button secondary" onClick={connectAll} disabled={!selectedIds.length || busy || allConnected}><Plug /> Conectar fontes</button>
-      {!activeSession ? <button className="button primary" onClick={start} disabled={!selectedIds.length || busy}><Play /> {busy ? "Sincronizando fontes..." : "Iniciar sessão"}</button> : activeSession.status === "paused" ? <button className="button primary" onClick={() => transition("resume")}><Play /> Continuar</button> : <button className="button secondary" onClick={() => transition("pause")}><Pause /> Pausar</button>}
-      {activeSession && <button className="button dark" onClick={() => transition("finish")}><Square /> Finalizar</button>}
+      {!activeSession && !finishedSessionId && !allConnected && <button className="button primary" onClick={connectAll} disabled={!selectedIds.length || busy}><Plug /> {busy ? "Conectando fontes…" : "Conectar fontes"}</button>}
+      {!activeSession && !finishedSessionId && allConnected && <button className="button primary" onClick={start} disabled={busy}><Play /> {busy && operation === "start" ? "Sincronizando fontes..." : "Iniciar ensaio"}</button>}
+      {activeSession && <><button className="button secondary" disabled={busy} onClick={() => transition(activeSession.status === "paused" ? "resume" : "pause")}>{activeSession.status === "paused" ? <Play /> : <Pause />}{activeSession.status === "paused" ? "Continuar" : "Pausar"}</button><button className="button primary" disabled={busy} onClick={() => transition("finish")}><Square /> Finalizar ensaio</button></>}
+      {finishedSessionId && !activeSession && <><a className="button primary" href={`/sessoes/${finishedSessionId}`}>Ver resultados</a><button className="button ghost" onClick={() => setFinishedSessionId(null)}>Novo ensaio</button></>}
     </>} />
-    {error && <ErrorNotice message={error} />}
+    <div className="operator-progress" aria-label="Etapas do ensaio"><span className={!allConnected ? "current" : "complete"}>1 · Conectar fontes</span><span className={allConnected && !activeSession && !finishedSessionId ? "current" : ""}>2 · Iniciar ensaio</span><span className={activeSession ? "current" : ""}>3 · Acompanhar</span><span className={finishedSessionId ? "current" : ""}>4 · Resultados</span></div>
+    {error && <ErrorNotice message={error} retry={allConnected ? start : connectAll} />}
+    {statuses[temperatureDeviceId]?.cadence_degraded && <div className="notice warning" role="status"><AlertTriangle /><div><strong>Leitura térmica abaixo da frequência esperada</strong><span>As leituras recebidas continuam válidas. Confira a conexão e os detalhes de aquisição.</span></div><a className="button ghost small" href="/diagnostico">Ver detalhes</a></div>}
     <div className="combined-source-status">{statusCard("GPM-8213", electricalDevice, combined.latestElectrical)}{statusCard("AT4532", temperatureDevice, combined.latestTemperature)}
-      <div className="source-status session-source-status"><span className="device-orb connected">{connection === "connected" ? <Wifi /> : <WifiOff />}</span><div><span>SESSÃO / CONEXÃO AO VIVO</span><strong>{activeSession?.status === "running" ? "Em execução" : activeSession?.status === "paused" ? "Pausada" : "Sem sessão"}</strong><small>Fonte elétrica: {statuses[electricalDeviceId]?.expected_interval_ms ? `~${statuses[electricalDeviceId].expected_interval_ms! / 1000} s` : "aguardando"}</small><small>Fonte térmica: {statuses[temperatureDeviceId]?.expected_interval_ms ? `~${statuses[temperatureDeviceId].expected_interval_ms! / 1000} s` : "aguardando"}</small><small>Sincronização: ativa</small><small>{connection === "connected" ? "Atualização ao vivo conectada" : "Reconectando atualização ao vivo"} · {activeSession ? formatDuration((now - parseUtcTimestamp(activeSession.started_at)) / 1000) : "0 s"}</small></div></div>
+      <div className="source-status session-source-status"><span className="device-orb connected">{connection === "connected" ? <Wifi /> : <WifiOff />}</span><div><span>ESTADO DO ENSAIO</span><strong>{busy && operation === "start" ? "Sincronizando fontes…" : activeSession?.status === "running" ? "Ensaio em andamento" : activeSession?.status === "paused" ? "Ensaio pausado" : finishedSessionId ? "Ensaio finalizado" : allConnected ? "Fontes prontas" : "Aguardando conexão"}</strong><small>{activeSession ? formatDuration((now - parseUtcTimestamp(activeSession.started_at)) / 1000) : "Inicie um ensaio para gravar as leituras."}</small><small>{connection === "connected" ? "Atualização ao vivo conectada" : "Reconectando atualização ao vivo"}</small></div></div>
     </div>
     {lastAlert && <div className="notice warning"><AlertTriangle /><div><strong>Novo alerta crítico</strong><span>{lastAlert.metric === "power" ? "Potência" : `Termopar CH${String(lastAlert.channel).padStart(2, "0")}`} atingiu {lastAlert.measured_value.toFixed(1)}.</span></div></div>}
-    <div className="metrics-grid seven">
-      <Metric label="Potência atual" value={combined.latestElectrical?.power_w == null ? "—" : `${combined.latestElectrical.power_w.toFixed(1)} W`} hint={combined.latestElectrical?.raw_power == null ? "Grandeza indisponível" : `Recebido: ${combined.latestElectrical.raw_power} ${combined.latestElectrical.raw_power_unit}`} tone="primary" />
+    <div className="metrics-grid six operator-kpis">
       <Metric label="Pico de potência" value={powerPeak ? `${powerPeak.value.toFixed(2)} W` : "—"} hint={powerPeak ? formatTimeAxis(powerPeak.axisValue, timeAxisMode) : "Aguardando leitura"} />
-      <Metric label="Potência média" value={powerStats.avg == null ? "—" : `${powerStats.avg.toFixed(1)} W`} hint={powerStats.min == null ? "Sem leitura elétrica" : `Mín ${powerStats.min.toFixed(1)} · Máx ${powerStats.max!.toFixed(1)}`} />
-      <Metric label="Energia monitorada" value={`${energyWh.toFixed(3)} Wh`} hint="Calculada com os horários reais" help="Energia estimada pela integração da potência medida ao longo do tempo." />
-      <Metric label="Temperatura média" value={temperatureStats.avg == null ? "—" : `${temperatureStats.avg.toFixed(1)} °C`} hint={`${temperatures.length} canais com leitura`} />
       <Metric label="Temperatura máxima" value={thermalPeak ? `${thermalPeak.value.toFixed(1)} °C` : "—"} hint={thermalPeak ? `${channelLabel(Number(thermalPeak.key.slice(1)))} · ${formatTimeAxis(thermalPeak.axisValue, timeAxisMode)}` : "Sem leitura de temperatura"} tone="warm" />
+      <Metric label="Energia monitorada" value={`${energyWh.toFixed(3)} Wh`} hint="Calculada com os horários reais" help="Energia estimada pela integração da potência medida ao longo do tempo." />
+      <Metric label="Canal crítico" value={thermalPeak ? channelLabel(Number(thermalPeak.key.slice(1))) : "—"} help="Canal com a maior temperatura no histórico exibido." />
       <Metric label="ΔT entre canais" value={deltaTemperature == null ? "—" : `${deltaTemperature.toFixed(1)} °C`} hint="Leitura térmica mais recente" help="Diferença entre a maior e a menor temperatura observada entre os canais ativos." />
+      <Metric label="Integridade" value={statuses[temperatureDeviceId]?.cadence_degraded ? "Atenção" : combined.chartData.length ? "Em acompanhamento" : "Aguardando"} hint={statuses[temperatureDeviceId]?.cadence_degraded ? "Frequência térmica reduzida" : "Detalhes disponíveis no diagnóstico"} help="A integridade distingue frequência reduzida, ausência de leituras e erros de comunicação." />
     </div>
+    <details className="secondary-metrics"><summary>Mais detalhes do ensaio</summary><div className="metrics-grid three">
+      <Metric label="Potência atual" value={combined.latestElectrical?.power_w == null ? "—" : `${combined.latestElectrical.power_w.toFixed(1)} W`} hint={combined.latestElectrical?.raw_power == null ? "Grandeza indisponível" : `Recebido: ${combined.latestElectrical.raw_power} ${combined.latestElectrical.raw_power_unit}`} tone="primary" />
+      <Metric label="Potência média" value={powerStats.avg == null ? "—" : `${powerStats.avg.toFixed(1)} W`} hint={powerStats.min == null ? "Sem leitura elétrica" : `Mín ${powerStats.min.toFixed(1)} · Máx ${powerStats.max!.toFixed(1)}`} />
+      <Metric label="Temperatura média" value={temperatureStats.avg == null ? "—" : `${temperatureStats.avg.toFixed(1)} °C`} hint={`${temperatures.length} canais com leitura`} />
+    </div></details>
     <Panel title="Potência e temperatura na mesma janela" kicker={timeAxisMode === "synchronized" ? "LINHA DO TEMPO COMUM DA SESSÃO" : "HORÁRIOS REAIS DAS LEITURAS"} actions={<div className="chart-actions"><div className="axis-mode-toggle" aria-label="Modo do eixo de tempo"><button className={timeAxisMode === "synchronized" ? "active" : ""} onClick={() => setTimeAxisMode("synchronized")}>Início da sessão</button><button className={timeAxisMode === "real" ? "active" : ""} onClick={() => setTimeAxisMode("real")}>Horário real</button></div><button onClick={toggleVisualPause}>{visualPaused ? <Play /> : <Pause />} {visualPaused ? "Retomar" : "Pausar visual"}</button></div>}>
-      <div className="chart-container combined-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={combined.chartData}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="axisValue" type="number" domain={["dataMin", "dataMax"]} minTickGap={35} tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} /><YAxis tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="temperature" width={58} unit=" °C" /><YAxis tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="power" orientation="right" width={58} unit=" W" /><Tooltip contentStyle={{ borderRadius: 12 }} labelFormatter={(value) => timeAxisMode === "synchronized" ? `Tempo decorrido ${formatTimeAxis(Number(value), timeAxisMode)}` : formatDate(new Date(Number(value)).toISOString())} /><Legend verticalAlign="top" height={48} /><Line data={combined.chartData.filter((row) => row.electricalTimestamp)} yAxisId="power" type="linear" dataKey="power" name="Potência ativa" stroke={POWER_COLOR} dot={{ r: 1.5, strokeWidth: 0, fill: POWER_COLOR }} strokeWidth={2.7} connectNulls={false} isAnimationActive={false} />{visibleTemperatureChannels.map((channel) => <Line data={combined.chartData.filter((row) => row.thermalTimestamp)} key={channel} yAxisId="temperature" type="linear" dataKey={`t${channel}`} name={channelLabel(channel)} stroke={CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length]} dot={{ r: 1.5, strokeWidth: 0, fill: CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length] }} connectNulls={false} isAnimationActive={false} />)}{powerPeak && <ReferenceDot yAxisId="power" x={powerPeak.axisValue} y={powerPeak.value} r={4} fill={POWER_COLOR} label={{ value: "Pico de potência", position: "insideTopLeft", fontSize: 10 }} />}{thermalPeak && <ReferenceDot yAxisId="temperature" x={thermalPeak.axisValue} y={thermalPeak.value} r={4} fill="#D97706" label={{ value: `Máx. T${thermalPeak.key.slice(1)}`, position: "insideTopRight", fontSize: 10 }} />}</LineChart></ResponsiveContainer></div>
+      <SeriesControls series={chartSeries} hidden={hiddenSeries} onChange={setHiddenSeries} />
+      <div className="chart-container combined-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={combined.chartData}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="axisValue" type="number" domain={["dataMin", "dataMax"]} minTickGap={35} tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} /><YAxis includeHidden tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="temperature" width={58} unit=" °C" /><YAxis includeHidden tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="power" orientation="right" width={58} unit=" W" /><Tooltip cursor={{ stroke: "#64748b", strokeDasharray: "4 4" }} content={<MeasurementTooltip rows={combined.chartData} series={chartSeries.filter((item) => !hiddenSeries.includes(item.key))} formatTime={(value) => formatTimeAxis(value, timeAxisMode)} />} /><Line data={combined.chartData.filter((row) => row.electricalTimestamp)} yAxisId="power" type="linear" hide={hiddenSeries.includes("power")} dataKey="power" name="Potência ativa" stroke={POWER_COLOR} dot={{ r: 1.5, strokeWidth: 0, fill: POWER_COLOR }} strokeWidth={2.7} connectNulls={false} isAnimationActive={false} />{visibleTemperatureChannels.map((channel) => <Line data={combined.chartData.filter((row) => row.thermalTimestamp)} key={channel} yAxisId="temperature" type="linear" hide={hiddenSeries.includes(`t${channel}`)} dataKey={`t${channel}`} name={channelLabel(channel)} stroke={CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length]} dot={{ r: 1.5, strokeWidth: 0, fill: CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length] }} connectNulls={false} isAnimationActive={false} />)}{powerPeak && <ReferenceDot yAxisId="power" x={powerPeak.axisValue} y={powerPeak.value} r={4} fill={POWER_COLOR} label={{ value: "Pico de potência", position: "insideTopLeft", fontSize: 10 }} />}{thermalPeak && <ReferenceDot yAxisId="temperature" x={thermalPeak.axisValue} y={thermalPeak.value} r={4} fill="#D97706" label={{ value: `Máx. T${thermalPeak.key.slice(1)}`, position: "insideTopRight", fontSize: 10 }} />}</LineChart></ResponsiveContainer></div>
       <p className="hint">O tempo decorrido usa o início real da sessão como marco comum. Cada fonte mantém seus próprios horários, leituras e cadência.</p>
     </Panel>
     <div className="dashboard-bottom"><Panel title="Mapa térmico dos 32 canais" kicker="LEITURA AT4532 MAIS RECENTE"><div className="heatmap">{Array.from({ length: 32 }, (_, index) => { const value = combined.latestTemperature?.temperatures_c[index]; const quality = combined.latestTemperature?.channel_quality?.[index] ?? (value == null ? "unavailable" : "good"); const level = value == null ? "missing" : value >= 80 ? "critical" : value >= 70 ? "warning" : "normal"; const reference = value != null ? " reference-channel" : ""; return <div key={index} className={`heat-cell ${level}${reference}`}><span>{channelLabel(index + 1)}</span><strong>{value == null ? "—" : `${value.toFixed(1)}°`}</strong><small>{quality === "good" ? "Boa" : quality === "open_sensor" ? "Open" : "Indisponível"}</small></div>; })}</div></Panel><Panel title="Janela de visualização" kicker="CONTROLES"><div className="segmented">{windows.map((item) => <button className={windowSeconds === item.value ? "active" : ""} key={item.value} onClick={() => setWindowSeconds(item.value)}>{item.label}</button>)}</div><p className="hint">Cada fonte preserva seu timestamp original; nenhum valor ausente é convertido em zero.</p><p className="hint">Os canais com leitura válida são incluídos dinamicamente nas curvas e na legenda.</p></Panel></div>

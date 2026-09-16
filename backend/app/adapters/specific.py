@@ -1186,6 +1186,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
     expected_interval_seconds = 1.0
     continuous_read_guard_seconds = AT4532_CONTINUOUS_READ_GUARD_SECONDS
     polling_managed_by_read_once = True
+    consecutive_timeout_limit = 3
     protocol = At4532Protocol()
     parser = At4532Parser()
     normalizer = At4532Normalizer()
@@ -1205,6 +1206,10 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         self._primed_reading: DeviceReading | None = None
         self._last_fetch_started_monotonic: float | None = None
         self._last_fetch_completed_monotonic: float | None = None
+        from app.adapters.acquisition_diagnostics import FetchDiagnostics
+
+        self.fetch_diagnostics = FetchDiagnostics()
+        self._stop_requested = False
 
     def _configuration(self) -> SerialTransportConfiguration:
         if self.baud_rate != 19200:
@@ -1276,6 +1281,55 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             self._primed_reading = reading
 
     async def _query_reading(self) -> DeviceReading:
+        metrics = self.fetch_diagnostics
+        started = monotonic()
+        metrics.fetch_attempts += 1
+        if metrics.first_tx is None:
+            metrics.first_tx = started
+        metrics.last_tx = started
+        try:
+            reading = await self._query_and_normalize()
+        except SerialTransportError as exc:
+            if exc.code == "protocol_timeout":
+                metrics.fetch_timeouts += 1
+                metrics.consecutive_fetch_timeouts += 1
+            transaction = self.transactions[-1] if self.transactions else {}
+            metrics.last_failure = {
+                "command": "FETCH?",
+                "tx": transaction.get("tx_hex"),
+                "rx": transaction.get("rx_hex"),
+                "timestamp_tx": transaction.get("timestamp_tx"),
+                "timestamp_rx": transaction.get("timestamp_rx"),
+                "elapsed_ms": (monotonic() - started) * 1000,
+                "bytes_received": transaction.get("bytes_received", 0),
+                "error_code": exc.code,
+                "port_open": bool(self.transport and self.transport.is_open),
+                "attempt": metrics.fetch_attempts,
+            }
+            logger.warning(
+                "AT4532 FETCH failure port=%s details=%s", self.port, metrics.last_failure
+            )
+            raise
+        else:
+            received = monotonic()
+            if metrics.last_rx is not None:
+                metrics.maximum_gap_ms = max(
+                    metrics.maximum_gap_ms, (received - metrics.last_rx) * 1000
+                )
+            if metrics.first_rx is None:
+                metrics.first_rx = received
+            metrics.last_rx = received
+            metrics.successful_fetches += 1
+            metrics.consecutive_fetch_timeouts = 0
+            metrics.last_successful_fetch_at = reading.received_timestamp.isoformat()
+            return reading
+        finally:
+            # A failed FETCH still consumed a serial window. Never retry in a tight loop.
+            self._last_fetch_started_monotonic = started
+            self._last_fetch_completed_monotonic = monotonic()
+            metrics.query_duration_ms += (monotonic() - started) * 1000
+
+    async def _query_and_normalize(self) -> DeviceReading:
         payload = await self._transaction(self.protocol.temperatures, expect_response=True)
         reading = self._normalize_payload(payload)
         self._last_fetch_started_monotonic = self._last_command_tx_monotonic.get(
@@ -1371,6 +1425,86 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             return reading
         await self._wait_until_next_fetch_window()
         return await self._query_reading()
+
+    async def stop_reading(self) -> None:
+        self._stop_requested = True
+        await super().stop_reading()
+
+    async def start_reading(self) -> AsyncIterator[DeviceReading]:
+        """Keep an open AT serial alive through isolated FETCH timeouts only."""
+        self._reading = True
+        self._stop_requested = False
+        try:
+            while self._reading:
+                try:
+                    reading = await self._read_once()
+                except SerialTransportError as exc:
+                    self.read_errors += 1
+                    if self._stop_requested:
+                        break
+                    port_open = bool(self.transport and self.transport.is_open)
+                    retry_in_place = (
+                        exc.code == "protocol_timeout"
+                        and port_open
+                        and self.fetch_diagnostics.consecutive_fetch_timeouts
+                        < self.consecutive_timeout_limit
+                    )
+                    reason = (
+                        "isolated_fetch_timeout"
+                        if retry_in_place
+                        else "port_closed"
+                        if not port_open
+                        else "consecutive_fetch_timeouts"
+                        if exc.code == "protocol_timeout"
+                        else exc.code
+                    )
+                    if self.fetch_diagnostics.last_failure:
+                        self.fetch_diagnostics.last_failure["recovery_reason"] = reason
+                    logger.warning(
+                        "AT4532 recovery port=%s reason=%s action=%s metrics=%s",
+                        self.port,
+                        reason,
+                        "retry_open_port" if retry_in_place else "reconnect",
+                        self.fetch_diagnostics.snapshot(),
+                    )
+                    if retry_in_place:
+                        continue
+                    for attempt in range(3):
+                        if self._stop_requested:
+                            break
+                        if self.transport:
+                            await self.transport.close()
+                        await asyncio.sleep(1)
+                        if self._stop_requested:
+                            break
+                        self.fetch_diagnostics.reconnect_count += 1
+                        try:
+                            await self.connect()
+                            self._reading = not self._stop_requested
+                            break
+                        except SerialTransportError:
+                            logger.exception(
+                                "AT4532 reconnect failed port=%s attempt=%s reason=%s",
+                                self.port,
+                                attempt + 1,
+                                reason,
+                            )
+                            if attempt == 2:
+                                raise
+                    continue
+                except Exception:
+                    self.read_errors += 1
+                    raise
+                self.last_message_at = reading.received_timestamp
+                self._read_count += 1
+                yield reading
+        finally:
+            self._reading = False
+            logger.info(
+                "AT4532 acquisition stopped port=%s metrics=%s",
+                self.port,
+                self.fetch_diagnostics.snapshot(),
+            )
 
     async def get_device_information(self) -> DeviceInformation:
         information = await super().get_device_information()

@@ -404,17 +404,31 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
                 delay is not None and delay > max(request.sync_tolerance_ms / 1000, 2)
             )
             issue = issue or bool(expected and expected >= 10 and len(stream) < expected * 0.8)
+            observed = statistics.median(intervals) if intervals else None
+            frequency_reduced = bool(
+                cadence and len(intervals) >= 4 and observed > cadence / 1000 * 1.5
+            )
+            reasons = []
+            if not stream:
+                reasons.append("no_samples")
+            if frequency_reduced:
+                reasons.append("reduced_frequency")
+            if delay is not None and delay > max(request.sync_tolerance_ms / 1000, 2):
+                reasons.append("late_start")
+            if expected and expected >= 10 and len(stream) < expected * 0.8:
+                reasons.append("missing_samples")
             source_quality.append(
                 {
                     "session_id": session["id"],
                     "role": role,
                     "count": len(stream),
                     "expected_count": expected,
+                    "expected_interval_seconds": cadence / 1000 if cadence else None,
+                    "frequency_reduced": frequency_reduced,
+                    "reasons": reasons,
                     "first_delay_seconds": delay,
-                    "observed_interval_seconds": statistics.median(intervals)
-                    if intervals
-                    else None,
-                    "has_issue": issue,
+                    "observed_interval_seconds": observed,
+                    "has_issue": issue or frequency_reduced,
                 }
             )
     analyzed_seconds = max(0.0, (request.end - request.start).total_seconds())

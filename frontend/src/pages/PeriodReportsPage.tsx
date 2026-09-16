@@ -1,3 +1,4 @@
+import { QualityDetails, type SourceQuality } from "../components/QualityDetails";
 import { PeakMarkers } from "../components/PeakMarkers";
 import {
   AlertTriangle,
@@ -42,6 +43,7 @@ type Preview = {
       temperature_sample_count: number;
       alert_count: number;
       gap_count: number;
+      source_quality?: SourceQuality[];
       coverage_seconds: number;
     };
     electrical: {
@@ -291,7 +293,8 @@ export default function PeriodReportsPage() {
                 <div className="period-preview">
                   <div className="metrics-grid four"><Metric label="Sessões" value={preview.statistics.general.session_count} /><Metric label="Potência média" value={preview.statistics.electrical.active_power_w.mean == null ? "—" : `${preview.statistics.electrical.active_power_w.mean.toFixed(2)} W`} /><Metric label="Temperatura máxima" value={preview.statistics.temperature.max == null ? "—" : `${preview.statistics.temperature.max.toFixed(2)} °C`} hint={preview.statistics.temperature.critical_channel_label} help="Maior temperatura registrada entre os canais ativos no período." /><Metric label="Energia" value={`${preview.statistics.electrical.energy_wh.toFixed(3)} Wh`} help="Energia estimada pela integração da potência medida ao longo do tempo." /></div>
                   {preview.warnings.map((warning) => <div className="preview-warning" key={warning}><AlertTriangle /> {warning}</div>)}
-                  {preview.series.map((series) => {
+                  <QualityDetails sources={preview.statistics.general.source_quality} electrical={preview.statistics.general.electrical_sample_count} thermal={preview.statistics.general.temperature_sample_count} />
+          {preview.series.map((series) => {
                     const points = mergedSeries(series, timeAxisMode);
                     return <div className="preview-chart" key={series.session_id}><div className="preview-chart-title"><h3>{series.session_name}</h3><Badge tone="neutral">{timeAxisMode === "synchronized" ? "Início comum da sessão" : "Horário real"}</Badge></div><ResponsiveContainer width="100%" height={330}><LineChart data={points}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="axisValue" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} minTickGap={45} /><YAxis tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="temperature" unit=" °C" /><YAxis tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="power" orientation="right" unit=" W" /><Tooltip labelFormatter={(value) => timeAxisMode === "synchronized" ? `Tempo decorrido ${formatTimeAxis(Number(value), timeAxisMode)}` : formatDate(new Date(Number(value)).toISOString())} /><Legend /><Line data={points.filter((row) => row.electricalTimestamp)} yAxisId="power" type="linear" dataKey="active_power_w" name="Potência ativa" stroke={POWER_COLOR} strokeWidth={2.5} dot={{ r: 1.5, strokeWidth: 0, fill: POWER_COLOR }} connectNulls={false} />{preview.selected_channels.map((channel) => <Line data={points.filter((row) => row.thermalTimestamp)} key={channel} yAxisId="temperature" type="linear" dataKey={`channel_${channel}`} name={preview.channel_labels[String(channel)] ?? `T${channel}`} stroke={CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length]} dot={{ r: 1.5, strokeWidth: 0, fill: CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length] }} connectNulls={false} />)}<PeakMarkers rows={points} powerKey="active_power_w" channels={preview.selected_channels.map((channel) => `channel_${channel}`)} /></LineChart></ResponsiveContainer></div>;
                   })}
