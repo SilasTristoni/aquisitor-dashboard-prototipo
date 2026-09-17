@@ -85,6 +85,8 @@ O script usa Chrome headless e Playwright instalado em `build/browser-tools`. Va
 
 O ensaio sintético usa 300 leituras por fonte; a variante degradada entrega somente uma térmica a cada seis segundos. Não há acesso às portas seriais nos testes visuais.
 
+Resultado: **88 combinações aprovadas**, zero erros JavaScript, zero transbordamentos horizontais do documento e nenhum card fora da largura disponível. Registro local: `build/ux-review/visual-results.json`. Foram inspecionadas também as capturas dos fluxos principais e os documentos sintéticos: PDF técnico de cinco páginas nesta fixture, resumo executivo de uma página, imagens e XLSX. O número de páginas depende do conteúdo e das opções do relatório.
+
 ## Validação e entrega
 
 Resultados finais, commit do código, ZIP e SHA-256 são registrados nas notas da versão após a execução dos gates. A suíte cobre 100/300 FETCH saudáveis sem reconexão, timeout isolado, reconexões justificadas, sessão preservada, persistência sem duplicação, frequência observada, mensagens e fluxos da interface. As regressões físicas existentes do GPM, sincronização e proteção das portas continuam obrigatórias.

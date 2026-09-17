@@ -1,5 +1,9 @@
 # Pacote portátil Windows — 0.5.6-physical-alpha
 
+> Documento histórico da 0.5.6. Para a client-preview atual, consulte
+> [ThermoPower 0.6.3](THERMAL_RECOVERY_UX_063.md). As credenciais e a cadência descritas
+> abaixo pertencem à build histórica e não são instruções para a versão atual.
+
 ## Objetivo e limites
 
 Este pacote é uma build de engenharia para homologar em Windows 10/11 x64 a aquisição física
