@@ -199,4 +199,5 @@ if __name__ == "__main__":
                 "ThermoPower Monitor",
                 0x10,
             )
-        raise
+        # Do not let PyInstaller show a second dialog containing the traceback.
+        sys.exit(1)

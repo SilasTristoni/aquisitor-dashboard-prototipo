@@ -1,6 +1,7 @@
 import io
 import json
 import logging
+import os
 import subprocess
 import sys
 import zipfile
@@ -246,6 +247,43 @@ logging.shutdown()
     record = json.loads(errors.splitlines()[-1])
     assert record["exception_type"] == "RuntimeError"
     assert record["error_code"] == record["correlation_id"]
+
+
+def test_launcher_failure_exits_without_an_unhandled_operator_traceback(tmp_path):
+    backend = Path(__file__).resolve().parents[1]
+    environment = {k: v for k, v in os.environ.items() if not k.startswith("THERMOPOWER_")}
+    environment.update(
+        {
+            "PYTHONPATH": str(backend),
+            "THERMOPOWER_APP_DATA_DIR": str(tmp_path),
+            "THERMOPOWER_DATABASE_URL": f"sqlite:///{(tmp_path / 'missing/data.db').as_posix()}",
+            "THERMOPOWER_MUTEX_NAME": f"ThermoPowerLauncherRegression-{tmp_path.name}",
+            "THERMOPOWER_NO_BROWSER": "1",
+        }
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import runpy, sys; sys.frozen = True; "
+            "sys._MEIPASS = sys.argv[1]; runpy.run_path(sys.argv[2], run_name='__main__')",
+            str(backend),
+            str(backend / "app/windows_launcher.py"),
+        ],
+        cwd=backend,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 1
+    errors = (tmp_path / "logs/errors.log").read_text(encoding="utf-8")
+    record = json.loads(errors.splitlines()[-1])
+    assert record["exception_type"] == "OperationalError"
+    assert record["error_code"] and record["traceback"]
+    # A bare traceback would also trigger PyInstaller's unhandled-error dialog.
+    assert "Traceback (most recent call last):" not in result.stderr.splitlines()
 
 
 def test_existing_acquisition_event_gets_searchable_code_without_serial_access(

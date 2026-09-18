@@ -48,6 +48,12 @@ A reconfiguração também reativa os loggers da aplicação desabilitados pelo
 e confirma que uma falha posterior do launcher chega ao `errors.log` com código
 e traceback; antes da correção, esse arquivo ficava vazio.
 
+Uma falha de inicialização encerra o launcher com código 1 após registrar o erro
+e apresentar a mensagem segura. A exceção não é relançada ao PyInstaller, evitando
+um segundo diálogo com traceback. O teste força uma falha real de abertura do
+banco em diretório temporário e verifica log, código de saída e ausência de
+traceback não tratado.
+
 Cada arquivo gira a 5.000.000 bytes, com cinco backups. `errors.log` recebe ERROR
 e níveis superiores; o arquivo geral recebe INFO e superiores. É possível indicar
 `THERMOPOWER_APP_DATA_DIR` para execução isolada, ou `THERMOPOWER_LOG_DIRECTORY`.
