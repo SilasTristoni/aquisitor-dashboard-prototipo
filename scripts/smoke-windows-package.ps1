@@ -92,7 +92,7 @@ try {
     if (-not (Test-Path -LiteralPath $FirstAccessPath -PathType Leaf)) {
         throw "As credenciais locais de primeiro acesso nao foram geradas."
     }
-    $FirstAccessLines = Get-Content -LiteralPath $FirstAccessPath
+    $FirstAccessLines = Get-Content -LiteralPath $FirstAccessPath -Encoding utf8
     $LoginEmail = ($FirstAccessLines | Where-Object { $_.StartsWith("E-mail: ") } |
         Select-Object -First 1).Substring(8)
     $LoginPassword = ($FirstAccessLines | Where-Object { $_.StartsWith("Senha temporaria: ") -or
