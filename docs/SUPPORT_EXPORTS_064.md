@@ -43,6 +43,11 @@ a API também configura logs na inicialização. O diretório padrão Windows é
   errors.log
 ```
 
+A reconfiguração também reativa os loggers da aplicação desabilitados pelo
+`fileConfig` do Alembic. Um teste em subprocesso reproduz a configuração real
+e confirma que uma falha posterior do launcher chega ao `errors.log` com código
+e traceback; antes da correção, esse arquivo ficava vazio.
+
 Cada arquivo gira a 5.000.000 bytes, com cinco backups. `errors.log` recebe ERROR
 e níveis superiores; o arquivo geral recebe INFO e superiores. É possível indicar
 `THERMOPOWER_APP_DATA_DIR` para execução isolada, ou `THERMOPOWER_LOG_DIRECTORY`.

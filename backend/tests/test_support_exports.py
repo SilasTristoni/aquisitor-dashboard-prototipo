@@ -1,6 +1,8 @@
 import io
 import json
 import logging
+import subprocess
+import sys
 import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -205,6 +207,45 @@ def test_pdf_backend_and_manual_are_required_in_windows_package():
     assert '"user-guide.pdf"' in spec
     script = (root / "scripts/build-windows-engineering.ps1").read_text(encoding="utf-8")
     assert '"Manual do Usuário - ThermoPower Monitor.pdf"' in script
+
+
+def test_launcher_errors_remain_logged_after_alembic_configuration(tmp_path):
+    backend = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import logging
+import sys
+from logging.config import fileConfig
+from pathlib import Path
+from app.core.observability import configure_logging
+
+directory = Path(sys.argv[1])
+configure_logging(directory)
+launcher = logging.getLogger('__main__')
+fileConfig('alembic.ini')
+configure_logging(directory)
+try:
+    raise RuntimeError('startup regression sentinel')
+except RuntimeError:
+    launcher.exception('Launcher failed after migrations')
+logging.shutdown()
+""",
+            str(tmp_path),
+        ],
+        cwd=backend,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    errors = (tmp_path / "errors.log").read_text(encoding="utf-8")
+    assert "startup regression sentinel" in errors
+    record = json.loads(errors.splitlines()[-1])
+    assert record["exception_type"] == "RuntimeError"
+    assert record["error_code"] == record["correlation_id"]
 
 
 def test_existing_acquisition_event_gets_searchable_code_without_serial_access(

@@ -153,6 +153,13 @@ def configure_logging(
     directory.mkdir(parents=True, exist_ok=True)
     root = logging.getLogger()
     root.setLevel(logging.INFO)
+    # Alembic's fileConfig disables loggers created before migrations, including
+    # the frozen launcher's __main__. Restore application logging on reconfiguration.
+    for name, logger in list(logging.Logger.manager.loggerDict.items()):
+        if isinstance(logger, logging.Logger) and (
+            name == "__main__" or name == "app" or name.startswith(("app.", "uvicorn"))
+        ):
+            logger.disabled = False
     for name, level in (("thermopower.log", logging.INFO), ("errors.log", logging.ERROR)):
         path = (directory / name).resolve()
         if any(
