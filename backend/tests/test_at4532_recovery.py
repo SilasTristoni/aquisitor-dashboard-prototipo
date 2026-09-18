@@ -203,7 +203,8 @@ async def test_reconnect_preserves_session_and_persists_only_real_unique_reading
         assert len(rows) == len({r.device_timestamp for r in rows}) == 3
         assert sorted(r.sequence for r in rows) == [1, 2, 3]
     runtime.received_times.clear()
-    runtime.received_times.extend(datetime.now(UTC) + timedelta(seconds=i * 6) for i in range(6))
+    origin = datetime.now(UTC)
+    runtime.received_times.extend(origin + timedelta(seconds=i * 6) for i in range(6))
     status = await service.status(device_id)
     assert status["expected_interval_ms"] == 1000
     assert status["observed_interval_ms"] == 6000

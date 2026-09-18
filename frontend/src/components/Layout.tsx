@@ -1,3 +1,4 @@
+import { HelpMenu, FirstUseHint } from "./HelpMenu";
 import {
   Activity, AlertTriangle, BarChart3, Bell, Boxes, ChevronRight, CircleGauge, ClipboardList,
   Database, FileBarChart, FileUp, GitCompareArrows, LogOut, Menu, Moon, RadioTower, Settings2, Sun,
@@ -51,8 +52,8 @@ export default function Layout() {
     </aside>
     {open && <button className="sidebar-backdrop" onClick={() => setOpen(false)} aria-label="Fechar menu" />}
     <main className="main-content">
-      <header className="topbar"><button className="menu-button" aria-label="Abrir menu" onClick={() => setOpen(true)}><Menu /></button><div className="breadcrumbs"><span>ThermoPower</span><ChevronRight /><strong>{titles[segment] ?? "Tempo real"}</strong></div><div className="topbar-actions"><span className="system-pill"><i /> Online</span><button className="icon-button" onClick={() => setDark(!dark)} aria-label="Alternar tema">{dark ? <Sun /> : <Moon />}</button><Link className="icon-button" to="/configuracao-inicial" aria-label="Configuração inicial"><Settings2 /></Link><button className="icon-button warning-dot" aria-label="Alertas"><AlertTriangle /></button></div></header>
-      <div className="page"><Outlet /></div>
+      <header className="topbar"><button className="menu-button" aria-label="Abrir menu" onClick={() => setOpen(true)}><Menu /></button><div className="breadcrumbs"><span>ThermoPower</span><ChevronRight /><strong>{titles[segment] ?? "Tempo real"}</strong></div><div className="topbar-actions"><HelpMenu /><span className="system-pill"><i /> Online</span><button className="icon-button" onClick={() => setDark(!dark)} aria-label="Alternar tema">{dark ? <Sun /> : <Moon />}</button><Link className="icon-button" to="/configuracao-inicial" aria-label="Configuração inicial"><Settings2 /></Link><button className="icon-button warning-dot" aria-label="Alertas"><AlertTriangle /></button></div></header>
+      <div className="page">{location.pathname === "/" && <FirstUseHint />}<Outlet /></div>
     </main>
   </div>;
 }

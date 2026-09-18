@@ -1,4 +1,4 @@
-# ThermoPower Monitor 0.6.0-client-preview
+# ThermoPower Monitor 0.6.4-client-preview
 
 Plataforma full-stack para aquisição industrial combinada: até 32 temperaturas pelo Applent AT4532 e grandezas elétricas pelo GW Instek GPM-8213. As sessões são rastreáveis, aceitam uma ou as duas fontes, sincronizam timestamps e mantêm o protótipo original em `legacy/`.
 
@@ -9,6 +9,14 @@ Plataforma full-stack para aquisição industrial combinada: até 32 temperatura
 > Consulte [fontes e lacunas](docs/PHYSICAL_PROTOCOL_GAPS.md) e
 > [roteiro de bancada](docs/PHYSICAL_ENGINEERING_TEST.md). As respostas conhecidas que bloqueiam
 > o empacotamento estão no [gate de regressão física](docs/PHYSICAL_REGRESSION_FIXTURES.md).
+
+## Suporte e guia do operador
+
+Consulte o [Manual do Usuário](docs/MANUAL_USUARIO.md) e as [notas da versão 0.6.4](docs/SUPPORT_EXPORTS_064.md).
+A distribuição inclui o manual PDF; na aplicação, use **Ajuda → Guia do usuário**.
+Erros inesperados apresentam um código pesquisável em **Eventos e logs**. Em **Diagnóstico →
+Exportar pacote de suporte**, gere um ZIP sanitizado mesmo sem sessão ativa. Os logs Windows
+ficam em `%LOCALAPPDATA%\ThermoPower Monitor\logs`, com rotação automática.
 
 ## Funcionalidades entregues
 

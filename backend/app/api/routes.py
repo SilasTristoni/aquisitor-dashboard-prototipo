@@ -29,6 +29,7 @@ from app.adapters.transports import SerialTransportConfiguration, SerialTranspor
 from app.api.deps import get_current_user, require_roles
 from app.core.config import get_settings
 from app.core.database import engine, get_db
+from app.core.observability import build_metadata, request_context, sanitize
 from app.core.security import (
     create_access_token,
     decode_access_token,
@@ -294,7 +295,7 @@ def build_info() -> dict:
             "password": settings.demo_admin_password,
         }
     return {
-        "version": settings.app_version,
+        **build_metadata(),
         "environment": settings.environment,
         "demo_credentials": demo_credentials,
     }
@@ -1879,12 +1880,35 @@ def list_events(
     level: str | None = None,
     category: str | None = None,
     search: str | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    session_id: int | None = None,
+    device_id: int | None = None,
+    error_code: str | None = None,
 ) -> dict:
     conditions = []
+    if start:
+        conditions.append(SystemEvent.timestamp >= start)
+    if end:
+        conditions.append(SystemEvent.timestamp <= end)
+    if session_id:
+        conditions.append(SystemEvent.session_id == session_id)
+    if device_id:
+        conditions.append(SystemEvent.device_id == device_id)
+    if error_code:
+        conditions.append(SystemEvent.details["correlation_id"].as_string() == error_code)
     if level:
         conditions.append(SystemEvent.level == level)
     if category:
-        conditions.append(SystemEvent.category == category)
+        aliases = {
+            "AUTH": ["login"], "APPLICATION": ["configuration"],
+            "SERIAL": ["connection", "connection_error", "disconnection", "disconnection_error"],
+            "ACQUISITION": ["read_error"],
+        }
+        condition = SystemEvent.category.in_([category, *aliases.get(category, [])])
+        if category == "SESSION":
+            condition = or_(condition, SystemEvent.category.startswith("session_"))
+        conditions.append(condition)
     if search:
         conditions.append(SystemEvent.message.ilike(f"%{search}%"))
     total = db.scalar(select(func.count()).select_from(SystemEvent).where(*conditions)) or 0
@@ -1897,7 +1921,7 @@ def list_events(
             .limit(page_size)
         )
     )
-    return _page([_orm_dict(row) for row in rows], total, page, page_size)
+    return _page([sanitize(_orm_dict(row)) for row in rows], total, page, page_size)
 
 
 @router.get("/reports", response_model=None)
@@ -1939,9 +1963,16 @@ def _finish_period_report(db: Session, report: Report, builder: callable) -> byt
         db.commit()
         return content
     except Exception as exc:
-        report.status = "failed"
-        report.error_message = str(exc)[:2000]
-        db.commit()
+        context = request_context.get() or {}
+        context["exception_type"] = type(exc).__name__
+        db.rollback()
+        try:
+            report.status = "failed"
+            report.error_message = f"{context.get('correlation_id', '')}: {type(exc).__name__}"
+            db.commit()
+        except Exception:
+            db.rollback()
+            # The request logger still captures the original failure and its identifier.
         raise
 
 

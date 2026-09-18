@@ -1,4 +1,4 @@
-param([switch]$SkipDependencyInstall)
+﻿param([switch]$SkipDependencyInstall)
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -11,8 +11,11 @@ $EngineeringZip = "$EngineeringRoot.zip"
 $StagingRoot = Join-Path $RepositoryRoot "dist\ThermoPowerMonitor"
 $ValidatedZip = Join-Path $RepositoryRoot "dist\ThermoPower-$Version.validated.zip"
 
-if ($Version -ne "0.6.3-client-preview") {
-    throw "Este script aceita somente a versao 0.6.3-client-preview."
+if ($Version -ne "0.6.4-client-preview") {
+    throw "Este script aceita somente a versao 0.6.4-client-preview."
+}
+if ((Test-Path -LiteralPath $EngineeringRoot) -or (Test-Path -LiteralPath $EngineeringZip)) {
+    throw "Esta versao ja foi empacotada. Escolha uma nova versao para preservar a anterior."
 }
 if (-not (Test-Path -LiteralPath $Python)) { throw "Ambiente .venv ausente." }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw "npm nao encontrado." }
@@ -28,17 +31,21 @@ if (-not $SkipDependencyInstall) {
     finally { Pop-Location }
 }
 
+$TestTemp = Join-Path $RepositoryRoot ("build\pytest-package-" + [guid]::NewGuid().ToString("N"))
+$MigrationDatabase = Join-Path $RepositoryRoot ("build\migration-check-" + [guid]::NewGuid().ToString("N") + ".db")
+$PreviousDatabaseUrl = $env:THERMOPOWER_DATABASE_URL
+$env:THERMOPOWER_DATABASE_URL = "sqlite:///$($MigrationDatabase.Replace('\', '/'))"
 Push-Location (Join-Path $RepositoryRoot "backend")
 try {
     & $Python -m ruff check . --no-cache
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $PhysicalRegressionOutput = @()
-    & $Python -m pytest -p no:cacheprovider -m physical_regression_fixtures |
+    & $Python -m pytest -p no:cacheprovider --basetemp "$TestTemp-physical" -m physical_regression_fixtures |
         Tee-Object -Variable PhysicalRegressionOutput | ForEach-Object { Write-Host $_ }
     $PhysicalRegressionExitCode = $LASTEXITCODE
     if ($PhysicalRegressionExitCode -ne 0) { exit $PhysicalRegressionExitCode }
     $BackendTestOutput = @()
-    & $Python -m pytest -p no:cacheprovider |
+    & $Python -m pytest -p no:cacheprovider --basetemp "$TestTemp-full" |
         Tee-Object -Variable BackendTestOutput | ForEach-Object { Write-Host $_ }
     $BackendTestExitCode = $LASTEXITCODE
     if ($BackendTestExitCode -ne 0) { exit $BackendTestExitCode }
@@ -49,7 +56,7 @@ try {
     & $Python -m pip check
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
-finally { Pop-Location }
+finally { Pop-Location; $env:THERMOPOWER_DATABASE_URL = $PreviousDatabaseUrl }
 
 Push-Location $RepositoryRoot
 try {
@@ -85,6 +92,13 @@ finally { Pop-Location }
 
 Push-Location $RepositoryRoot
 try {
+    & $Python scripts/build-user-guide.py
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    @{
+        version = $Version
+        commit = (git rev-parse HEAD)
+        build_date = [DateTime]::UtcNow.ToString("o")
+    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $RepositoryRoot "build\build-info.json") -Encoding utf8
     & $Python -m PyInstaller --clean --noconfirm thermopower.spec
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
@@ -93,6 +107,11 @@ finally { Pop-Location }
 if (-not (Test-Path -LiteralPath (Join-Path $StagingRoot "ThermoPowerMonitor.exe") -PathType Leaf)) {
     throw "Executavel PyInstaller ausente no staging da build."
 }
+
+Copy-Item -LiteralPath (Join-Path $RepositoryRoot "build\user-guide.pdf") `
+    -Destination (Join-Path $StagingRoot "Manual do Usuário - ThermoPower Monitor.pdf")
+Copy-Item -LiteralPath (Join-Path $RepositoryRoot "build\build-info.json") `
+    -Destination (Join-Path $StagingRoot "build-info.json")
 
 # PyInstaller's Matplotlib hook adds its demonstration dataset after the spec data list is
 # evaluated. It is not required by ThermoPower and must not be shipped in a client preview.
@@ -203,6 +222,8 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "TEST-RESULTS.txt") -Encoding u
     "Synchronized and real-time comparative axes: passed",
     "docker compose config: $DockerResult",
     "Packaged executable smoke: passed",
+    "Packaged executive PDF/PNG and technical PDF/XLSX for electrical/thermal/combined: passed",
+    "Packaged user manual and sanitized support ZIP: passed",
     "",
     $Smoke.Trim(),
     "",
@@ -220,7 +241,9 @@ $RequiredPackagePaths = @(
     "_internal",
     "CLIENT-PREVIEW.txt",
     "PROTOCOL-SOURCES.txt",
-    "TEST-RESULTS.txt"
+    "TEST-RESULTS.txt",
+    "Manual do Usuário - ThermoPower Monitor.pdf",
+    "build-info.json"
 )
 foreach ($RelativePath in $RequiredPackagePaths) {
     $RequiredPath = Join-Path $StagingRoot $RelativePath
@@ -287,7 +310,13 @@ try {
 }
 finally {
     if (Test-Path -LiteralPath $ZipVerificationRoot) {
-        Remove-Item -LiteralPath $ZipVerificationRoot -Recurse -Force
+        $ResolvedVerificationRoot = [IO.Path]::GetFullPath($ZipVerificationRoot)
+        $ExpectedVerificationParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\")
+        if ((Split-Path $ResolvedVerificationRoot -Parent) -ne $ExpectedVerificationParent -or
+            (Split-Path $ResolvedVerificationRoot -Leaf) -notlike "thermopower-zip-verification-*") {
+            throw "Diretorio de verificacao fora do destino temporario esperado."
+        }
+        Remove-Item -LiteralPath $ResolvedVerificationRoot -Recurse -Force
     }
 }
 $ValidatedZipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ValidatedZip).Hash
@@ -295,6 +324,13 @@ $ValidatedZipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ValidatedZip).
 # Promote only the fully assembled, hashed, extracted and reverified package. Older versioned
 # engineering builds are never touched. An existing package for this exact version is moved to
 # same-volume backups and restored if either promotion or the final byte verification fails.
+if ((Test-Path -LiteralPath $EngineeringRoot) -or (Test-Path -LiteralPath $EngineeringZip)) {
+    throw "O destino passou a existir durante a build; nenhuma versao sera sobrescrita."
+}
+$ResolvedStaging = [IO.Path]::GetFullPath($StagingRoot)
+if ($ResolvedStaging -ne [IO.Path]::GetFullPath((Join-Path $RepositoryRoot "dist\ThermoPowerMonitor"))) {
+    throw "Staging fora do repositorio."
+}
 $PromotionId = [guid]::NewGuid().ToString("N")
 $PreviousEngineeringRoot = "$EngineeringRoot.previous-$PromotionId"
 $PreviousEngineeringZip = "$EngineeringZip.previous-$PromotionId"

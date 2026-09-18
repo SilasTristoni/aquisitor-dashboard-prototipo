@@ -33,6 +33,8 @@ const scenarios = [
   ['compare', '/comparacao'], ['measurements', '/medicoes'], ['events', '/eventos'],
   ['imports', '/importar'], ['users', '/usuarios'], ['diagnostics', '/diagnostico'],
   ['executive', '/executivo'], ['setup', '/configuracao-inicial'], ['login', '/login'],
+  ['help', '/diagnostico'], ['about', '/diagnostico'],
+  ['export-error', '/sessoes/1'], ['support-event', '/eventos'],
 ];
 const results = [];
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
@@ -73,7 +75,7 @@ try {
           const apiPath = url.pathname.replace('/api/v1', '');
           let payload;
           if (apiPath === '/auth/me') payload = user;
-          else if (apiPath === '/build-info') payload = { demo_credentials: null, version: '0.6.3-client-preview', client_preview: true };
+          else if (apiPath === '/build-info') payload = { demo_credentials: null, version: '0.6.4-client-preview', environment: 'client-preview', build: 'synthetic-review', build_date: '2026-09-18T14:00:00Z', client_preview: true };
           else if (apiPath === '/devices') payload = devices;
           else if (/\/devices\/\d+\/status$/.test(apiPath)) payload = status(Number(apiPath.split('/')[2]));
           else if (apiPath.endsWith('/channels')) payload = session.channels.map(c => ({ ...c, device_id: 1, sensor_type: 'K', unit: '°C', correction_offset: 0, display_order: c.channel }));
@@ -84,6 +86,10 @@ try {
           else if (apiPath === '/sessions') payload = paginated(url.searchParams.has('status') && url.searchParams.get('status') !== 'finished' ? (active ? [{ ...session, status: 'running', started_at: started }] : []) : [{ ...session, operator: user.name }]);
           else if (apiPath === '/sessions/1') payload = session;
           else if (apiPath === '/reports/period/preview') payload = preview;
+          else if (apiPath === '/reports/period/executive.pdf' && scenario === 'export-error') {
+            await route.fulfill({ status: 500, json: { error: { message: 'Não foi possível gerar o resumo executivo.', correlation_id: 'TP-EXP-A82F31' } } }); return;
+          }
+          else if (apiPath === '/events' && scenario === 'support-event') payload = paginated([{ id: 1, timestamp: session.ended_at, level: 'error', category: 'EXPORT', message: 'Não foi possível gerar o resumo executivo.', session_id: 1, details: { correlation_id: 'TP-EXP-A82F31', exception_type: 'ModuleNotFoundError', operation: 'POST /reports/period/executive.pdf' } }]);
           else if (apiPath === '/hardware/discovery') payload = [];
           else if (apiPath.endsWith('/protocol-probe')) {
             await route.fulfill({ status: 409, json: { detail: 'O equipamento está atualmente em aquisição pelo ThermoPower. Desconecte-o antes de executar o diagnóstico de comunicação.' } }); return;
@@ -126,6 +132,24 @@ try {
           await page.getByRole('link', { name: 'Ver resultados' }).waitFor();
         }
         if (scenario === 'exports') await page.getByText('Exportar', { exact: true }).click();
+        if (scenario === 'help' || scenario === 'about') {
+          await page.locator('.help-menu > summary').click();
+          if (scenario === 'about') {
+            await page.getByRole('button', { name: 'Sobre o ThermoPower' }).click();
+            await page.getByRole('dialog').waitFor();
+          }
+        }
+        if (scenario === 'export-error') {
+          await page.getByText('Exportar', { exact: true }).click();
+          await page.getByRole('button', { name: 'Resumo executivo · PDF' }).click();
+          await page.getByText('Os dados da sessão permanecem salvos.').waitFor();
+          assert.equal(await page.getByRole('button', { name: 'Tentar novamente' }).count(), 1);
+          assert.equal(await page.getByRole('button', { name: 'Exportar diagnóstico' }).count(), 1);
+        }
+        if (scenario === 'support-event') {
+          await page.getByText('Mostrar detalhes técnicos').click();
+          await page.getByText('Código: TP-EXP-A82F31', { exact: true }).waitFor();
+        }
         if (scenario === 'period-report') {
           await page.getByRole('button', { name: 'Gerar prévia' }).click();
           await page.locator('.preview-chart').waitFor();

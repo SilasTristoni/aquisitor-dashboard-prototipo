@@ -6,7 +6,6 @@ import secrets
 import socket
 import sys
 import threading
-import traceback
 import webbrowser
 from pathlib import Path
 
@@ -92,23 +91,10 @@ def _configure_environment(runtime: Path, application: Path) -> None:
 
 
 def _configure_file_logging(runtime: Path, application: Path) -> None:
-    log_path = application / "logs" / "thermopower.log"
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    handlers = [
-        handler
-        for handler in root_logger.handlers
-        if isinstance(handler, logging.FileHandler)
-        and Path(handler.baseFilename).resolve() == log_path.resolve()
-    ]
-    if not handlers:
-        handler = logging.FileHandler(log_path, encoding="utf-8", delay=False)
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-        root_logger.addHandler(handler)
-        handlers.append(handler)
-    root_logger.info("launcher configured application=%s runtime=%s", application, runtime)
-    for handler in handlers:
-        handler.flush()
+    from app.core.observability import configure_logging
+
+    configure_logging(application / "logs")
+    logging.getLogger(__name__).info("launcher configured")
 
 
 def _acquire_single_instance(name: str = "ThermoPowerMonitorRunning", kernel32=None) -> bool:
@@ -193,17 +179,23 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except Exception as exc:
+    except Exception:
         application = _application_directory()
-        crash_log = application / "logs" / "thermopower-crash.log"
-        crash_log.parent.mkdir(parents=True, exist_ok=True)
-        crash_log.write_text(traceback.format_exc(), encoding="utf-8")
+        from app.core.observability import configure_logging, new_correlation_id
+
+        configure_logging(application / "logs")
+        code = new_correlation_id()
+        logging.getLogger(__name__).exception(
+            "Launcher failed", extra={"correlation_id": code, "error_code": code}
+        )
+        crash_log = application / "logs" / "errors.log"
         if os.environ.get("THERMOPOWER_NO_BROWSER", "").casefold() not in {"1", "true", "yes"}:
             import ctypes
 
             ctypes.windll.user32.MessageBoxW(
                 0,
-                f"Não foi possível iniciar o ThermoPower Monitor.\n\n{exc}\n\nLog: {crash_log}",
+                "Não foi possível iniciar o ThermoPower Monitor.\n"
+                f"Código: {code}\n\nLog: {crash_log}",
                 "ThermoPower Monitor",
                 0x10,
             )

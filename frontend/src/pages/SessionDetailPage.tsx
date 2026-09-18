@@ -162,9 +162,12 @@ export default function SessionDetailPage() {
     catch (reason) { setError(reason instanceof Error ? reason.message : "Falha ao atualizar canais"); }
   }
 
+  const [retryExport, setRetryExport] = useState<(() => void) | undefined>();
+
   async function exportFile(
     kind: "pdf" | "xlsx" | "png" | "csv" | "executive.png" | "executive.pdf",
   ) {
+    setRetryExport(() => () => { void exportFile(kind); });
     setBusy("Preparando arquivo profissional…"); setError("");
     try {
       const endpoint = kind === "png" ? "/reports/period/chart.png" : `/reports/period/${kind}`;
@@ -214,7 +217,7 @@ export default function SessionDetailPage() {
           { label: "Imagem do gráfico", action: () => void exportFile("png") },
         ]} />
       </>} />
-    {error && <ErrorNotice message={error} />}
+    {error && <ErrorNotice message={error} retry={retryExport} sessionId={Number(id)} />}
     {busy && <Spinner label={busy} />}
 
     <div className="detail-strip">

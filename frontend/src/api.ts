@@ -4,13 +4,18 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
+    public correlationId?: string,
   ) {
-    super(message);
+    super(correlationId ? `${message}\nCódigo: ${correlationId}` : message);
   }
 }
 
-export function friendlyApiMessage(message?: string | null): string {
+export function friendlyApiMessage(message?: unknown): string {
   if (!message) return "Falha ao comunicar com o servidor";
+  if (typeof message !== "string") {
+    if (typeof message === "object" && message && "message" in message && typeof message.message === "string") return message.message;
+    return "Não foi possível concluir a operação. Confira os dados e tente novamente.";
+  }
   const messages: Record<string, string> = {
     protocol_timeout: "O equipamento não respondeu dentro do tempo esperado.",
     timeout: "O equipamento não respondeu dentro do tempo esperado.",
@@ -36,6 +41,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     throw new ApiError(
       friendlyApiMessage(body?.error?.message ?? body?.detail),
       response.status,
+      body?.error?.correlation_id ?? response.headers?.get("X-Correlation-ID") ?? undefined,
     );
   }
   if (response.status === 204) return undefined as T;
@@ -45,7 +51,11 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 export async function download(path: string, filename: string): Promise<void> {
   const token = localStorage.getItem("thermopower.token");
   const response = await fetch(`${API_BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) throw new ApiError("Não foi possível gerar o arquivo", response.status);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new ApiError(payload?.error?.message ?? "Não foi possível gerar o arquivo", response.status,
+      payload?.error?.correlation_id ?? response.headers?.get("X-Correlation-ID") ?? undefined);
+  }
   const url = URL.createObjectURL(await response.blob());
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -75,6 +85,7 @@ export async function downloadWithBody(
         payload?.error?.message ?? payload?.detail ?? "Não foi possível gerar o arquivo",
       ),
       response.status,
+      payload?.error?.correlation_id ?? response.headers?.get("X-Correlation-ID") ?? undefined,
     );
   }
   const url = URL.createObjectURL(await response.blob());

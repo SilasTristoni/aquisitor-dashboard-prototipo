@@ -91,6 +91,7 @@ export default function PeriodReportsPage() {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [retryExport, setRetryExport] = useState<(() => void) | undefined>();
   const [start, setStart] = useState(localInput(new Date(now.getTime() - 24 * 3_600_000)));
   const [end, setEnd] = useState(localInput(now));
   const [title, setTitle] = useState("Relatório de medições por período");
@@ -213,7 +214,10 @@ export default function PeriodReportsPage() {
           ? `/reports/period/${kind}`
           : `/reports/period/chart.${kind}`;
       const extension = kind.split(".").at(-1) ?? kind;
-      await downloadWithBody(endpoint, `relatorio-periodo.${extension}`, payload());
+      const body = payload();
+      const attempt = () => downloadWithBody(endpoint, `relatorio-periodo.${extension}`, body);
+      setRetryExport(() => () => { setError(""); void attempt().catch((reason: Error) => setError(reason.message)); });
+      await attempt();
       await load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Falha ao gerar arquivo");
@@ -222,12 +226,19 @@ export default function PeriodReportsPage() {
     }
   }
 
+  async function exportSession(kind: "pdf" | "xlsx" | "csv") {
+    setError("");
+    setRetryExport(() => () => { void exportSession(kind); });
+    try { await download(`/reports/sessions/${sessionId}.${kind}`, `sessao-${sessionId}.${kind}`); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível gerar o arquivo."); }
+  }
+
   const selected = sessions.find((session) => session.id === sessionId);
 
   return (
     <>
       <PageHeader eyebrow="DOCUMENTAÇÃO TÉCNICA" title="Central de relatórios" description="Gere relatórios rastreáveis por período ou por sessão, com gráficos renderizados no servidor." />
-      {error && <ErrorNotice message={error} />}
+      {error && <ErrorNotice message={error} retry={retryExport} sessionId={(tab === "session" ? sessionId : filterSessionId) || undefined} />}
       <div className="tab-list" role="tablist">
         <button className={tab === "period" ? "active" : ""} onClick={() => setTab("period")}>Por período</button>
         <button className={tab === "session" ? "active" : ""} onClick={() => setTab("session")}>Por sessão</button>
@@ -309,7 +320,7 @@ export default function PeriodReportsPage() {
         <div className="report-layout">
           <Panel title="Relatório por sessão" kicker="COMPATIBILIDADE PRESERVADA">
             <label className="field"><span>Sessão</span><select value={sessionId} onChange={(event) => setSessionId(Number(event.target.value))}>{sessions.map((session) => <option key={session.id} value={session.id}>{session.name}</option>)}</select></label>
-            <div className="report-buttons"><button className="button primary" disabled={!selected} onClick={() => void download(`/reports/sessions/${sessionId}.pdf`, `sessao-${sessionId}.pdf`)}><FileText /> PDF</button><button className="button secondary" disabled={!selected} onClick={() => void download(`/reports/sessions/${sessionId}.xlsx`, `sessao-${sessionId}.xlsx`)}><FileSpreadsheet /> XLSX</button><button className="button ghost" disabled={!selected} onClick={() => void download(`/reports/sessions/${sessionId}.csv`, `sessao-${sessionId}.csv`)}><Download /> CSV</button></div>
+            <div className="report-buttons"><button className="button primary" disabled={!selected} onClick={() => void exportSession("pdf")}><FileText /> PDF</button><button className="button secondary" disabled={!selected} onClick={() => void exportSession("xlsx")}><FileSpreadsheet /> XLSX</button><button className="button ghost" disabled={!selected} onClick={() => void exportSession("csv")}><Download /> CSV</button></div>
           </Panel>
           <Panel title="Sessão selecionada" kicker="RESUMO">{selected ? <div className="report-preview"><p>RELATÓRIO DE MEDIÇÃO</p><h2>{selected.name}</h2><div><span>Equipamento</span><strong>{selected.device_name}</strong></div><div><span>Operador</span><strong>{selected.operator}</strong></div><div><span>Leituras</span><strong>{selected.sample_count.toLocaleString("pt-BR")}</strong></div><div><span>Alertas</span><strong>{selected.alert_count}</strong></div></div> : <Empty title="Nenhuma sessão registrada ainda" text="Inicie um ensaio para gerar relatórios por sessão." />}</Panel>
         </div>

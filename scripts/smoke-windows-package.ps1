@@ -1,4 +1,4 @@
-param([string]$Executable)
+﻿param([string]$Executable)
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -15,6 +15,7 @@ if (-not (Test-Path -LiteralPath $Executable)) {
 New-Item -ItemType Directory -Path $SmokeData -Force | Out-Null
 $ManagedEnvironmentVariables = @(
     "THERMOPOWER_APP_DATA_DIR",
+    "THERMOPOWER_LOG_DIRECTORY",
     "THERMOPOWER_DATABASE_URL",
     "THERMOPOWER_DEMO_ADMIN_EMAIL",
     "THERMOPOWER_DEMO_ADMIN_PASSWORD",
@@ -169,6 +170,10 @@ try {
     if (-not $LogContent.Contains("startup version=$ExpectedVersion")) {
         throw "thermopower.log nao registrou o startup posterior as migrations."
     }
+    & (Join-Path $RepositoryRoot ".venv\Scripts\python.exe") `
+        (Join-Path $RepositoryRoot "scripts\smoke-packaged-exports.py") `
+        --url "http://127.0.0.1:$Port" --data-dir $SmokeData
+    if ($LASTEXITCODE -ne 0) { throw "Falha nos arquivos gerados pelo executavel empacotado." }
     [pscustomobject]@{
         ProcessId = $Process.Id
         Port = $Port

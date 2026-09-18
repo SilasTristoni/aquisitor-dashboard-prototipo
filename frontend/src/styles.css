@@ -656,3 +656,13 @@ th, td small, .pagination, .pagination button, .timeline time, .timeline small, 
   .analysis-arrow { display: none; }
   .chart-actions { flex-wrap: wrap; }
 }
+
+/* Support tools remain secondary to measurement and analysis. */
+.help-menu { position: relative; }
+.help-menu-content { position: absolute; right: 0; top: 100%; z-index: 50; width: min(290px, 85vw); padding: 16px; border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 8px 30px #0003; display: grid; gap: 10px; }
+.support-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.support-events article { padding: 18px 0; border-bottom: 1px solid #94a3b833; }
+.support-events pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.support-events details { margin: 10px 0; }
+.support-error-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.first-use-hint { margin-bottom: 18px; }

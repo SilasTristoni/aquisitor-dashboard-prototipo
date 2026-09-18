@@ -11,8 +11,11 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
 from app.api.routes import router
+from app.api.support_routes import router as support_router
 from app.core.config import get_settings
 from app.core.database import Base, SessionLocal, engine
+from app.core.observability import configure_logging
+from app.core.request_logging import observe_request, unexpected_error
 from app.core.security import hash_password
 from app.models.entities import AlertRule, ChannelConfiguration, Device, User
 from app.services.acquisition import acquisition_service
@@ -223,6 +226,7 @@ def seed_database() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    configure_logging()
     logging.getLogger(__name__).info(
         "startup version=%s environment=%s", settings.app_version, settings.environment
     )
@@ -251,14 +255,17 @@ app = FastAPI(
     description="API de aquisição, monitoramento e rastreabilidade do ThermoPower Monitor.",
     lifespan=lifespan,
 )
+app.middleware("http")(observe_request)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Correlation-ID"],
 )
 app.include_router(router)
+app.include_router(support_router)
 
 
 def _frontend_directory() -> Path | None:
@@ -312,11 +319,8 @@ async def validation_exception_handler(_: Request, exc: RequestValidationError) 
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(_: Request, exc: Exception) -> JSONResponse:
-    logging.getLogger(__name__).exception("Unhandled application error", exc_info=exc)
-    return JSONResponse(
-        status_code=500, content={"error": {"status": 500, "message": "Erro interno inesperado"}}
-    )
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    return unexpected_error(request, exc)
 
 
 if frontend_directory:

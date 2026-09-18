@@ -1,3 +1,4 @@
+import { SupportButton } from "./SupportButton";
 import type { ReactNode } from "react";
 
 export function PageHeader({ eyebrow, title, description, actions }: { eyebrow: string; title: string; description?: string; actions?: ReactNode }) {
@@ -28,8 +29,9 @@ export function Spinner({ label = "Carregando" }: { label?: string }) {
   return <div className="spinner-wrap" role="status"><i className="spinner" /><span>{label}</span></div>;
 }
 
-export function ErrorNotice({ message, retry }: { message: string; retry?: () => void }) {
-  return <div className="notice error" role="alert"><div><strong>Ação necessária</strong><span>{message}</span></div>{retry && <button className="button ghost" onClick={retry}>Tentar novamente</button>}</div>;
+export function ErrorNotice({ message, retry, sessionId }: { message: string; retry?: () => void; sessionId?: number }) {
+  const code = message.match(/TP-[A-Z]+-[A-F0-9]{6,32}/)?.[0];
+  return <div className="notice error" role="alert"><div><strong>Ação necessária</strong><span style={{ whiteSpace: "pre-line" }}>{message}</span>{code && <><p>Tente novamente. Se o problema continuar, exporte o diagnóstico.</p>{code.startsWith("TP-EXP-") && <p>Os dados da sessão permanecem salvos.</p>}</>}</div><div className="support-error-actions">{retry && <button className="button ghost" onClick={retry}>Tentar novamente</button>}{code && <SupportButton code={code} sessionId={sessionId} />}</div></div>;
 }
 
 export function Pagination({ page, pages, total, onChange }: { page: number; pages: number; total: number; onChange: (page: number) => void }) {

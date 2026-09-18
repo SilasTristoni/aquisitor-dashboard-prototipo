@@ -6,6 +6,8 @@ root = Path(SPECPATH)
 backend = root / "backend"
 datas = [
     (str(root / "VERSION.txt"), "."),
+    (str(root / "build" / "build-info.json"), "."),
+    (str(root / "build" / "user-guide.pdf"), "help"),
     (str(root / "frontend" / "dist"), "frontend"),
     (str(backend / "alembic"), "alembic"),
     (str(backend / "alembic.ini"), "."),
@@ -19,6 +21,7 @@ datas += [
 hiddenimports = [
     "app.main",
     "matplotlib.backends.backend_agg",
+    "matplotlib.backends.backend_pdf",
     "uvicorn.logging",
     "uvicorn.loops.auto",
     "uvicorn.protocols.http.auto",

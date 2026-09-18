@@ -1,4 +1,9 @@
 import os
+from pathlib import Path
+
+os.environ["THERMOPOWER_LOG_DIRECTORY"] = str(
+    Path(__file__).resolve().parents[2] / "build/test-logs"
+)
 
 os.environ["THERMOPOWER_DATABASE_URL"] = "sqlite:///./test-thermopower.db"
 os.environ["THERMOPOWER_JWT_SECRET"] = "test-secret-with-enough-entropy-for-tests-only"

@@ -1,1 +1,1 @@
-0.6.3-client-preview
+0.6.4-client-preview
