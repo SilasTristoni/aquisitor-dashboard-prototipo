@@ -140,6 +140,41 @@ autenticação do suporte, diagnóstico sem sessão, rotação, sanitização, a
 filtros e nova tentativa. A build usa banco isolado para Alembic upgrade/check e
 preserva pacotes anteriores, recusando sobrescrever uma versão já existente.
 
-Os resultados finais de empacotamento e o SHA-256 são registrados após os gates.
 A homologação física anterior permanece como referência; esta rodada não executa
 um novo ensaio com instrumentos reais.
+
+## Resultado final — 18/09/2026
+
+| Verificação | Resultado |
+| --- | --- |
+| Backend completo | 172 aprovados; 14 avisos de depreciação do Matplotlib/Pyparsing |
+| Recorte de regressões físicas | 64 aprovados, incluídos nos 172 do backend |
+| Frontend | 39 aprovados; ESLint, TypeScript e Vite aprovados |
+| Ruff, Alembic upgrade/check, pip check | Aprovados |
+| Docker Compose config | Aprovado com Compose oficial standalone; contêineres não executados |
+| Revisão em navegador | 88 combinações de telas existentes; 20 combinações finais de eventos, ajuda, sobre e erro de exportação; sem erros ou overflow |
+| Executável Windows | Startup, autenticação, SPA, versão e preservação dos cadastros aprovados |
+| Exportações pelo executável | 12 aprovadas: PDF/PNG executivos e PDF/XLSX técnicos × elétrica, térmica e combinada |
+| Suporte e manual pelo executável | ZIP íntegro, sem senha local; manual PDF autenticado, cinco páginas |
+| Falha de startup no executável | Banco indisponível em diretório isolado: saída 1, OperationalError e traceback somente no log, código rastreável |
+| Integridade do pacote | Manifesto de todos os arquivos conferido antes, após extração do ZIP e após promoção |
+
+A reprodução com os anexos manteve 136 leituras elétricas, zero térmicas,
+116,42739948529413 W de média e 4,611226186549982 Wh. O PDF executivo tem uma página.
+Os anexos e o banco de trabalho do operador não foram alterados.
+
+Versão distribuída: `0.6.4-client-preview`.
+Commit da build: `34c59abdd39fabffb6cec407f477840deba2d2e4`.
+Data UTC da build: `2026-09-18T20:47:33.7596657Z`.
+Pacote local: `engineering/ThermoPower-0.6.4-client-preview.zip`.
+
+SHA-256 do ZIP:
+
+```text
+AF8C1392E29144D529F89F3F0071ECA8EB933E3F9E754171EFB401E5FED9177A
+```
+
+O pacote inclui `Manual do Usuário - ThermoPower Monitor.pdf`, `build-info.json`,
+`TEST-RESULTS.txt` e `SHA256SUMS.txt`. Os três ZIPs anteriores disponíveis neste
+host (0.5.2, 0.5.6 e 0.6.0) preservaram seus hashes. O candidato intermediário
+desta rodada foi conservado em `build/retired-candidate-064`, sem sobrescrita.
