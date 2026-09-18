@@ -24,5 +24,5 @@ test("lista os 32 canais configuráveis com valor e qualidade atuais", async () 
 test("apresenta eventos retornados pelos filtros", async () => {
   render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><AuthProvider><EventsPage/></AuthProvider></MemoryRouter>);
   expect(await screen.findByText("Equipamento conectado")).toBeInTheDocument();
-  expect(screen.getByText("connection")).toBeInTheDocument();
+  expect(screen.getByText("Conexão")).toBeInTheDocument();
 });

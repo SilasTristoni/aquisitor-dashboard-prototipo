@@ -29,7 +29,7 @@ export default function EventsPage() {
     </div></Panel>
     {error && <ErrorNotice message={error} />}
     <Panel>{!result ? <Spinner /> : !result.items.length ? <Empty /> : <div className="support-events">{result.items.map((event) => <article key={event.id}>
-      <div><time>{formatDate(event.timestamp)}</time> <Badge tone={event.level === "error" ? "danger" : event.level === "warning" ? "warning" : "neutral"}>{event.category}</Badge></div>
+      <div><time>{formatDate(event.timestamp)}</time> <Badge tone={event.level === "error" ? "danger" : event.level === "warning" ? "warning" : "neutral"}>{categories[event.category] || event.category}</Badge></div>
       <strong>{event.message}</strong><p>{event.session_id ? `Sessão #${event.session_id} · ` : ""}{event.device_id ? `Equipamento #${event.device_id}` : "Sistema"}</p>
       {typeof event.details?.correlation_id === "string" && <p>Código: {event.details.correlation_id}</p>}
       {event.details && <details><summary>Mostrar detalhes técnicos</summary><pre>{JSON.stringify(event.details, null, 2)}</pre></details>}
