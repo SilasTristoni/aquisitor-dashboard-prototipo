@@ -33,7 +33,7 @@ test("download preserva o identificador retornado pelo servidor", async () => {
 });
 
 test("ajuda oferece manual, identificação da build e orientação dispensável", async () => {
-  vi.mocked(api).mockResolvedValue({ version: "0.6.4-client-preview", build: "abc123", environment: "client-preview", build_date: "2026-09-18T14:00:00Z" });
+  vi.mocked(api).mockResolvedValue({ version: "0.6.5-client-preview", build: "abc123", environment: "client-preview", build_date: "2026-09-18T14:00:00Z" });
   const view = render(<><HelpMenu /><FirstUseHint /></>);
   await userEvent.click(screen.getByText("Ajuda"));
   await userEvent.click(screen.getByRole("button", { name: "Guia do usuário" }));

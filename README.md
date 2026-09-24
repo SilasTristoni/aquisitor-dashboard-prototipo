@@ -1,4 +1,4 @@
-# ThermoPower Monitor 0.6.4-client-preview
+# ThermoPower Monitor 0.6.5-client-preview
 
 Plataforma full-stack para aquisição industrial combinada: até 32 temperaturas pelo Applent AT4532 e grandezas elétricas pelo GW Instek GPM-8213. As sessões são rastreáveis, aceitam uma ou as duas fontes, sincronizam timestamps e mantêm o protótipo original em `legacy/`.
 
@@ -9,6 +9,8 @@ Plataforma full-stack para aquisição industrial combinada: até 32 temperatura
 > Consulte [fontes e lacunas](docs/PHYSICAL_PROTOCOL_GAPS.md) e
 > [roteiro de bancada](docs/PHYSICAL_ENGINEERING_TEST.md). As respostas conhecidas que bloqueiam
 > o empacotamento estão no [gate de regressão física](docs/PHYSICAL_REGRESSION_FIXTURES.md).
+
+Nova versão: [aquisição contínua, recuperação automática e roteiro de bancada](docs/CONTINUOUS_ACQUISITION_065.md).
 
 ## Suporte e guia do operador
 
@@ -121,6 +123,11 @@ No desenvolvimento, defina `THERMOPOWER_DEMO_ADMIN_EMAIL`, `THERMOPOWER_DEMO_ADM
 e um segredo JWT forte no ambiente. Não exponha a configuração local em rede.
 
 ## Demonstração do simulador
+
+Para auditar telas com histórico sintético, execute
+`.venv\Scripts\python.exe scripts\seed-ux-demo.py` na raiz.
+O [seed de UX/UI](docs/UX_DEMO_SEED.md) é exclusivo de development/test, sem COM física,
+e cria sete sessões determinísticas sem duplicar os dados ao repetir o comando.
 
 1. Faça login.
 2. Em **Tempo real**, selecione `Aquisitor simulado`.

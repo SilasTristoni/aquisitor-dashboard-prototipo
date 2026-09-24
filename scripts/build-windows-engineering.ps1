@@ -11,8 +11,8 @@ $EngineeringZip = "$EngineeringRoot.zip"
 $StagingRoot = Join-Path $RepositoryRoot "dist\ThermoPowerMonitor"
 $ValidatedZip = Join-Path $RepositoryRoot "dist\ThermoPower-$Version.validated.zip"
 
-if ($Version -ne "0.6.4-client-preview") {
-    throw "Este script aceita somente a versao 0.6.4-client-preview."
+if ($Version -ne "0.6.5-client-preview") {
+    throw "Este script aceita somente a versao 0.6.5-client-preview."
 }
 if ((Test-Path -LiteralPath $EngineeringRoot) -or (Test-Path -LiteralPath $EngineeringZip)) {
     throw "Esta versao ja foi empacotada. Escolha uma nova versao para preservar a anterior."
@@ -45,7 +45,7 @@ try {
     $PhysicalRegressionExitCode = $LASTEXITCODE
     if ($PhysicalRegressionExitCode -ne 0) { exit $PhysicalRegressionExitCode }
     $BackendTestOutput = @()
-    & $Python -m pytest -p no:cacheprovider --basetemp "$TestTemp-full" |
+    & $Python -m pytest -p no:cacheprovider --basetemp "$TestTemp-full" --junitxml "$TestTemp-full.xml" -o junit_family=legacy |
         Tee-Object -Variable BackendTestOutput | ForEach-Object { Write-Host $_ }
     $BackendTestExitCode = $LASTEXITCODE
     if ($BackendTestExitCode -ne 0) { exit $BackendTestExitCode }
@@ -81,7 +81,7 @@ try {
     npm run typecheck
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $FrontendTestOutput = @()
-    & $Vitest run |
+    & $Vitest run --maxWorkers=2 --testTimeout=15000 |
         Tee-Object -Variable FrontendTestOutput | ForEach-Object { Write-Host $_ }
     $FrontendTestExitCode = $LASTEXITCODE
     if ($FrontendTestExitCode -ne 0) { exit $FrontendTestExitCode }
@@ -166,8 +166,8 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "CLIENT-PREVIEW.txt") -Encoding
     "Fallback: somente associacao manual exata + 19200/8-N-1 + medicao estrutural valida.",
     "Dashboard/sessao: par fresco obrigatorio para confirmar inicio combinado.",
     "Nova homologacao fisica de ponta a ponta: pendente no GPM + AT da cliente.",
-    "Diagnostico bloqueado quando a COM pertence ao runtime do ThermoPower.",
-    "Desconecte o equipamento antes do diagnostico; feche outros programas que usem a COM."
+    "Diagnostico usa a sessao ativa sem abrir outra serial nem enviar comandos extras.",
+    "Recuperacao automatica preserva ensaio e GPM; estabilidade fisica 30/60 min pendente."
 )
 Set-Content -LiteralPath (Join-Path $StagingRoot "PROTOCOL-SOURCES.txt") -Encoding utf8 -Value @(
     "AT4532 User's Guide Rev.A6:",
@@ -198,18 +198,20 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "TEST-RESULTS.txt") -Encoding u
     "GPM V1.05 / NUMBER abreviado / HEADER / VALUE / NAN: passed",
     "GPM fragmented, stale e multiple buffered responses: passed",
     "AT IDN timeout + manual COM5 + TCP-32 CP936 32 channels: passed",
-    "AT continuous acquisition 100 samples with fake clock: passed",
+    "AT continuous acquisition 1000 samples with fake clock: passed",
     "AT FETCH cadence with start interval and calculated post-RX serial guard: passed",
     "AT duplicate COM registration neutralization and warning: passed",
     "AT unknown COM fallback rejection: passed",
     "AT CH25-CH32 mapping and CH29 heating series: passed",
     "Combined 100/120/300 samples per source through database/API/WebSocket/reports: passed",
-    "AT isolated FETCH timeout retries without reopening serial; three consecutive timeouts reconnect: passed",
+    "AT invalid/partial/timeout frames retry in place; time-based watchdog reconnects: passed",
+    "AT 1000 FETCH soak and 100 valid / fault / 100 valid scenarios: passed",
+    "AT closed port with capped backoff and dual-source same-session persistence: passed",
     "AT recovery preserves session and unique persisted sequences: passed",
     "Configured/observed cadence, human quality details and precise session analysis period: passed",
     "Fresh common start and explicit single-source acquisition: passed",
     "Running 1 Hz sources: best fresh pair and transient status regression: passed",
-    "Runtime-owned serial diagnostics blocked without interrupting acquisition: passed",
+    "Runtime-owned diagnostics observe the existing session without serial TX/open: passed",
     "Runtime diagnostic log export: passed",
     "Alembic upgrade/check: passed",
     "pip check: passed",
@@ -236,6 +238,11 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "TEST-RESULTS.txt") -Encoding u
     "Frontend test summary:",
     ($FrontendTestOutput | Select-Object -Last 8 | Out-String).Trim()
 )
+Copy-Item -LiteralPath "$TestTemp-full.xml" -Destination (Join-Path $StagingRoot "TEST-RESULTS.xml")
+Copy-Item -LiteralPath (Join-Path $RepositoryRoot "docs\CONTINUOUS_ACQUISITION_065.md") `
+    -Destination (Join-Path $StagingRoot "CONTINUOUS_ACQUISITION_065.md")
+Copy-Item -LiteralPath (Join-Path $RepositoryRoot "scripts\monitor-serial-stability.py") `
+    -Destination (Join-Path $StagingRoot "monitor-serial-stability.py")
 $RequiredPackagePaths = @(
     "ThermoPowerMonitor.exe",
     "_internal",

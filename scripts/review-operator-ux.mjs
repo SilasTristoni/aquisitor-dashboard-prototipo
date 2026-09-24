@@ -75,7 +75,7 @@ try {
           const apiPath = url.pathname.replace('/api/v1', '');
           let payload;
           if (apiPath === '/auth/me') payload = user;
-          else if (apiPath === '/build-info') payload = { demo_credentials: null, version: '0.6.4-client-preview', environment: 'client-preview', build: 'synthetic-review', build_date: '2026-09-18T14:00:00Z', client_preview: true };
+          else if (apiPath === '/build-info') payload = { demo_credentials: null, version: '0.6.5-client-preview', environment: 'client-preview', build: 'synthetic-review', build_date: '2026-09-18T14:00:00Z', client_preview: true };
           else if (apiPath === '/devices') payload = devices;
           else if (/\/devices\/\d+\/status$/.test(apiPath)) payload = status(Number(apiPath.split('/')[2]));
           else if (apiPath.endsWith('/channels')) payload = session.channels.map(c => ({ ...c, device_id: 1, sensor_type: 'K', unit: '°C', correction_offset: 0, display_order: c.channel }));
@@ -95,7 +95,7 @@ try {
             await route.fulfill({ status: 409, json: { detail: 'O equipamento está atualmente em aquisição pelo ThermoPower. Desconecte-o antes de executar o diagnóstico de comunicação.' } }); return;
           } else if (['/alerts', '/events', '/measurements'].includes(apiPath)) payload = paginated([]);
           else if (apiPath === '/users') payload = [user];
-          else if (apiPath === '/diagnostics') payload = { backend_online: true, database_online: true, database_dialect: 'sqlite', system_version: '0.6.4-client-preview', environment: 'revisão sintética', disk_free_bytes: 30e9, uptime_seconds: 600, websocket_clients: 1, devices: devices.map(d => status(d.id)) };
+          else if (apiPath === '/diagnostics') payload = { backend_online: true, database_online: true, database_dialect: 'sqlite', system_version: '0.6.5-client-preview', environment: 'revisão sintética', disk_free_bytes: 30e9, uptime_seconds: 600, websocket_clients: 1, devices: devices.map(d => status(d.id)) };
           else if (apiPath === '/statistics/executive') payload = { total_sessions: 1, monitored_hours: 0.083, total_samples: 600, total_alerts: 0 };
           else if (['/reports', '/channel-profiles', '/alert-rules'].includes(apiPath)) payload = [];
           else throw new Error(`Unmocked ${apiPath}`);
