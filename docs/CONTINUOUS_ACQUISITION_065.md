@@ -86,6 +86,41 @@ watchdog sem reabertura, todos os sensores Open, lease durante recuperação, de
 cancelamento do worker, fragmentação e descarte de bytes atrasados. Testes de interface
 verificam estados de recuperação, leituras preservadas e ausência de reconexão manual.
 
+### Resultados registrados em 24/09/2026
+
+Suíte completa do backend: **196 testes aprovados**, incluindo os cenários abaixo.
+Gate de regressão de protocolos: **79 aprovados**. Frontend: **41 testes aprovados**,
+lint, TypeScript e build aprovados. Os avisos de depreciação são de Matplotlib/Pyparsing.
+O XML `TEST-RESULTS.xml` do pacote contém as propriedades `stability_metrics` dos testes.
+
+| Cenário | FETCH | Válidos | Descartes | Timeouts | Unknown | Reconexões | Maior lacuna | Duração média da consulta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A: contínuo | 1.000 | 1.000 | 0 | 0 | 0 | 0 | 1.000 ms | 375 ms |
+| B: inválido isolado | 201 | 200 | 1 | 0 | 1 | 0 | 2.000 ms | 375 ms |
+| C: timeout isolado | 201 | 200 | 1 | 1 | 0 | 0 | 3.400 ms | 383,085 ms |
+| D: porta fechada | 201 | 200 | 1 | 0 | 0 | 1 | 4.375 ms | 375 ms |
+| E: frame parcial | 201 | 200 | 1 | 0 | 1 | 0 | 2.000 ms | 375 ms |
+
+São tempos do transporte controlado e relógio acelerado, sem instrumento conectado.
+O cenário F foi aprovado para resposta inválida, timeout, frame parcial e porta fechada:
+**200 amostras térmicas e 200 elétricas por execução**, preservando a mesma sessão.
+Também foi aprovado o retorno após **cinco tentativas malsucedidas de reabertura**.
+
+### Arquivos e commits
+
+| Commit | Alteração |
+| --- | --- |
+| `32f05c4` | `backend/app/adapters/{specific,transports,acquisition_diagnostics,serial}.py`, serviços `acquisition`, `protocol_probe`, `serial_diagnostic`, `usb_discovery`, rotas e testes de estabilidade |
+| `69d94b5` | Dashboard, teste de dispositivos, contratos TypeScript e testes da interface |
+| `ed5d2a4` | `scripts/seed-ux-demo.py`, testes e guia da demonstração local |
+| `2edb171` | Versão 0.6.5, empacotamento, coletor HTTP e roteiro de bancada |
+| `6b5afcc` | Cadência das fontes sintéticas nos relatórios e teste de repetição do seed |
+
+O seed adicional é exclusivo de development/test e não usa adapters nem portas seriais.
+Sua execução local criou sete sessões; repetições criaram zero duplicatas. As nove
+verificações do seed passaram, incluindo a cadência de relatório, e a API local carregou
+listagem, detalhes e prévia com as contagens esperadas. Veja [UX_DEMO_SEED.md](UX_DEMO_SEED.md).
+
 ## Roteiro físico — pendente
 
 1. Abra a nova versão, associe o AT4532 à COM5, 19200 baud, 8-N-1 e conecte uma vez.
