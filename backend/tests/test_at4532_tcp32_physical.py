@@ -912,9 +912,12 @@ async def test_tcp32_continuous_polling_reuses_handshake_and_tracks_ch29(
         association_source="manual_port",
     )
     sleep_calls: list[float] = []
+    clock = FakeClock()
+    monkeypatch.setattr("app.adapters.specific.monotonic", clock.monotonic)
 
     async def no_delay(seconds: float) -> None:
         sleep_calls.append(seconds)
+        clock.advance(seconds)
 
     monkeypatch.setattr("app.adapters.specific.asyncio.sleep", no_delay)
 

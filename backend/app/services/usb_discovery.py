@@ -10,6 +10,7 @@ from serial.tools import list_ports
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.adapters.transports import SerialTransportError, claim_port, release_port
 from app.models.entities import Device
 from app.services.device_policy import invalidate_stale_at4532_verification
 
@@ -47,7 +48,11 @@ class UsbDeviceDiscoveryService:
         return not any(self.pending_close_connections.get(key) for key in keys)
 
     def shutdown(self) -> None:
+        ports = list(self.pending_close_connections)
         self._retry_pending_closes()
+        for port in ports:
+            if port not in self.pending_close_connections:
+                release_port(port, self)
 
     def discover(self, db: Session, busy_ports: set[str] | None = None) -> list[dict[str, Any]]:
         busy_ports = {port.casefold() for port in (busy_ports or set())}
@@ -232,6 +237,17 @@ class UsbDeviceDiscoveryService:
         ]
 
     def _port_status(self, port: str, busy_ports: set[str]) -> tuple[str, str]:
+        try:
+            claim_port(port, self)
+        except SerialTransportError:
+            return "port_busy", "Porta reservada por uma sess\u00e3o do ThermoPower."
+        try:
+            return self._probe_port_status(port, busy_ports)
+        finally:
+            if not self.pending_close_connections.get(port.casefold()):
+                release_port(port, self)
+
+    def _probe_port_status(self, port: str, busy_ports: set[str]) -> tuple[str, str]:
         if not port:
             return "driver_missing", "A porta não foi enumerada corretamente."
         if port.casefold() in busy_ports:

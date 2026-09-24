@@ -41,7 +41,46 @@ class ProtocolProbeService:
     async def run(self, device: Device, mode: ProbeMode) -> dict[str, Any]:
         from app.services.acquisition import acquisition_service
 
-        async with acquisition_service.diagnostic_port(device.port or ""):
+        async with acquisition_service._port_lock(device.port or ""):
+            runtime = acquisition_service.runtimes.get(device.id)
+            if runtime is not None:
+                # Observe the existing reader: no IDN, FETCH, flush or extra serial open.
+                adapter = runtime.adapter
+                status = await acquisition_service.status(device.id)
+                identity = await adapter.get_device_information()
+                ready = runtime.latest is not None and not status.get("persistent_failure")
+                report = {
+                    "device_id": device.id,
+                    "device": device.name,
+                    "port": device.port,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "mode": mode,
+                    "diagnostic_source": "active_session",
+                    "runtime_status": status,
+                    "physical_validation": "pending",
+                    "transport_closed": False,
+                    "close_retry_pending": False,
+                    "identity": identity.model_dump(mode="json"),
+                    "identity_status": getattr(adapter, "identity_status", "unconfirmed"),
+                    "protocol_status": getattr(adapter, "protocol_status", "not_verified"),
+                    "transactions": list(getattr(adapter, "transactions", [])),
+                    "readings": [runtime.latest.model_dump(mode="json")] if runtime.latest else [],
+                    "result": "passed_with_warning" if ready else "pending",
+                    "errors": [],
+                    "stages": [
+                        self._stage(
+                            "acquisition",
+                            "Aquisição existente",
+                            ready,
+                            "Diagnóstico da sessão ativa, sem enviar comandos adicionais. "
+                            "Consulte o horário da última leitura válida.",
+                            status="warning",
+                        )
+                    ],
+                }
+                self.latest_results[device.id] = report
+                return report
+            acquisition_service.assert_diagnostic_port_available(device.port or "")
             return await self._run(device, mode)
 
     async def _run(self, device: Device, mode: ProbeMode) -> dict[str, Any]:

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.adapters.base import DeviceReading, DeviceStatus
+from app.adapters.base import DeviceInformation, DeviceReading, DeviceStatus
 from app.adapters.transports import SerialTransportError
 from app.core.database import SessionLocal
 from app.models.entities import Device
@@ -34,6 +34,9 @@ class LiveSource:
 
     async def stop_reading(self):
         pass
+
+    async def get_device_information(self):
+        return DeviceInformation(adapter="live_fixture")
 
     async def get_status(self):
         return DeviceStatus(
@@ -115,14 +118,14 @@ def test_running_one_hz_sources_start_and_diagnostics_leave_acquisition_intact(
                 f"/api/v1/devices/{device_id}/test",
                 headers=auth_headers,
             )
-            assert connection_test.status_code == 409, connection_test.text
+            assert connection_test.status_code == 200, connection_test.text
             response = client.post(
                 f"/api/v1/devices/{device_id}/protocol-probe",
                 headers=auth_headers,
                 json={"mode": "full", "operator_confirmed": True},
             )
-            assert response.status_code == 409, response.text
-            assert "aquisição pelo ThermoPower" in response.json()["error"]["message"]
+            assert response.status_code == 200, response.text
+            assert response.json()["diagnostic_source"] == "active_session"
             response = client.post(
                 "/api/v1/hardware/serial-diagnostic/open",
                 headers=auth_headers,
@@ -134,8 +137,8 @@ def test_running_one_hz_sources_start_and_diagnostics_leave_acquisition_intact(
                     "read_timeout_s": 1,
                 },
             )
-            assert response.status_code == 409, response.text
-            assert "Desconecte-o" in response.json()["error"]["message"]
+            assert response.status_code == 200, response.text
+            assert response.json()["diagnostic_source"] == "active_session"
         counts = [r.sample_count for r in runtimes]
         started = client.post(
             "/api/v1/sessions",

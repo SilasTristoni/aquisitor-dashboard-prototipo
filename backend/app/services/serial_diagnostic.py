@@ -33,6 +33,7 @@ class RealSerialDiagnosticService:
     def __init__(self, serial_factory: Callable[..., Any] | None = None) -> None:
         self.serial_factory = serial_factory
         self.sessions: dict[str, DiagnosticSession] = {}
+        self.observers: dict[str, int] = {}
         self.pending_close_transports: dict[str, list[SerialTransport]] = {}
         self.previously_opened_ports: set[str] = set()
         self._lock = asyncio.Lock()
@@ -61,7 +62,21 @@ class RealSerialDiagnosticService:
     ) -> dict[str, Any]:
         from app.services.acquisition import acquisition_service
 
-        async with acquisition_service.diagnostic_port(configuration.port):
+        async with acquisition_service._port_lock(configuration.port):
+            owner = next(
+                (
+                    device_id
+                    for device_id, runtime in acquisition_service.runtimes.items()
+                    if str(getattr(runtime.adapter, "port", "")).casefold()
+                    == configuration.port.casefold()
+                ),
+                None,
+            )
+            if owner is not None:
+                identifier = uuid.uuid4().hex
+                self.observers[identifier] = owner
+                return await self.read(identifier, 65536)
+            acquisition_service.assert_diagnostic_port_available(configuration.port)
             try:
                 return await self._open(configuration, parameters_source, physical_validation)
             except SerialTransportError as exc:
@@ -144,6 +159,35 @@ class RealSerialDiagnosticService:
         }
 
     async def read(self, session_id: str, max_bytes: int) -> dict[str, Any]:
+        if session_id in self.observers:
+            from app.services.acquisition import acquisition_service
+
+            owner = self.observers[session_id]
+            runtime = acquisition_service.runtimes.get(owner)
+            status = await acquisition_service.status(owner)
+            transactions = getattr(runtime.adapter, "transactions", []) if runtime else []
+            transaction = transactions[-1] if transactions else {}
+            payload = bytes(transaction.get("rx_bytes", []))[:max_bytes]
+            return {
+                "session_id": session_id,
+                "diagnostic_source": "active_session",
+                "port_open": bool(
+                    runtime
+                    and getattr(runtime.adapter, "transport", None)
+                    and runtime.adapter.transport.is_open
+                ),
+                "bytes_received": len(payload),
+                "elapsed_ms": transaction.get("elapsed_ms", 0),
+                "raw_hex": payload.hex(" ").upper(),
+                "raw_ascii": payload.decode("ascii", "backslashreplace"),
+                "timestamp": transaction.get("timestamp_rx"),
+                "timeout": transaction.get("timeout", False),
+                "errors": [],
+                "read_only": True,
+                "runtime_status": status,
+                "disconnected": runtime is None,
+                "reconnect_detected": False,
+            }
         session = self.sessions.get(session_id)
         if not session:
             raise SerialTransportError(
@@ -197,6 +241,9 @@ class RealSerialDiagnosticService:
         }
 
     async def close(self, session_id: str) -> dict[str, Any]:
+        if session_id in self.observers:
+            self.observers.pop(session_id)
+            return {"session_id": session_id, "closed": True, "runtime_preserved": True}
         async with self._lock:
             session = self.sessions.get(session_id)
             if not session:
@@ -218,6 +265,7 @@ class RealSerialDiagnosticService:
         }
 
     async def shutdown(self) -> None:
+        self.observers.clear()
         for session_id in list(self.sessions):
             try:
                 await self.close(session_id)

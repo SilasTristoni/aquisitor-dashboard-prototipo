@@ -11,6 +11,7 @@ import asyncio
 import logging
 import math
 import re
+from asyncio import Lock
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -33,9 +34,9 @@ AT4532_MANUAL_URL = "https://www.anbai.cn/app_file/products/AT4532/ug_en_AT4532.
 GPM8213_MANUAL_URL = "https://www.gwinstek.com/en-US/download/downloadFile/11551"
 AT4532_PHYSICAL_FRAME_BYTES = 694
 AT4532_SERIAL_BITS_PER_BYTE = 10
-AT4532_CONTINUOUS_READ_GUARD_SECONDS = math.ceil(
-    AT4532_PHYSICAL_FRAME_BYTES * AT4532_SERIAL_BITS_PER_BYTE / 19200 * 10
-) / 10
+AT4532_CONTINUOUS_READ_GUARD_SECONDS = (
+    math.ceil(AT4532_PHYSICAL_FRAME_BYTES * AT4532_SERIAL_BITS_PER_BYTE / 19200 * 10) / 10
+)
 
 
 class ProtocolDocumentationRequired(RuntimeError):
@@ -328,10 +329,10 @@ class At4532Parser:
         except ProtocolResponseError:
             return "unknown_response"
 
-    def parse(self, payload: bytes) -> At4532ParsedFrame:
+    def parse(self, payload: bytes, *, allow_all_open: bool = False) -> At4532ParsedFrame:
         line, wire_encoding = self.decode_line(payload)
         if line.lstrip().startswith("TCP-32,"):
-            return self._parse_tcp32(payload, line, wire_encoding)
+            return self._parse_tcp32(payload, line, wire_encoding, allow_all_open=allow_all_open)
         return self._parse_simple(payload, line, wire_encoding)
 
     def _parse_simple(self, payload: bytes, line: str, wire_encoding: str) -> At4532ParsedFrame:
@@ -370,7 +371,9 @@ class At4532Parser:
             field_count=len(fields),
         )
 
-    def _parse_tcp32(self, payload: bytes, line: str, wire_encoding: str) -> At4532ParsedFrame:
+    def _parse_tcp32(
+        self, payload: bytes, line: str, wire_encoding: str, *, allow_all_open: bool = False
+    ) -> At4532ParsedFrame:
         fields = line.split(",")
         if len(fields) != AT4532_TCP32_FIELD_COUNT:
             raise ProtocolResponseError(
@@ -451,7 +454,9 @@ class At4532Parser:
                     unit=unit,
                 )
             )
-        if valid_channels < 1:
+        if valid_channels < 1 and not (
+            allow_all_open and all(channel.quality == "open_sensor" for channel in channels)
+        ):
             raise ProtocolResponseError(
                 "Frame TCP-32 deve conter ao menos uma temperatura numérica válida."
             )
@@ -750,9 +755,7 @@ class At4532Normalizer:
             power_w=None,
             temperatures_c=temperatures,
             channel_quality=qualities,
-            ambient_temperature_c=(
-                parsed_frame.ambient_temperature_c if parsed_frame else None
-            ),
+            ambient_temperature_c=(parsed_frame.ambient_temperature_c if parsed_frame else None),
             quality="good" if valid_channels else "unavailable",
             raw_payload=raw_data,
         )
@@ -838,6 +841,8 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
             raise ProtocolDocumentationRequired(command.name)
         if not self.transport:
             raise SerialTransportError("disconnected", "O equipamento foi desconectado.")
+        if len(self.transactions) >= 256:
+            del self.transactions[:-255]
         timestamp = datetime.now(UTC)
         transaction_started = monotonic()
         previous_command = self.transactions[-1]["command_name"] if self.transactions else None
@@ -870,14 +875,12 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
                 "tx_hex": command.request.hex(" ").upper(),
                 "timestamp_tx": boundary.get("timestamp_tx", timestamp.isoformat()),
                 "rx_ascii": "",
-                "rx_bytes": [],
-                "rx_hex": "",
+                "rx_bytes": boundary.get("received_bytes", []),
+                "rx_hex": boundary.get("received_hex", ""),
                 "timestamp_rx": boundary.get("timestamp_rx", datetime.now(UTC).isoformat()),
                 "elapsed_ms": round(elapsed_ms, 3),
-                "query_duration_ms": round(
-                    float(boundary.get("query_duration_ms", elapsed_ms)), 3
-                ),
-                "bytes_received": 0,
+                "query_duration_ms": round(float(boundary.get("query_duration_ms", elapsed_ms)), 3),
+                "bytes_received": boundary.get("bytes_received", 0),
                 "sample_sequence": sequence if command.name == "temperatures" else None,
                 "interval_since_previous_tx_ms": (
                     round((tx_monotonic - previous_tx) * 1000, 3)
@@ -889,9 +892,7 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
                     if previous_rx is not None
                     else None
                 ),
-                "buffer_pending_before_tx_bytes": boundary.get(
-                    "buffer_pending_before_tx_bytes", 0
-                ),
+                "buffer_pending_before_tx_bytes": boundary.get("buffer_pending_before_tx_bytes", 0),
                 "buffer_drained_bytes": boundary.get("buffer_drained_bytes", 0),
                 "timeout": exc.code == "protocol_timeout",
                 "previous_command": previous_command,
@@ -926,9 +927,7 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
             elapsed_ms,
         )
         boundary = (
-            dict(getattr(self.transport, "last_query_boundary", {}))
-            if expect_response
-            else {}
+            dict(getattr(self.transport, "last_query_boundary", {})) if expect_response else {}
         )
         tx_monotonic = float(boundary.get("tx_monotonic", transaction_started))
         rx_monotonic = float(boundary.get("rx_monotonic", monotonic()))
@@ -950,24 +949,16 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
             "rx_hex": response.hex(" ").upper(),
             "timestamp_rx": boundary.get("timestamp_rx", datetime.now(UTC).isoformat()),
             "elapsed_ms": round(elapsed_ms, 3),
-            "query_duration_ms": round(
-                float(boundary.get("query_duration_ms", elapsed_ms)), 3
-            ),
+            "query_duration_ms": round(float(boundary.get("query_duration_ms", elapsed_ms)), 3),
             "bytes_received": len(response),
             "sample_sequence": sequence if command.name == "temperatures" else None,
             "interval_since_previous_tx_ms": (
-                round((tx_monotonic - previous_tx) * 1000, 3)
-                if previous_tx is not None
-                else None
+                round((tx_monotonic - previous_tx) * 1000, 3) if previous_tx is not None else None
             ),
             "interval_since_previous_rx_ms": (
-                round((tx_monotonic - previous_rx) * 1000, 3)
-                if previous_rx is not None
-                else None
+                round((tx_monotonic - previous_rx) * 1000, 3) if previous_rx is not None else None
             ),
-            "buffer_pending_before_tx_bytes": boundary.get(
-                "buffer_pending_before_tx_bytes", 0
-            ),
+            "buffer_pending_before_tx_bytes": boundary.get("buffer_pending_before_tx_bytes", 0),
             "buffer_drained_bytes": boundary.get("buffer_drained_bytes", 0),
             "timeout": False,
             "previous_command": previous_command,
@@ -1186,7 +1177,6 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
     expected_interval_seconds = 1.0
     continuous_read_guard_seconds = AT4532_CONTINUOUS_READ_GUARD_SECONDS
     polling_managed_by_read_once = True
-    consecutive_timeout_limit = 3
     protocol = At4532Protocol()
     parser = At4532Parser()
     normalizer = At4532Normalizer()
@@ -1210,6 +1200,9 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
 
         self.fetch_diagnostics = FetchDiagnostics()
         self._stop_requested = False
+        self.connection_state = "disconnected"
+        self._fetch_lock = Lock()
+        self._reconnecting = False
 
     def _configuration(self) -> SerialTransportConfiguration:
         if self.baud_rate != 19200:
@@ -1237,7 +1230,11 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         except ProtocolResponseError:
             pass
         try:
-            self.parser.parse(payload)
+            self.parser.parse(
+                payload,
+                allow_all_open=self.fetch_diagnostics.successful_fetches > 0
+                and not self._reconnecting,
+            )
             return "temperature_measurement"
         except ProtocolResponseError as exc:
             self._last_response_parser_error = {"code": exc.code, "message": str(exc)}
@@ -1260,7 +1257,14 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         return self.allow_identity_fallback and exc.code == "protocol_timeout"
 
     def _normalize_payload(self, payload: bytes) -> DeviceReading:
-        return self.normalizer.normalize(self.parser.parse(payload), payload)
+        return self.normalizer.normalize(
+            self.parser.parse(
+                payload,
+                allow_all_open=self.fetch_diagnostics.successful_fetches > 0
+                and not self._reconnecting,
+            ),
+            payload,
+        )
 
     async def _after_identity(self) -> None:
         self._primed_reading = None
@@ -1289,7 +1293,12 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         metrics.last_tx = started
         try:
             reading = await self._query_and_normalize()
-        except SerialTransportError as exc:
+        except (SerialTransportError, ProtocolResponseError) as exc:
+            metrics.discarded_fetches += 1
+            if isinstance(exc, UnexpectedResponseTypeError):
+                metrics.unknown_responses += int(
+                    exc.details["actual_response_type"] == "unknown_response"
+                )
             if exc.code == "protocol_timeout":
                 metrics.fetch_timeouts += 1
                 metrics.consecutive_fetch_timeouts += 1
@@ -1320,6 +1329,15 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                 metrics.first_rx = received
             metrics.last_rx = received
             metrics.successful_fetches += 1
+            if metrics.recovery_started is not None:
+                reading.raw_payload["communication_gap"] = {
+                    "duration_ms": (received - metrics.recovery_started) * 1000,
+                    "discarded_fetches_total": metrics.discarded_fetches,
+                    "reconnects_total": metrics.reconnect_count,
+                }
+                metrics.recovery_started = None
+            metrics.consecutive_reconnect_failures = 0
+            self.connection_state = "connected"
             metrics.consecutive_fetch_timeouts = 0
             metrics.last_successful_fetch_at = reading.received_timestamp.isoformat()
             return reading
@@ -1418,83 +1436,134 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             )
             await asyncio.sleep(remaining)
 
+    def watchdog_windows(self) -> tuple[float, float]:
+        # Include configured polling, wire time and the observed instrument latency.
+        metrics = self.fetch_diagnostics
+        observed = metrics.query_duration_ms / max(metrics.fetch_attempts, 1) / 1000
+        wire = AT4532_PHYSICAL_FRAME_BYTES * AT4532_SERIAL_BITS_PER_BYTE / 19200
+        cycle = max(
+            self.expected_interval_seconds,
+            wire + self.continuous_read_guard_seconds,
+            observed + self.continuous_read_guard_seconds,
+        )
+        return max(5.0, cycle * 2), max(15.0, cycle * 6)
+
+    async def connect(self) -> None:
+        self.connection_state = "recovering" if self._reconnecting else "connecting"
+        try:
+            await super().connect()
+        except (SerialTransportError, ProtocolResponseError):
+            self.connection_state = "recovering" if self._reconnecting else "disconnected"
+            raise
+        self.connection_state = "connected"
+
+    async def disconnect(self) -> None:
+        # Failed recovery handshakes must not release the port lease or stop retries.
+        if self._reconnecting:
+            if self.transport:
+                await self._close_for_recovery()
+            return
+        await super().disconnect()
+        self.connection_state = "disconnected"
+
+    async def _close_for_recovery(self) -> None:
+        if isinstance(self.transport, SerialTransport):
+            await self.transport.close(release=False)
+        elif self.transport:
+            await self.transport.close()
+
     async def _read_once(self) -> DeviceReading:
-        if self._primed_reading is not None:
-            reading = self._primed_reading
-            self._primed_reading = None
-            return reading
-        await self._wait_until_next_fetch_window()
-        return await self._query_reading()
+        # Cadence and the complete transaction share one lock, including diagnostic callers.
+        async with self._fetch_lock:
+            if self._primed_reading is not None:
+                reading = self._primed_reading
+                self._primed_reading = None
+                return reading
+            await self._wait_until_next_fetch_window()
+            return await self._query_reading()
 
     async def stop_reading(self) -> None:
         self._stop_requested = True
         await super().stop_reading()
 
+    async def _recover_connection(self) -> None:
+        metrics = self.fetch_diagnostics
+        self._reconnecting = True
+        self.connection_state = "recovering"
+        try:
+            while not self._stop_requested:
+                # Capped exponential backoff; keep the runtime and session even after
+                # persistent failure. The same instrument can return without operator action.
+                await asyncio.sleep(min(30, 2 ** min(metrics.consecutive_reconnect_failures, 5)))
+                if self._stop_requested:
+                    return
+                metrics.reconnect_count += 1
+                try:
+                    await self._close_for_recovery()
+                    await self.connect()
+                    # A successful open/IDN is not proof of acquisition recovery.
+                    if self._primed_reading is None:
+                        self._primed_reading = await self._read_once()
+                    self._reading = not self._stop_requested
+                    return
+                except (SerialTransportError, ProtocolResponseError) as exc:
+                    metrics.reconnect_failures += 1
+                    metrics.consecutive_reconnect_failures += 1
+                    self.connection_state = "recovering"
+                    logger.warning(
+                        "AT4532 automatic recovery failed port=%s attempt=%s error=%s",
+                        self.port,
+                        metrics.reconnect_count,
+                        exc,
+                    )
+        finally:
+            self._reconnecting = False
+
     async def start_reading(self) -> AsyncIterator[DeviceReading]:
-        """Keep an open AT serial alive through isolated FETCH timeouts only."""
+        """One persistent reader; bad frames never terminate the acquisition session."""
         self._reading = True
         self._stop_requested = False
         try:
-            while self._reading:
+            while self._reading and not self._stop_requested:
                 try:
                     reading = await self._read_once()
-                except SerialTransportError as exc:
+                except (SerialTransportError, ProtocolResponseError) as exc:
                     self.read_errors += 1
                     if self._stop_requested:
                         break
+                    metrics = self.fetch_diagnostics
+                    last_valid = (
+                        metrics.last_rx if metrics.last_rx is not None else self._connected_at
+                    )
+                    if metrics.recovery_started is None:
+                        metrics.recovery_started = last_valid
+                    gap = monotonic() - last_valid
+                    metrics.maximum_gap_ms = max(metrics.maximum_gap_ms, gap * 1000)
+                    soft, hard = self.watchdog_windows()
                     port_open = bool(self.transport and self.transport.is_open)
-                    retry_in_place = (
-                        exc.code == "protocol_timeout"
-                        and port_open
-                        and self.fetch_diagnostics.consecutive_fetch_timeouts
-                        < self.consecutive_timeout_limit
+                    physical_loss = not port_open or (
+                        isinstance(exc, SerialTransportError) and exc.code != "protocol_timeout"
                     )
                     reason = (
-                        "isolated_fetch_timeout"
-                        if retry_in_place
-                        else "port_closed"
+                        "port_closed"
                         if not port_open
-                        else "consecutive_fetch_timeouts"
-                        if exc.code == "protocol_timeout"
-                        else exc.code
+                        else (
+                            "physical_serial_error"
+                            if physical_loss
+                            else "watchdog_expired"
+                            if gap >= hard
+                            else "isolated_fetch_timeout"
+                            if exc.code == "protocol_timeout"
+                            else "invalid_frame"
+                        )
                     )
-                    if self.fetch_diagnostics.last_failure:
-                        self.fetch_diagnostics.last_failure["recovery_reason"] = reason
-                    logger.warning(
-                        "AT4532 recovery port=%s reason=%s action=%s metrics=%s",
-                        self.port,
-                        reason,
-                        "retry_open_port" if retry_in_place else "reconnect",
-                        self.fetch_diagnostics.snapshot(),
-                    )
-                    if retry_in_place:
-                        continue
-                    for attempt in range(3):
-                        if self._stop_requested:
-                            break
-                        if self.transport:
-                            await self.transport.close()
-                        await asyncio.sleep(1)
-                        if self._stop_requested:
-                            break
-                        self.fetch_diagnostics.reconnect_count += 1
-                        try:
-                            await self.connect()
-                            self._reading = not self._stop_requested
-                            break
-                        except SerialTransportError:
-                            logger.exception(
-                                "AT4532 reconnect failed port=%s attempt=%s reason=%s",
-                                self.port,
-                                attempt + 1,
-                                reason,
-                            )
-                            if attempt == 2:
-                                raise
+                    if metrics.last_failure:
+                        metrics.last_failure["recovery_reason"] = reason
+                    self.connection_state = "recovering" if gap >= soft else "degraded"
+                    if physical_loss or gap >= hard:
+                        await self._recover_connection()
                     continue
-                except Exception:
-                    self.read_errors += 1
-                    raise
+                self.connection_state = "connected"
                 self.last_message_at = reading.received_timestamp
                 self._read_count += 1
                 yield reading
@@ -1503,8 +1572,13 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             logger.info(
                 "AT4532 acquisition stopped port=%s metrics=%s",
                 self.port,
-                self.fetch_diagnostics.snapshot(),
+                self.fetch_diagnostics.snapshot(monotonic()),
             )
+
+    async def get_status(self) -> DeviceStatus:
+        status = await super().get_status()
+        active = self.connection_state in {"connected", "degraded", "recovering"}
+        return status.model_copy(update={"state": self.connection_state, "connected": active})
 
     async def get_device_information(self) -> DeviceInformation:
         information = await super().get_device_information()

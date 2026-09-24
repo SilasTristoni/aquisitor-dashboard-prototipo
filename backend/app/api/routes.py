@@ -645,6 +645,29 @@ async def run_documented_protocol_probe(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.get("/devices/{device_id}/acquisition-diagnostics")
+async def acquisition_diagnostics(
+    device_id: int, _: CurrentUser,
+    after_sequence: int = Query(0, ge=0), page_size: int = Query(100, ge=1, le=256),
+) -> dict:
+    runtime = acquisition_service.runtimes.get(device_id)
+    if runtime is None:
+        raise HTTPException(
+            status_code=409, detail="Nenhuma aquisi\u00e7\u00e3o ativa nesta fonte."
+        )
+    transactions = [dict(item) for item in getattr(runtime.adapter, "transactions", [])
+                    if item.get("sample_sequence") is not None]
+    available = [item for item in transactions if item["sample_sequence"] > after_sequence]
+    items = available[:page_size]
+    return {
+        "status": await acquisition_service.status(device_id), "items": items,
+        "page_size": page_size, "has_more": len(available) > page_size,
+        "next_sequence": items[-1]["sample_sequence"] if items else after_sequence,
+        "history_truncated": bool(transactions and
+                                  transactions[0]["sample_sequence"] > after_sequence + 1),
+    }
+
+
 @router.get("/devices/{device_id}/diagnostic-export")
 async def export_complete_diagnostic(
     device_id: int,
@@ -654,7 +677,9 @@ async def export_complete_diagnostic(
     device = db.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Equipamento não encontrado")
-    probe = protocol_probe_service.latest_results.get(device_id)
+    probe = (await protocol_probe_service.run(device, "read")
+             if device_id in acquisition_service.runtimes
+             else protocol_probe_service.latest_results.get(device_id))
     if not probe:
         raise HTTPException(
             status_code=409,
@@ -689,6 +714,8 @@ async def test_device_connection(
     device = db.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Equipamento não encontrado")
+    if was_connected:
+        return await protocol_probe_service.run(device, "full")
     try:
         acquisition_service.assert_diagnostic_port_available(device.port or "")
     except SerialTransportError as exc:

@@ -14,7 +14,7 @@ from app.adapters.base import (
     DeviceStatus,
     power_to_watts,
 )
-from app.adapters.transports import classify_serial_error
+from app.adapters.transports import claim_port, classify_serial_error, release_port, serial_io
 
 
 class SerialJsonAdapter(DeviceAdapter):
@@ -30,18 +30,26 @@ class SerialJsonAdapter(DeviceAdapter):
     async def connect(self) -> None:
         if not self.port:
             raise ValueError("Porta serial não configurada")
+        claim_port(self.port, self)
         try:
-            self.connection = await asyncio.to_thread(
-                serial.Serial, self.port, self.baud_rate, timeout=1
-            )
+            await serial_io(self._open_serial)
+        except asyncio.CancelledError:
+            await self.disconnect()
+            raise
         except (serial.SerialException, PermissionError, OSError) as exc:
+            release_port(self.port, self)
             raise classify_serial_error(exc) from exc
+
+    def _open_serial(self) -> None:
+        self.connection = serial.Serial(self.port, self.baud_rate, timeout=1)
 
     async def disconnect(self) -> None:
         self.reading = False
         if self.connection and self.connection.is_open:
-            await asyncio.to_thread(self.connection.close)
+            await serial_io(self.connection.close)
         self.connection = None
+        if self.port:
+            release_port(self.port, self)
 
     async def stop_reading(self) -> None:
         self.reading = False
@@ -63,7 +71,7 @@ class SerialJsonAdapter(DeviceAdapter):
             raise RuntimeError("Porta serial não conectada")
         self.reading = True
         while self.reading and self.connection.is_open:
-            line = await asyncio.to_thread(self.connection.readline)
+            line = await serial_io(self.connection.readline)
             if not line:
                 continue
             try:

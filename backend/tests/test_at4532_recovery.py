@@ -80,8 +80,8 @@ async def test_isolated_fetch_timeout_does_not_restart_identity_cycle(monkeypatc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failures,disconnected,expected_timeouts", [(3, False, 3), (1, True, 1)])
-async def test_reconnect_only_after_consecutive_timeouts_or_closed_port(
+@pytest.mark.parametrize("failures,disconnected,expected_timeouts", [(7, False, 7), (1, True, 1)])
+async def test_reconnect_only_after_watchdog_expiry_or_closed_port(
     monkeypatch,
     failures,
     disconnected,
@@ -105,7 +105,7 @@ async def test_reconnect_only_after_consecutive_timeouts_or_closed_port(
     assert metrics["reconnect_count"] == 1
     assert transport.open_calls == 2
     assert metrics["last_failure"]["recovery_reason"] == (
-        "port_closed" if disconnected else "consecutive_fetch_timeouts"
+        "port_closed" if disconnected else "watchdog_expired"
     )
 
 
@@ -154,7 +154,7 @@ async def test_reconnect_preserves_session_and_persists_only_real_unique_reading
     client, monkeypatch
 ):
     clock = FakeClock()
-    transport = RecoverableTransport(clock, failures=3)
+    transport = RecoverableTransport(clock, failures=7)
     monkeypatch.setattr("app.adapters.specific.monotonic", clock.monotonic)
     # Isolate accelerated adapter sleeps from the real service/event-loop scheduler.
     monkeypatch.setattr("app.adapters.specific.asyncio", SimpleNamespace(sleep=clock.sleep))
