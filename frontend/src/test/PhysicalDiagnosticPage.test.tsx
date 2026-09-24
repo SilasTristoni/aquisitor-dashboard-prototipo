@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { vi } from "vitest";
@@ -231,9 +231,9 @@ test("diagnóstico com runtime conectado não confirma TX nem envia nova abertur
   await screen.findByText("Conectado", { exact: true });
   const initialCalls = vi.mocked(api).mock.calls.length;
   await userEvent.click(screen.getByRole("button", { name: "Testar leitura" }));
-  expect(await screen.findByText(/atualmente em aquisição pelo ThermoPower/)).toBeVisible();
+  await waitFor(() => expect(vi.mocked(api).mock.calls.slice(initialCalls).some(([path]) => path === "/devices/1/protocol-probe")).toBe(true));
   expect(confirmSpy).not.toHaveBeenCalled();
-  expect(vi.mocked(api).mock.calls.slice(initialCalls).filter(([, options]) => options?.method === "POST")).toHaveLength(0);
+  expect(vi.mocked(api).mock.calls.slice(initialCalls).filter(([, options]) => options?.method === "POST")).toHaveLength(1);
   expect(screen.getByText("Conectado", { exact: true })).toBeVisible();
   vi.mocked(api).mockImplementation(original);
   confirmSpy.mockRestore();

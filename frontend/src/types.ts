@@ -75,6 +75,8 @@ export type RuntimeStatus = {
   expected_interval_ms?: number;
   observed_interval_ms?: number;
   cadence_degraded?: boolean;
+  persistent_failure?: boolean;
+  latest_reading?: Reading;
   acquisition_diagnostics?: Record<string, unknown>;
   valid_channels?: number;
   last_error?: string | null;

@@ -235,3 +235,24 @@ describe("conexão parcial da dashboard", () => {
     expect(screen.queryByText("Uma fonte falhou; a outra permanece disponível.")).not.toBeInTheDocument();
   });
 });
+
+
+test.each(["degraded", "recovering"])("thermal %s preserves values and the active session", async (state) => {
+  const timestamp = new Date().toISOString();
+  liveState.readings = physicalReadings().map((reading) => ({ ...reading, session_id: 99 }));
+  apiMock.mockImplementation(async (path: string) => {
+    if (path === "/devices") return devices;
+    if (path.includes("/channels")) return [];
+    if (path.startsWith("/sessions?status=running")) return { items: [{ id: 99, device_id: 1, status: "running", started_at: timestamp }] };
+    if (path.startsWith("/sessions")) return { items: [] };
+    if (path.includes("/status")) return { device_id: Number(path.split("/")[2]), connected: true, state: path.includes("/1/") ? state : "connected", last_message_at: timestamp };
+    return {};
+  });
+  render(<DashboardPage />);
+  await screen.findByRole("button", { name: "Finalizar ensaio" });
+  if (state === "recovering") expect(await screen.findByText(/Reconectando automaticamente/)).toBeVisible();
+  expect(screen.queryByText("Falha nesta fonte")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Conectar fontes" })).not.toBeInTheDocument();
+  expect(screen.getByText(/8\/32 canais/)).toBeVisible();
+  expect(screen.getAllByText("17.7 W")[0]).toBeVisible();
+});

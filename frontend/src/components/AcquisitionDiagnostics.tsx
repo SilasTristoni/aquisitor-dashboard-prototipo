@@ -1,6 +1,8 @@
 import { Panel } from "./ui";
 
 const metrics = [
+  ["fetch_attempts", "Total FETCH"], ["discarded_fetches", "Leituras descartadas"],
+  ["unknown_responses", "Respostas desconhecidas"], ["reconnect_failures", "Tentativas de reconexão sem sucesso"],
   ["successful_fetches", "FETCH válidos"], ["fetch_timeouts", "Timeouts de FETCH"],
   ["consecutive_fetch_timeouts", "Timeouts consecutivos"], ["reconnect_count", "Reconexões"],
   ["average_fetch_interval_ms", "Intervalo médio entre tentativas (ms)"],

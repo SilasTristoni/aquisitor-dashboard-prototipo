@@ -156,7 +156,14 @@ export default function DevicesDiscoveryPage() {
 
   async function testConnection(device: Device, mode: "identity" | "read" | "full") {
     if (statuses[device.id]?.connected) {
-      setTest({ error: "O equipamento está atualmente em aquisição pelo ThermoPower. Desconecte-o antes de executar o diagnóstico de comunicação." });
+      setTest({ loading: true });
+      try {
+        setTest(await api(`/devices/${device.id}/protocol-probe`, {
+          method: "POST", body: JSON.stringify({ mode, operator_confirmed: true }),
+        }));
+      } catch (reason) {
+        setTest({ error: reason instanceof Error ? reason.message : "Falha ao consultar diagnóstico" });
+      }
       return;
     }
     const isAt4532 = device.protocol === "at4532_serial";
