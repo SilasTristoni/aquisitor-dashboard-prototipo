@@ -56,6 +56,8 @@ de protocolo físico nem altera o comportamento da aquisição.
 Os dados recebem o marcador `thermopower_ux_demo_v1`. Repetir o comando preserva os registros
 e não duplica sessões. Cadastros com nomes reservados mas sem o marcador causam uma falha
 explícita, sem sobrescrita. Toda a inserção de dados ocorre em uma transação.
+Sessões de demonstração antigas recebem a cadência por fonte se esse metadado estiver
+ausente, para que o relatório avalie corretamente os intervalos sintéticos de 1 e 5 segundos.
 
 O usuário configurado em `THERMOPOWER_DEMO_ADMIN_EMAIL` é reutilizado. Se ainda não existir,
 é criado com a senha de `THERMOPOWER_DEMO_ADMIN_PASSWORD`; sem essa variável, o comando gera

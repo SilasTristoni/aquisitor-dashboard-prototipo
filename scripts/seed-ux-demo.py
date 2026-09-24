@@ -264,6 +264,9 @@ def seed_demo(db, user, *, environment: str) -> dict:
     for day, (scenario, title, duration, interval, status, role) in enumerate(
         SCENARIOS
     ):
+        source_cadence = {str(thermal.id): interval * 1000}
+        if role == "both":
+            source_cadence[str(electrical.id)] = interval * 1000
         name = f"DEMO UX — {title}"
         existing = list(
             db.scalars(
@@ -276,6 +279,11 @@ def seed_demo(db, user, *, environment: str) -> dict:
         if existing:
             if len(existing) != 1 or existing[0].metadata_json.get("seed") != SEED_KEY:
                 raise ValueError(f"Sessão conflitante preservada: {name}.")
+            if "source_cadence_ms" not in existing[0].metadata_json:
+                existing[0].metadata_json = {
+                    **existing[0].metadata_json,
+                    "source_cadence_ms": source_cadence,
+                }
             sessions.append(existing[0])
             continue
         start = START + timedelta(days=day)
@@ -297,6 +305,7 @@ def seed_demo(db, user, *, environment: str) -> dict:
                 "seed": SEED_KEY,
                 "synthetic": True,
                 "scenario": scenario,
+                "source_cadence_ms": source_cadence,
                 "product": "Forno elétrico de bancada",
                 "model": "Virtual 1200 W",
                 "sample": f"UX-{day + 1:02d}",
@@ -307,13 +316,13 @@ def seed_demo(db, user, *, environment: str) -> dict:
         db.flush()
         db.add(
             SessionDevice(
-                session_id=session.id, device_id=thermal.id, role="temperature"
+                session_id=session.id, device_id=thermal.id, role="temperature", created_at=start
             )
         )
         if role == "both":
             db.add(
                 SessionDevice(
-                    session_id=session.id, device_id=electrical.id, role="electrical"
+                    session_id=session.id, device_id=electrical.id, role="electrical", created_at=start
                 )
             )
         db.add_all(

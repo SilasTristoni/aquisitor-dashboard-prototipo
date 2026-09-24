@@ -76,6 +76,14 @@ def test_seed_populates_idempotently_without_touching_physical_devices(client, m
         }
         first = SEED["seed_demo"](db, user, environment="test")
         db.commit()
+        # A previous seed may lack cadence metadata; repeat runs backfill only that field.
+        previous = db.get(MeasurementSession, first["sessions"][0]["id"])
+        previous.metadata_json = {
+            key: value
+            for key, value in previous.metadata_json.items()
+            if key != "source_cadence_ms"
+        }
+        db.commit()
         second = SEED["seed_demo"](db, user, environment="test")
         db.commit()
         assert first["created_sessions"] == 7
@@ -142,6 +150,10 @@ def test_seed_populates_idempotently_without_touching_physical_devices(client, m
         statistics = period_statistics(data)
         assert statistics["general"]["electrical_sample_count"] == 4746
         assert statistics["general"]["temperature_sample_count"] == 4921
+        quality = statistics["general"]["source_quality"]
+        assert len(quality) == 13
+        assert all(not source["frequency_reduced"] for source in quality)
+        assert {source["expected_interval_seconds"] for source in quality} == {1, 5}
 
 
 def test_seed_preserves_conflicting_registration(client):
