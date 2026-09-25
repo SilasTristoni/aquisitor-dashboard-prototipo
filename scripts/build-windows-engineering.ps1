@@ -269,8 +269,11 @@ $HashEntries = foreach ($File in $HashFiles) {
     [pscustomobject]@{ Hash = $Hash.Hash; RelativePath = $RelativePath }
 }
 $HashLines = $HashEntries | ForEach-Object { "$($_.Hash)  $($_.RelativePath)" }
-Set-Content -LiteralPath $ManifestPath -Encoding ascii -Value $HashLines
-foreach ($Entry in $HashEntries) {
+# Preserve Portuguese filenames and verify the serialized manifest, not only memory objects.
+[IO.File]::WriteAllLines($ManifestPath, [string[]]$HashLines, [Text.UTF8Encoding]::new($false))
+foreach ($Line in Get-Content -LiteralPath $ManifestPath -Encoding utf8) {
+    $Parts = $Line -split "  ", 2
+    $Entry = [pscustomobject]@{ Hash = $Parts[0]; RelativePath = $Parts[1] }
     $FilePath = Join-Path $StagingRoot $Entry.RelativePath.Replace("/", "\")
     $VerifiedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $FilePath).Hash
     if ($VerifiedHash -ne $Entry.Hash) {
