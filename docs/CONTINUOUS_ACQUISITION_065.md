@@ -151,3 +151,30 @@ listagem, detalhes e prévia com as contagens esperadas. Veja [UX_DEMO_SEED.md](
 
 Nesta estação a COM5 não foi enumerada; apareceram somente COM3 e COM4 Bluetooth.
 Nenhum resultado automatizado deve ser apresentado como ensaio físico de 30/60 minutos.
+
+## Pacote concluído — 25/09/2026
+
+- Versão: **0.6.5-client-preview**.
+- Executável compilado do commit `57068aea28d02c2f82037ad9fb1f2bf4560059e4`.
+- Backend completo: **196 aprovados** em 374,64 s; gate físico: **79 aprovados**.
+- Frontend: **41 aprovados**; Ruff, ESLint, TypeScript e Vite aprovados.
+- Alembic upgrade/check, pip check e Docker Compose config aprovados.
+- Executável: startup, autenticação, SPA, manual e ZIP de suporte aprovados;
+  **12 exportações aprovadas**, cobrindo fontes elétrica, térmica e combinada.
+- Correção posterior de empacotamento `d01605b`: manifesto SHA-256 em UTF-8,
+  com leitura e verificação do conteúdo serializado. O teste adicional com nomes
+  portugueses e gregos passou. Não houve alteração do executável.
+- Integridade final: **1.144 arquivos** conferidos na pasta e no ZIP pelo manifesto.
+  Seed e banco de demonstração não estão no pacote. O candidato com manifesto ASCII
+  foi preservado em `build/retired-candidate-065-ascii`.
+
+Arquivo: `engineering/ThermoPower-0.6.5-client-preview.zip` (**57.886.217 bytes**).
+Há também um arquivo `.zip.sha256` ao lado do ZIP.
+
+```text
+3A1647CE6B1FD44C87AFDAFE637B6523DD5EF86A1152154A50EAC9722C16AB63
+```
+
+O banco local de desenvolvimento já recebeu o seed. Um segundo banco vazio também
+foi validado: migrations até `0008_session_metadata`, dois simuladores sem COM e sete
+sessões. A bancada física continua pendente.
