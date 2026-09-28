@@ -106,6 +106,13 @@ def main():
                 "fetch_timeouts",
                 "unknown_responses",
                 "reconnect_count",
+                "late_frames",
+                "completed_late_frames",
+                "incomplete_late_frames",
+                "discarded_complete_frames",
+                "discarded_partial_bytes",
+                "resynchronizations",
+                "resynchronization_failures",
             ]
         }
         (args.output / "summary.json").write_text(

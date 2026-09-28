@@ -64,6 +64,9 @@ class ProtocolProbeService:
                     "identity_status": getattr(adapter, "identity_status", "unconfirmed"),
                     "protocol_status": getattr(adapter, "protocol_status", "not_verified"),
                     "transactions": list(getattr(adapter, "transactions", [])),
+                    "input_boundary_diagnostics": adapter.input_boundary_diagnostics()
+                    if hasattr(adapter, "input_boundary_diagnostics")
+                    else {},
                     "readings": [runtime.latest.model_dump(mode="json")] if runtime.latest else [],
                     "result": "passed_with_warning" if ready else "pending",
                     "errors": [],
@@ -268,6 +271,9 @@ class ProtocolProbeService:
             if device.protocol == "at4532_serial"
             else None,
             "transactions": adapter.transactions,
+            "input_boundary_diagnostics": adapter.input_boundary_diagnostics()
+            if hasattr(adapter, "input_boundary_diagnostics")
+            else {},
             "readings": readings,
             "stages": stages,
             "result": result,

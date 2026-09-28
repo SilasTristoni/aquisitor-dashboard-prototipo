@@ -1,8 +1,10 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
 class FetchDiagnostics:
+    input_boundary_metrics: dict[str, int] = field(default_factory=dict)
+    consecutive_fetch_failures: int = 0
     discarded_fetches: int = 0
     unknown_responses: int = 0
     reconnect_failures: int = 0
@@ -24,6 +26,8 @@ class FetchDiagnostics:
 
     def snapshot(self, now: float | None = None) -> dict:
         return {
+            **self.input_boundary_metrics,
+            "consecutive_fetch_failures": self.consecutive_fetch_failures,
             "discarded_fetches": self.discarded_fetches,
             "unknown_responses": self.unknown_responses,
             "reconnect_failures": self.reconnect_failures,

@@ -863,7 +863,9 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
             elapsed_ms = (monotonic() - transaction_started) * 1000
             boundary = dict(getattr(self.transport, "last_query_boundary", {}))
             tx_monotonic = float(boundary.get("tx_monotonic", transaction_started))
-            self._last_command_tx_monotonic[command.name] = tx_monotonic
+            tx_sent = boundary.get("tx_sent", True)
+            if tx_sent:
+                self._last_command_tx_monotonic[command.name] = tx_monotonic
             transaction = {
                 "command_name": command.name,
                 "vendor_documented": True,
@@ -873,7 +875,9 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
                 .replace("\r", "\\r")
                 .replace("\n", "\\n"),
                 "tx_hex": command.request.hex(" ").upper(),
-                "timestamp_tx": boundary.get("timestamp_tx", timestamp.isoformat()),
+                "timestamp_tx": boundary.get("timestamp_tx", timestamp.isoformat())
+                if tx_sent else None,
+                "tx_sent": tx_sent,
                 "rx_ascii": "",
                 "rx_bytes": boundary.get("received_bytes", []),
                 "rx_hex": boundary.get("received_hex", ""),
@@ -884,12 +888,12 @@ class _DocumentedProtocolAdapter(DeviceAdapter):
                 "sample_sequence": sequence if command.name == "temperatures" else None,
                 "interval_since_previous_tx_ms": (
                     round((tx_monotonic - previous_tx) * 1000, 3)
-                    if previous_tx is not None
+                    if previous_tx is not None and tx_sent
                     else None
                 ),
                 "interval_since_previous_rx_ms": (
                     round((tx_monotonic - previous_rx) * 1000, 3)
-                    if previous_rx is not None
+                    if previous_rx is not None and tx_sent
                     else None
                 ),
                 "buffer_pending_before_tx_bytes": boundary.get("buffer_pending_before_tx_bytes", 0),
@@ -1295,6 +1299,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             reading = await self._query_and_normalize()
         except (SerialTransportError, ProtocolResponseError) as exc:
             metrics.discarded_fetches += 1
+            metrics.consecutive_fetch_failures += 1
             if isinstance(exc, UnexpectedResponseTypeError):
                 metrics.unknown_responses += int(
                     exc.details["actual_response_type"] == "unknown_response"
@@ -1337,11 +1342,15 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                 }
                 metrics.recovery_started = None
             metrics.consecutive_reconnect_failures = 0
+            metrics.consecutive_fetch_failures = 0
             self.connection_state = "connected"
             metrics.consecutive_fetch_timeouts = 0
             metrics.last_successful_fetch_at = reading.received_timestamp.isoformat()
             return reading
         finally:
+            metrics.input_boundary_metrics = dict(
+                getattr(self.transport, "synchronization_metrics", {})
+            )
             # A failed FETCH still consumed a serial window. Never retry in a tight loop.
             self._last_fetch_started_monotonic = started
             self._last_fetch_completed_monotonic = monotonic()
@@ -1542,8 +1551,14 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                     soft, hard = self.watchdog_windows()
                     port_open = bool(self.transport and self.transport.is_open)
                     physical_loss = not port_open or (
-                        isinstance(exc, SerialTransportError) and exc.code != "protocol_timeout"
+                        isinstance(exc, SerialTransportError)
+                        and exc.code not in {
+                            "protocol_timeout", "incomplete_frame", "incomplete_late_frame",
+                        }
                     )
+                    # A single delayed query is not physical loss, even after a long
+                    # scheduling gap. Retry through transport resync before reopening.
+                    exhausted = gap >= hard and metrics.consecutive_fetch_failures >= 3
                     reason = (
                         "port_closed"
                         if not port_open
@@ -1551,7 +1566,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                             "physical_serial_error"
                             if physical_loss
                             else "watchdog_expired"
-                            if gap >= hard
+                            if exhausted
                             else "isolated_fetch_timeout"
                             if exc.code == "protocol_timeout"
                             else "invalid_frame"
@@ -1560,7 +1575,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                     if metrics.last_failure:
                         metrics.last_failure["recovery_reason"] = reason
                     self.connection_state = "recovering" if gap >= soft else "degraded"
-                    if physical_loss or gap >= hard:
+                    if physical_loss or exhausted:
                         await self._recover_connection()
                     continue
                 self.connection_state = "connected"
@@ -1576,9 +1591,17 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             )
 
     async def get_status(self) -> DeviceStatus:
+        self.fetch_diagnostics.input_boundary_metrics = dict(
+            getattr(self.transport, "synchronization_metrics", {})
+        )
         status = await super().get_status()
         active = self.connection_state in {"connected", "degraded", "recovering"}
         return status.model_copy(update={"state": self.connection_state, "connected": active})
+
+    def input_boundary_diagnostics(self) -> dict:
+        if isinstance(self.transport, At4532SerialTransport):
+            return self.transport.input_boundary_diagnostics()
+        return {}
 
     async def get_device_information(self) -> DeviceInformation:
         information = await super().get_device_information()

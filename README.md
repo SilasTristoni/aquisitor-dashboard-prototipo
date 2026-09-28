@@ -1,4 +1,4 @@
-# ThermoPower Monitor 0.6.5-client-preview
+# ThermoPower Monitor 0.6.6-client-preview
 
 Plataforma full-stack para aquisição industrial combinada: até 32 temperaturas pelo Applent AT4532 e grandezas elétricas pelo GW Instek GPM-8213. As sessões são rastreáveis, aceitam uma ou as duas fontes, sincronizam timestamps e mantêm o protótipo original em `legacy/`.
 
@@ -10,7 +10,8 @@ Plataforma full-stack para aquisição industrial combinada: até 32 temperatura
 > [roteiro de bancada](docs/PHYSICAL_ENGINEERING_TEST.md). As respostas conhecidas que bloqueiam
 > o empacotamento estão no [gate de regressão física](docs/PHYSICAL_REGRESSION_FIXTURES.md).
 
-Nova versão: [aquisição contínua, recuperação automática e roteiro de bancada](docs/CONTINUOUS_ACQUISITION_065.md).
+Nova versão: [correção da fronteira serial AT4532 e homologação física pendente](docs/AT4532_FRAMING_066.md).
+Histórico: [aquisição contínua da 0.6.5](docs/CONTINUOUS_ACQUISITION_065.md).
 
 ## Suporte e guia do operador
 

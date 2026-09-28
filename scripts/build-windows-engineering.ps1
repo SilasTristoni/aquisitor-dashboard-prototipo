@@ -11,8 +11,8 @@ $EngineeringZip = "$EngineeringRoot.zip"
 $StagingRoot = Join-Path $RepositoryRoot "dist\ThermoPowerMonitor"
 $ValidatedZip = Join-Path $RepositoryRoot "dist\ThermoPower-$Version.validated.zip"
 
-if ($Version -ne "0.6.5-client-preview") {
-    throw "Este script aceita somente a versao 0.6.5-client-preview."
+if ($Version -ne "0.6.6-client-preview") {
+    throw "Este script aceita somente a versao 0.6.6-client-preview."
 }
 if ((Test-Path -LiteralPath $EngineeringRoot) -or (Test-Path -LiteralPath $EngineeringZip)) {
     throw "Esta versao ja foi empacotada. Escolha uma nova versao para preservar a anterior."
@@ -161,6 +161,7 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "CLIENT-PREVIEW.txt") -Encoding
     "Graficos: inicio real comum, UTC de recebimento e picos visiveis.",
     "GPM-8213: integracao fisica validada no firmware V1.05.",
     "AT4532: FETCH fisico TCP-32/CP936 suportado; IDN timeout permanece warning.",
+    "AT4532 0.6.6: ressincronizacao por frame antes de TX; homologacao fisica PENDENTE.",
     "AT4532 continuo: intervalo efetivo do adapter (~1 s), preservando guarda serial.",
     "Cadastro AT duplicado: historico preservado e neutralizado; uma COM tem um controlador ativo.",
     "Fallback: somente associacao manual exata + 19200/8-N-1 + medicao estrutural valida.",
@@ -206,6 +207,10 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "TEST-RESULTS.txt") -Encoding u
     "Combined 100/120/300 samples per source through database/API/WebSocket/reports: passed",
     "AT invalid/partial/timeout frames retry in place; time-based watchdog reconnects: passed",
     "AT 1000 FETCH soak and 100 valid / fault / 100 valid scenarios: passed",
+    "AT captured 6+688-byte frame and 1/2/6/50/347-byte fragmentation: passed",
+    "AT late-frame isolation before TX, incomplete-frame retention and cancellation: passed",
+    "AT real transport mixed soak: 1000 unique valid frames, 10 late frames, 1 required recovery: passed",
+    "AT mixed soak: zero malformed frames, partial-byte losses or unnecessary reconnects: passed",
     "AT closed port with capped backoff and dual-source same-session persistence: passed",
     "AT recovery preserves session and unique persisted sequences: passed",
     "Configured/observed cadence, human quality details and precise session analysis period: passed",
@@ -241,6 +246,8 @@ Set-Content -LiteralPath (Join-Path $StagingRoot "TEST-RESULTS.txt") -Encoding u
 Copy-Item -LiteralPath "$TestTemp-full.xml" -Destination (Join-Path $StagingRoot "TEST-RESULTS.xml")
 Copy-Item -LiteralPath (Join-Path $RepositoryRoot "docs\CONTINUOUS_ACQUISITION_065.md") `
     -Destination (Join-Path $StagingRoot "CONTINUOUS_ACQUISITION_065.md")
+Copy-Item -LiteralPath (Join-Path $RepositoryRoot "docs\AT4532_FRAMING_066.md") `
+    -Destination (Join-Path $StagingRoot "AT4532_FRAMING_066.md")
 Copy-Item -LiteralPath (Join-Path $RepositoryRoot "scripts\monitor-serial-stability.py") `
     -Destination (Join-Path $StagingRoot "monitor-serial-stability.py")
 $RequiredPackagePaths = @(
@@ -249,6 +256,7 @@ $RequiredPackagePaths = @(
     "CLIENT-PREVIEW.txt",
     "PROTOCOL-SOURCES.txt",
     "TEST-RESULTS.txt",
+    "AT4532_FRAMING_066.md",
     "Manual do Usuário - ThermoPower Monitor.pdf",
     "build-info.json"
 )
@@ -408,5 +416,10 @@ if ($ZipBackedUp -and (Test-Path -LiteralPath $PreviousEngineeringZip)) {
     Remove-Item -LiteralPath $PreviousEngineeringZip -Force
 }
 Write-Host "Build de engenharia concluida: $EngineeringRoot"
+[IO.File]::WriteAllText(
+    "$EngineeringZip.sha256",
+    "$($ZipHash.Hash)  $([IO.Path]::GetFileName($EngineeringZip))`n",
+    [Text.UTF8Encoding]::new($false)
+)
 Write-Host "ZIP de engenharia: $EngineeringZip"
 Write-Host "SHA256 ZIP: $($ZipHash.Hash)"
