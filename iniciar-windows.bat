@@ -2,6 +2,8 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 title ThermoPower Monitor - Inicializador
+set "THERMOPOWER_DEMO_ADMIN_EMAIL=admin@demo.thermopower.com"
+set "THERMOPOWER_DEMO_ADMIN_PASSWORD=ThermoPower@123"
 
 where python >nul 2>nul || (
   echo [ERRO] Python nao encontrado no PATH.

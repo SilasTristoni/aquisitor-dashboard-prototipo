@@ -1,9 +1,11 @@
-﻿param([string]$Executable)
+﻿param([string]$Executable, [string]$PackageVersion)
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ExpectedVersion = (Get-Content -Raw -LiteralPath (Join-Path $RepositoryRoot "VERSION.txt")).Trim()
+$FrontendExpectedVersion = $ExpectedVersion
+if ($PackageVersion) { $ExpectedVersion = $PackageVersion }
 $SmokeData = Join-Path $RepositoryRoot ("build\smoke-runtime-" + [guid]::NewGuid().ToString("N"))
 if (-not $Executable) {
     $Executable = Join-Path $RepositoryRoot "dist\ThermoPowerMonitor\ThermoPowerMonitor.exe"
@@ -156,7 +158,7 @@ try {
         $FrontendAssets = Join-Path $ExecutableDirectory "_internal\frontend\assets"
     }
     $FrontendVersion = Get-ChildItem -LiteralPath $FrontendAssets -File |
-        Select-String -SimpleMatch $ExpectedVersion -Quiet
+        Select-String -SimpleMatch $FrontendExpectedVersion -Quiet
     if (-not $FrontendVersion) { throw "O frontend empacotado nao contem a versao esperada." }
     $LogPath = Join-Path $SmokeData "logs\thermopower.log"
     if (-not (Test-Path -LiteralPath $LogPath) -or (Get-Item -LiteralPath $LogPath).Length -eq 0) {
@@ -194,7 +196,7 @@ try {
         DiagnosticReadOnlyRoute = $DiagnosticRoute
         ProfessionalReportRoutes = $PeriodReportRoutes.Count
         Engineering8N1Consent = $EngineeringConsent
-        FrontendVersion = $ExpectedVersion
+        FrontendVersion = $FrontendExpectedVersion
         LogBytes = (Get-Item -LiteralPath $LogPath).Length
         DatabaseCreated = $true
         DatabaseBytes = (Get-Item -LiteralPath $ExpectedDatabase).Length

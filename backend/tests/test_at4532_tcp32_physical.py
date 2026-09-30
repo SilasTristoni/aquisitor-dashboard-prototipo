@@ -38,15 +38,15 @@ PHYSICAL_CHANNEL_VALUES = [21.79, 21.62, 21.38, 21.34, 21.57, 21.71, 21.90, 22.1
 PHYSICAL_AUXILIARY_FIELDS = ["0.00|K|℃"] * 32 + ["001", "068214"]
 
 
-def test_at4532_one_hertz_budget_accounts_for_the_full_physical_frame() -> None:
+def test_at4532_guard_is_conservative_not_derived_from_wire_time() -> None:
     transmission_seconds = (
         AT4532_PHYSICAL_FRAME_BYTES * AT4532_SERIAL_BITS_PER_BYTE / 19200
     )
 
     assert transmission_seconds == pytest.approx(0.361458, abs=0.000001)
-    assert AT4532_CONTINUOUS_READ_GUARD_SECONDS == 0.4
+    assert AT4532_CONTINUOUS_READ_GUARD_SECONDS == 1.0
     assert At4532SerialAdapter.expected_interval_seconds == 1.0
-    assert transmission_seconds + AT4532_CONTINUOUS_READ_GUARD_SECONDS < 1.0
+    assert transmission_seconds + AT4532_CONTINUOUS_READ_GUARD_SECONDS > 1.0
 
 
 def tcp32_physical_fixture(
@@ -943,7 +943,7 @@ async def test_tcp32_continuous_polling_reuses_handshake_and_tracks_ch29(
 
 
 @pytest.mark.asyncio
-async def test_at4532_continuous_acquisition_completes_100_samples_at_one_hertz(
+async def test_at4532_continuous_acquisition_respects_post_rx_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = FakeClock()
@@ -999,8 +999,8 @@ async def test_at4532_continuous_acquisition_completes_100_samples_at_one_hertz(
         for previous, current in zip(readings, readings[1:], strict=False)
     )
     assert all(
-        999 <= transaction["interval_since_previous_tx_ms"] <= 1001
-        and transaction["interval_since_previous_rx_ms"] >= 400
+        1374 <= transaction["interval_since_previous_tx_ms"] <= 1376
+        and transaction["interval_since_previous_rx_ms"] >= 1000
         for transaction in fetch_transactions[1:]
     )
     assert len({reading.raw_payload["device_timestamp_raw"] for reading in readings}) == 100

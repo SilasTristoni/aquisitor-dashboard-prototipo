@@ -138,6 +138,11 @@ def _apply_migrations(runtime: Path) -> None:
 
 
 def main() -> None:
+    if "--characterize-at4532" in sys.argv:
+        from app.engineering.at4532_characterization import main as characterize
+
+        characterize(sys.argv[sys.argv.index("--characterize-at4532") + 1:])
+        return
     mutex_name = os.environ.get("THERMOPOWER_MUTEX_NAME", "ThermoPowerMonitorRunning")
     if not _acquire_single_instance(mutex_name):
         import ctypes

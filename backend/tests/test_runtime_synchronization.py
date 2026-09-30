@@ -169,7 +169,7 @@ def test_running_one_hz_sources_start_and_diagnostics_leave_acquisition_intact(
             assert runtime.persisted_count >= 1
         probe.assert_not_awaited()
         raw.assert_not_awaited()
-        assert acquisition_service.common_start_diagnostic["state"] == "matched"
+        assert acquisition_service.common_start_diagnostic["state"] == "ready"
         assert (
             client.post(
                 f"/api/v1/sessions/{session_id}/finish",
@@ -213,8 +213,8 @@ async def test_best_pair_in_new_queues_survives_transient_status(monkeypatch, tr
             if device_id == 1:
                 runtime.pending_start.append(sample(role, origin + timedelta(milliseconds=30)))
             runtime.latest = runtime.pending_start[-1]
-        assert await pending == origin
-        assert service.common_start_diagnostic["best_delta_ms"] == 0
+        assert await pending <= origin
+        assert service.common_start_diagnostic["policy"] == "independent_source_readiness"
         assert service.common_start_diagnostic["sources"]["1"]["fresh_samples"] == 2
         assert "task_running" in caplog.text and "latest_received_timestamp" in caplog.text
         connect.assert_not_awaited()

@@ -378,13 +378,135 @@ class At4532SerialTransport(SerialTransport):
             0,
         )
         self._resynchronization_history: deque[dict] = deque(maxlen=32)
+        self.recovered_frames: deque[dict] = deque(maxlen=8)
+        self.recovered_frame_max_age_s = 5.0
+        self.post_rx_guard_s = 1.0
+        self.last_physical_rx_monotonic: float | None = None
+        self._partial_started_monotonic: float | None = None
+        self._last_physical_rx_at: str | None = None
+        self.accept_recovered_frame: Callable[[bytes], bool] | None = None
+        self._quarantine_open_input = False
+        self.synchronization_metrics.update(dict.fromkeys(
+            ("recovered_frames_consumed", "expired_recovered_frames", "recovered_queue_overflows",
+             "rejected_recovered_frames", "post_rx_guard_waits", "untrusted_recovered_frames"), 0
+        ))
+
+    async def _open_unlocked(self) -> float:
+        was_open = self.is_open
+        elapsed = await super()._open_unlocked()
+        if not was_open:
+            self._quarantine_open_input = bool(self.open_boundary.get("pending_input_bytes"))
+        return elapsed
 
     def input_boundary_diagnostics(self) -> dict:
         return {
             **self.synchronization_metrics,
             "pending_partial_bytes": len(self._partial_input),
             "recent_resynchronizations": list(self._resynchronization_history),
+            "queued_recovered_frames": len(self.recovered_frames),
+            "post_rx_guard_s": self.post_rx_guard_s,
+            "last_physical_rx_at": self._last_physical_rx_at,
         }
+
+    def _queue_recovered_frame(self, frame: bytes) -> None:
+        if not frame.startswith(b"TCP-32,"):
+            self.synchronization_metrics["discarded_complete_frames"] += 1
+            return
+        if len(self.recovered_frames) == self.recovered_frames.maxlen:
+            self.synchronization_metrics["recovered_queue_overflows"] += 1
+            self.synchronization_metrics["discarded_complete_frames"] += 1
+        self.recovered_frames.append({
+            "payload": frame,
+            "first_byte_monotonic": self._partial_started_monotonic,
+            "rx_monotonic": self.last_physical_rx_monotonic,
+            "timestamp_rx": self._last_physical_rx_at,
+            "eligible": not self._quarantine_open_input,
+        })
+
+    def _take_recovered_frame(self) -> dict | None:
+        if self.accept_recovered_frame is None:
+            return None
+        while self.recovered_frames:
+            frame = self.recovered_frames.popleft()
+            age = monotonic() - frame["first_byte_monotonic"]
+            if not frame["eligible"]:
+                reason = "untrusted_recovered_frames"
+            elif age > self.recovered_frame_max_age_s:
+                reason = "expired_recovered_frames"
+            elif not self.accept_recovered_frame(frame["payload"]):
+                reason = "rejected_recovered_frames"
+            else:
+                self.synchronization_metrics["recovered_frames_consumed"] += 1
+                return frame
+            self.synchronization_metrics[reason] += 1
+            self.synchronization_metrics["discarded_complete_frames"] += 1
+            logger.info("AT4532 recovered frame discarded reason=%s age_s=%.3f", reason, age)
+        return None
+
+    async def query(
+        self, payload: bytes, response_terminator: bytes, max_bytes: int = 65_536
+    ) -> tuple[bytes, float]:
+        if payload != b"FETCH?\n":
+            return await super().query(payload, response_terminator, max_bytes)
+        async with self._io_lock:
+            self.last_query_boundary = {
+                "tx_sent": False, "buffer_pending_before_tx_bytes": 0,
+                "buffer_drained_bytes": 0, "pending_before_tx_bytes": 0,
+            }
+            # Recheck the boundary after every guard wait: bytes may arrive while asleep.
+            deadline = monotonic() + self.resynchronization_timeout_s + self.post_rx_guard_s
+            while True:
+                await self._synchronize_input_boundary(response_terminator, max_bytes)
+                recovered = self._take_recovered_frame()
+                if recovered is not None:
+                    response = recovered["payload"]
+                    self.last_query_boundary.update({
+                        "tx_sent": False, "timestamp_tx": None,
+                        "timestamp_rx": recovered["timestamp_rx"],
+                        "rx_monotonic": recovered["rx_monotonic"],
+                        "first_byte_monotonic": recovered["first_byte_monotonic"],
+                        "frame_complete": True, "bytes_received": len(response),
+                        "received_bytes": list(response), "received_hex": response.hex(" ").upper(),
+                        "query_duration_ms": 0.0, "response_source": "recovered_frame",
+                    })
+                    return response, 0.0
+                remaining = (
+                    self.last_physical_rx_monotonic + self.post_rx_guard_s - monotonic()
+                    if self.last_physical_rx_monotonic is not None else 0
+                )
+                if remaining <= 0:
+                    break
+                if monotonic() + remaining > deadline:
+                    raise SerialTransportError("incomplete_late_frame", "RX contínuo; TX adiado.")
+                self.synchronization_metrics["post_rx_guard_waits"] += 1
+                logger.info("AT4532 physical RX guard port=%s guard_s=%.3f wait_s=%.3f",
+                            self.configuration.port, self.post_rx_guard_s, remaining)
+                await asyncio.sleep(remaining)
+            started = monotonic()
+            self.last_query_boundary.update({
+                "timestamp_tx": datetime.now(UTC).isoformat(), "tx_monotonic": started,
+                "post_rx_guard_s": self.post_rx_guard_s,
+                "physical_rx_to_tx_ms": (started - self.last_physical_rx_monotonic) * 1000
+                if self.last_physical_rx_monotonic is not None else None,
+            })
+            _, write_ms = await self._write_unlocked(payload)
+            self.last_query_boundary["tx_sent"] = True
+            response, read_ms = await self._read_until_unlocked(response_terminator, max_bytes)
+            elapsed = (monotonic() - started) * 1000
+            self.last_query_boundary.update({
+                "timestamp_rx": (
+                    self._last_physical_rx_at if response else datetime.now(UTC).isoformat()
+                ),
+                "rx_monotonic": self.last_physical_rx_monotonic if response else monotonic(),
+                "tx_flushed": True, "write_elapsed_ms": write_ms, "read_elapsed_ms": read_ms,
+                "query_duration_ms": elapsed, "response_source": "query",
+            })
+            self._observe_response(response, response_terminator)
+            if not response:
+                raise SerialTransportError(
+                    "protocol_timeout", "Instrumento não respondeu ao comando."
+                )
+            return response, elapsed
 
     async def synchronize_input_boundary(
         self,
@@ -437,8 +559,9 @@ class At4532SerialTransport(SerialTransport):
                         }
                     )
                     metrics["completed_late_frames"] += 1
-                    metrics["discarded_complete_frames"] += 1
+                    self._queue_recovered_frame(frame)
                     self._partial_input.clear()
+                    self._partial_started_monotonic = None
                 remaining = deadline - monotonic()
                 # After a complete frame require a bounded quiet interval. Following a
                 # timeout, wait the full recovery budget for the first delayed byte.
@@ -454,6 +577,9 @@ class At4532SerialTransport(SerialTransport):
                     break
                 if not self._partial_input:
                     metrics["late_frames"] += 1
+                    self._partial_started_monotonic = monotonic()
+                self.last_physical_rx_monotonic = monotonic()
+                self._last_physical_rx_at = datetime.now(UTC).isoformat()
                 self._partial_input.extend(chunk)
                 consumed += len(chunk)
                 if len(self._partial_input) >= max_bytes:
@@ -466,6 +592,7 @@ class At4532SerialTransport(SerialTransport):
                     "Ressincronização AT4532 não concluiu uma fronteira segura; TX bloqueado.",
                 )
             self._settle_required = False
+            self._quarantine_open_input = False
             return frames
         finally:
             connection.timeout = original_timeout
@@ -514,10 +641,16 @@ class At4532SerialTransport(SerialTransport):
             # This runs inside the I/O worker, also on cancellation or physical error.
             # Retaining only in query() would lose the fragment when its await is cancelled.
             response = bytes(self.last_query_boundary.get("received_bytes", []))
+            if response:
+                self.last_physical_rx_monotonic = self.last_query_boundary["last_byte_monotonic"]
+                self._last_physical_rx_at = self.last_query_boundary["timestamp_last_byte"]
             if not response.endswith(terminator):
                 self._settle_required = True
                 self._partial_input.extend(response)
                 if response:
+                    self._partial_started_monotonic = self.last_query_boundary[
+                        "first_byte_monotonic"
+                    ]
                     self.synchronization_metrics["late_frames"] += 1
 
     async def write(self, payload: bytes) -> tuple[int, float]:
@@ -541,6 +674,9 @@ class At4532SerialTransport(SerialTransport):
                     exc_info=True,
                 )
         await super()._close_unlocked(release=release)
+        # A closed physical connection cannot carry queued measurements into a new one.
+        self.synchronization_metrics["discarded_complete_frames"] += len(self.recovered_frames)
+        self.recovered_frames.clear()
         if self._partial_input:
             self.synchronization_metrics["discarded_partial_bytes"] += len(self._partial_input)
             logger.warning(

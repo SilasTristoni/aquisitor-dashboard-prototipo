@@ -69,7 +69,7 @@ async def test_isolated_fetch_timeout_does_not_restart_identity_cycle(monkeypatc
     intervals = [b - a for a, b in zip(times, times[1:], strict=False)]
     assert transport.open_calls == 1, f"Reconnect loop; successful RX intervals: {intervals}"
     assert len({r.raw_payload["device_timestamp_raw"] for r in readings}) == 6
-    assert intervals[-3:] == pytest.approx([1, 1, 1])
+    assert intervals[-3:] == pytest.approx([1.375, 1.375, 1.375])
     metrics = adapter.fetch_diagnostics.snapshot()
     assert metrics["fetch_timeouts"] == 1
     assert metrics["reconnect_count"] == 0
@@ -80,7 +80,7 @@ async def test_isolated_fetch_timeout_does_not_restart_identity_cycle(monkeypatc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failures,disconnected,expected_timeouts", [(7, False, 7), (1, True, 1)])
+@pytest.mark.parametrize("failures,disconnected,expected_timeouts", [(7, False, 6), (1, True, 1)])
 async def test_reconnect_only_after_watchdog_expiry_or_closed_port(
     monkeypatch,
     failures,
@@ -104,6 +104,7 @@ async def test_reconnect_only_after_watchdog_expiry_or_closed_port(
     assert metrics["fetch_timeouts"] == expected_timeouts
     assert metrics["reconnect_count"] == 1
     assert transport.open_calls == 2
+    assert transport.requests.count(b"*IDN?\n") == 1
     assert metrics["last_failure"]["recovery_reason"] == (
         "port_closed" if disconnected else "watchdog_expired"
     )
@@ -126,10 +127,10 @@ async def test_healthy_fetch_metrics_have_no_reconnects(monkeypatch, count):
     metrics = adapter.fetch_diagnostics.snapshot()
     assert metrics["successful_fetches"] == count
     assert metrics["fetch_timeouts"] == metrics["reconnect_count"] == 0
-    assert metrics["average_fetch_interval_ms"] == pytest.approx(1000)
-    assert metrics["average_successful_rx_interval_ms"] == pytest.approx(1000)
+    assert metrics["average_fetch_interval_ms"] == pytest.approx(1375)
+    assert metrics["average_successful_rx_interval_ms"] == pytest.approx(1375)
     assert metrics["average_query_duration_ms"] == pytest.approx(375)
-    assert metrics["maximum_gap_ms"] == pytest.approx(1000)
+    assert metrics["maximum_gap_ms"] == pytest.approx(1375)
     assert len({r.raw_payload["device_timestamp_raw"] for r in readings}) == count
 
 

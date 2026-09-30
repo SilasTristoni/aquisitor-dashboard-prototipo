@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from itertools import product
+from math import isfinite
 from time import monotonic
 
 from sqlalchemy import func, or_, select
@@ -43,6 +43,7 @@ from app.services.device_policy import (
     at4532_identity_fallback_policy,
     mark_at4532_verified_by_measurement,
 )
+from app.services.reading_identity import reading_identity
 from app.services.session_clock import utc
 from app.services.usb_discovery import usb_discovery_service
 from app.services.websocket import websocket_hub
@@ -77,6 +78,7 @@ class DeviceRuntime:
     last_error: str | None = None
     pending_start: list[DeviceReading] | None = None
     persisted_count: int = 0
+    observed_readings: deque[DeviceReading] = field(default_factory=lambda: deque(maxlen=128))
     received_times: deque[datetime] = field(default_factory=lambda: deque(maxlen=61))
 
 
@@ -89,6 +91,7 @@ class AcquisitionService:
         self.started_at = datetime.now(UTC)
         self.session_start_lock = asyncio.Lock()
         self.common_start_diagnostic: dict = {}
+        self._preparations: dict[int, dict] = {}
 
     async def prepare_common_start(
         self,
@@ -96,144 +99,127 @@ class AcquisitionService:
         tolerance_ms: int,
         timeout_seconds: float = 15,
     ) -> datetime:
-        """Wait for actual new samples; do not reuse a preflight/latest value."""
+        """Latch one healthy post-request observation per independent source.
+
+        tolerance_ms remains accepted for API compatibility; it is not an admission rule.
+        """
+        requested_at = datetime.now(UTC)
         for device_id in device_ids:
             runtime = self.runtimes.get(device_id)
             if runtime and runtime.session_id:
                 raise ValueError("Uma fonte já pertence a uma sessão ativa.")
-            # Do not reconnect a running reader because of a transient status flag.
-            if not runtime or not runtime.task or runtime.task.done():
-                await self.connect(device_id)
-        requested_at = datetime.now(UTC)
+            if device_id in self._preparations:
+                raise ValueError("Uma fonte já está preparando outra sessão.")
         for device_id in device_ids:
-            self.runtimes[device_id].pending_start = []
+            runtime = self.runtimes.get(device_id)
+            buffer = []
+            self._preparations[device_id] = {
+                "origin": requested_at,
+                "buffer": buffer,
+                "overflow": False,
+                "seen": {reading_identity(runtime.latest)} if runtime and runtime.latest else set(),
+            }
+            if runtime:
+                runtime.pending_start = buffer
+        self.common_start_diagnostic = {
+            "requested_at": requested_at.isoformat(),
+            "state": "waiting",
+            "policy": "independent_source_readiness",
+            "sources": {},
+        }
         next_log = 0.0
-        previous_state = None
         try:
             async with asyncio.timeout(timeout_seconds):
+                for device_id in device_ids:
+                    runtime = self.runtimes.get(device_id)
+                    if not runtime or not runtime.task or runtime.task.done():
+                        await self.connect(device_id)
                 while True:
-                    now = datetime.now(UTC)
-                    queues = []
                     sources = {}
-                    readers_running = True
+                    all_ready = True
                     for device_id in device_ids:
                         runtime = self.runtimes.get(device_id)
-                        task_running = bool(
+                        preparation = self._preparations[device_id]
+                        if preparation["overflow"]:
+                            raise ValueError(
+                                "Limite de amostras preparatórias excedido; início cancelado."
+                            )
+                        running = bool(
                             runtime
                             and runtime.task
                             and not runtime.task.done()
                             and not runtime.task.cancelling()
                         )
-                        readers_running = readers_running and task_running
-                        status_error = None
-                        try:
-                            connected = bool(
-                                runtime and (await runtime.adapter.get_status()).connected
-                            )
-                        except Exception as exc:
-                            connected = False
-                            status_error = f"{type(exc).__name__}: {exc}"
-                        fresh = (
+                        healthy = (
                             [
                                 r
-                                for r in (runtime.pending_start or [])
-                                if requested_at <= utc(r.received_timestamp)
-                                and 0 <= (now - utc(r.received_timestamp)).total_seconds() <= 3
-                                and (
-                                    r.power_w is not None
-                                    if runtime.source_role == "electrical"
-                                    else any(v is not None for v in r.temperatures_c)
-                                )
+                                for r in preparation["buffer"]
+                                if utc(r.received_timestamp) >= requested_at
+                                and self._reading_is_healthy(runtime.source_role, r)
                             ]
                             if runtime
                             else []
                         )
-                        queues.append(fresh)
+                        ready = bool(running and healthy)
+                        all_ready = all_ready and ready
                         sources[str(device_id)] = {
-                            "protocol": runtime.protocol if runtime else None,
-                            "source_role": runtime.source_role if runtime else None,
-                            "connected": connected,
-                            "task_running": task_running,
+                            "ready": ready,
+                            "task_running": running,
                             "last_error": runtime.last_error if runtime else "runtime_missing",
-                            "status_error": status_error,
+                            "fresh_samples": len(healthy),
+                            "prepared_samples": len(preparation["buffer"]),
                             "latest_received_timestamp": (
-                                utc(runtime.latest.received_timestamp).isoformat()
+                                runtime.latest.received_timestamp.isoformat()
                                 if runtime and runtime.latest
                                 else None
                             ),
-                            "fresh_samples": len(fresh),
-                            "interruption_flags": [
-                                name
-                                for name, active in {
-                                    "runtime_missing": runtime is None,
-                                    "last_error": bool(runtime and runtime.last_error),
-                                    "task_not_running": not task_running,
-                                    "not_connected": not connected,
-                                }.items()
-                                if active
-                            ],
+                            "first_ready_timestamp": healthy[0].received_timestamp.isoformat()
+                            if healthy
+                            else None,
                         }
-                    best = min(
-                        product(*queues),
-                        key=lambda pair: (
-                            max(utc(r.received_timestamp) for r in pair)
-                            - min(utc(r.received_timestamp) for r in pair)
-                        ).total_seconds(),
-                        default=None,
+                    self.common_start_diagnostic.update(
+                        sources=sources, state="ready" if all_ready else "waiting"
                     )
-                    times = [utc(r.received_timestamp) for r in best] if best else []
-                    delta_ms = (max(times) - min(times)).total_seconds() * 1000 if times else None
-                    # Status calls may yield: recheck task liveness before accepting.
-                    readers_running = readers_running and all(
-                        (runtime := self.runtimes.get(device_id))
-                        and runtime.task
-                        and not runtime.task.done()
-                        and not runtime.task.cancelling()
-                        for device_id in device_ids
-                    )
-                    matched = readers_running and delta_ms is not None and delta_ms <= tolerance_ms
-                    self.common_start_diagnostic = {
-                        "requested_at": requested_at.isoformat(),
-                        "timestamp": now.isoformat(),
-                        "sources": sources,
-                        "best_delta_ms": delta_ms,
-                        "tolerance_ms": tolerance_ms,
-                        "state": "matched" if matched else "waiting",
-                    }
-                    observed_state = tuple(
-                        (
-                            key,
-                            source["connected"],
-                            source["task_running"],
-                            source["last_error"],
-                            source["status_error"],
-                        )
-                        for key, source in sources.items()
-                    )
-                    if matched or observed_state != previous_state or monotonic() >= next_log:
+                    if all_ready or monotonic() >= next_log:
                         logger.info("common start diagnostic %s", self.common_start_diagnostic)
                         next_log = monotonic() + 1
-                        previous_state = observed_state
-                    if matched:
-                        return min(times)
+                    if all_ready:
+                        return requested_at
                     await asyncio.sleep(0.01)
         except BaseException as exc:
-            self.common_start_diagnostic = {
-                **self.common_start_diagnostic,
-                "state": "timeout" if isinstance(exc, TimeoutError) else "cancelled",
-            }
+            self.common_start_diagnostic["state"] = (
+                "timeout" if isinstance(exc, TimeoutError) else "cancelled"
+            )
             logger.info("common start diagnostic %s", self.common_start_diagnostic)
             self.clear_pending_start(device_ids)
             if isinstance(exc, TimeoutError):
                 raise TimeoutError(
-                    "Tempo de espera esgotado sem par novo de fontes em aquisição "
-                    f"dentro da tolerância de {tolerance_ms} ms. "
+                    "Tempo esgotado aguardando uma nova leitura saudável de cada fonte. "
                     "Consulte common_start_diagnostic no diagnóstico da aquisição."
                 ) from exc
             raise
 
+    @staticmethod
+    def _reading_is_healthy(role: str, reading: DeviceReading) -> bool:
+        values = [reading.power_w] if role == "electrical" else reading.temperatures_c
+        return reading.quality != "invalid" and any(v is not None and isfinite(v) for v in values)
+
+    def _capture_prepared(self, device_id: int, reading: DeviceReading) -> None:
+        preparation = self._preparations.get(device_id)
+        if preparation is None or utc(reading.received_timestamp) < preparation["origin"]:
+            return
+        key = reading_identity(reading)
+        if key in preparation["seen"]:
+            return
+        if len(preparation["buffer"]) >= 4096:
+            preparation["overflow"] = True
+            return
+        preparation["seen"].add(key)
+        preparation["buffer"].append(reading)
+
     def clear_pending_start(self, device_ids: list[int]) -> None:
         for device_id in device_ids:
+            self._preparations.pop(device_id, None)
             if runtime := self.runtimes.get(device_id):
                 runtime.pending_start = None
 
@@ -244,6 +230,11 @@ class AcquisitionService:
         origin: datetime,
     ) -> dict:
         captured = []
+        if any(
+            self.runtimes[i].session_id is not None or i not in self._preparations
+            for i in device_ids
+        ):
+            raise ValueError("Preparação ausente ou já ativada.")
         # No await between assigning sources: both streams cross the same boundary.
         for device_id in device_ids:
             runtime = self.runtimes[device_id]
@@ -255,6 +246,7 @@ class AcquisitionService:
             runtime.persisted_count = 0
             runtime.buffer.extend(readings)
             runtime.pending_start = None
+            self._preparations.pop(device_id, None)
             captured.append((device_id, runtime, readings))
         for device_id, runtime, readings in captured:
             await self._flush(device_id, runtime)
@@ -558,6 +550,8 @@ class AcquisitionService:
                     )
                     or 0
                 )
+        if preparation := self._preparations.get(device_id):
+            runtime.pending_start = preparation["buffer"]
         self.runtimes[device_id] = runtime
         runtime.task = asyncio.create_task(self._read_loop(device_id, runtime))
         await websocket_hub.publish("device.status", {"device_id": device_id, "state": "connected"})
@@ -1055,11 +1049,12 @@ class AcquisitionService:
                     }
                 )
                 runtime.latest = reading
+                runtime.observed_readings.append(reading)
                 runtime.received_times.append(utc(reading.received_timestamp))
                 runtime.sample_count += 1
                 runtime.last_error = None
                 if runtime.pending_start is not None:
-                    runtime.pending_start.append(reading)
+                    self._capture_prepared(device_id, reading)
                 if runtime.session_id and not runtime.paused:
                     runtime.buffer.append(reading)
                     await self._evaluate_alerts(device_id, runtime, reading)

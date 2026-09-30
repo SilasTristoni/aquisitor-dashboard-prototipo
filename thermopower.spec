@@ -1,12 +1,13 @@
 from pathlib import Path
+import os
 
 from PyInstaller.utils.hooks import collect_data_files
 
 root = Path(SPECPATH)
 backend = root / "backend"
 datas = [
-    (str(root / "VERSION.txt"), "."),
-    (str(root / "build" / "build-info.json"), "."),
+    (os.environ.get("THERMOPOWER_PACKAGE_VERSION_FILE", str(root / "VERSION.txt")), "."),
+    (os.environ.get("THERMOPOWER_PACKAGE_BUILD_INFO", str(root / "build" / "build-info.json")), "."),
     (str(root / "build" / "user-guide.pdf"), "help"),
     (str(root / "frontend" / "dist"), "frontend"),
     (str(backend / "alembic"), "alembic"),

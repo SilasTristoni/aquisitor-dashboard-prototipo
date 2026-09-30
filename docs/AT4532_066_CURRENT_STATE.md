@@ -4,6 +4,13 @@
 
 ## Estado da candidata
 
+- **Bancada reprovada em 29/09/2026.** Os dois novos ZIPs mostram um TCP-32
+  recuperado antes de qualquer FETCH transmitido na conexão. No completo,
+  FETCHs às 18:15:27.874 e 18:15:32.093 UTC retornaram zero bytes; a guarda
+  pós-RX de 1 s foi respeitada. Não aumentar a guarda por hipótese.
+- Em 30/09/2026 foi autorizada exclusivamente uma build interna de engenharia
+  para caracterização e validação da nova prontidão combinada, sem promoção
+  para client-preview final, tag, release ou homologação.
 - Versão: `0.6.6-client-preview`.
 - A candidata ainda **não está homologada fisicamente**.
 - A correção anterior de framing deve ser preservada.
@@ -33,107 +40,119 @@ terminator = CRLF
 
 Não reverter a política de preservação/recomposição de boundary documentada em `AT4532_FRAMING_066.md`.
 
-## Falha física atual
+## Evidência física anterior à correção focal
 
-Nos diagnósticos físicos mais recentes da primeira candidata 0.6.6:
+Em 29/09/2026, na primeira candidata 0.6.6, o FETCH de 12:26:18.334 UTC
+recebeu 694 bytes válidos às 12:26:19.365 (1031 ms). O próximo FETCH ocorreu
+462 ms após RX e expirou. O snapshot inicial registrou sete tentativas, um
+sucesso, seis timeouts, uma tentativa de reconexão e lacuna de 28,4 s.
 
-```text
-FETCH #1
-TX 12:26:18.334
-RX 12:26:19.365
-query duration ≈ 1031 ms
-bytes = 694
-TCP-32 válido
-parser OK
+O encerramento posterior registrou 76 tentativas, nove sucessos, 67 timeouts,
+22 tentativas de reconexão, 13 falhas de reconexão, 13 frames completos
+descartados e lacuna máxima de 110,7 s. Não houve unknown_response nem descarte
+de bytes parciais nesse encerramento.
+
+Os probes de leitura/completo recompuseram fragmentos de 6–7 bytes em frames
+TCP-32/CP936 completos de 694 bytes, mas descartaram essas medições antes de
+outro FETCH. O descarte é comprovado; polling agressivo permanece hipótese
+física, não prova de um tempo mínimo exigido pelo firmware. O teste exclusivo
+de identidade falhou por timeout de IDN, sem executar FETCH.
+
+## Correção focal implementada
+
+- Guarda pós-RX de **1,0 s**, parametrizada no adaptador, podendo ser aumentada.
+  O transporte AT ancora a guarda no último byte físico recebido, inclusive
+  durante resync, e reavalia a fronteira após esperar antes de transmitir FETCH.
+  Logs e metadados registram guarda, espera e intervalo físico RX→TX.
+- Fila exclusiva do AT de **oito frames completos**. O parser estrito valida
+  cada candidato; um frame válido e elegível é consumido antes de novo FETCH.
+  A transação recuperada registra `tx_sent=false`, `timestamp_tx=null` e
+  `response_source=recovered_frame`; não é atribuída a um novo comando.
+- Frescor limitado a **cinco segundos monotônicos desde o primeiro byte
+  observado**, preservando o horário original do último byte recebido. Não
+  depende da coincidência entre relógio do PC e relógio do equipamento.
+- Bytes já presentes na abertura são recompostos, mas ficam inelegíveis para
+  publicação como medição fresca de idade desconhecida. Expiração, rejeição,
+  descarte e estouro da fila são contados. Fechar a COM não transporta a fila
+  para a nova conexão física.
+- Deduplicação por timestamp do equipamento + SHA-256 do frame, com histórico
+  limitado a 256 entradas na mesma instância lógica, preservado nas reconexões.
+  Timestamps anteriores ao último aceito são rejeitados conservadoramente.
+  Conteúdo diferente no mesmo timestamp não é automaticamente duplicata.
+- Uma tentativa adicional de recuperação lógica limitada é compartilhada por
+  conexão, Testar leitura, Teste completo e aquisição contínua. Timeout isolado
+  não força reconexão. O watchdog continua tratando silêncio persistente e
+  perda física da COM, preservando sessão e contadores.
+- Após validação TCP-32, a recuperação da mesma instância não repete IDN:
+  exige nova medição válida. A associação segura não foi ampliada e o teste
+  exclusivo de identidade mantém seu comportamento.
+- Preservados parser estrito, Open=null, retenção de fragmentos, bloqueio de TX
+  em fronteira incompleta, ausência de reset de entrada e auditoria de perdas.
+  Não houve alteração funcional adicional durante o gate completo, nem
+  alteração de GPM, frontend, UX, relatórios ou AGENTS.md.
+
+## Validação automatizada em 29/09/2026
+
+Resultados virtuais; **não constituem homologação física**.
+
+| Verificação | Resultado |
+| --- | --- |
+| Testes focados | 75 aprovados; soak inicialmente excluído |
+| Soak e cenários de estabilidade | 16 aprovados |
+| Gate completo `physical_regression_fixtures` | 115 aprovados, 118 fora do marcador |
+| Backend completo | 233 aprovados |
+| Frontend | ESLint, TypeScript, 41 testes e Vite aprovados |
+| Qualidade final | Ruff backend e git diff --check aprovados |
+| Infraestrutura de pacote | Compose, Alembic upgrade/check e pip check aprovados |
+
+O soak pelo transporte real sobre serial simulada usou respostas de 700–1200 ms,
+fragmentação, respostas tardias, ressync, silêncio, duplicatas e perda física:
+
+```ini
+unique_published_frames = 1000
+recovered_frames_consumed = 10
+duplicate_frames_rejected = 13
+fetch_timeouts = 17
+silent_timeouts = 7
+necessary_reconnects = 1
+malformed_frames = 0
+discarded_partial_bytes = 0
+duplicate_samples = 0
+unknown_response_from_framing = 0
+unnecessary_reconnects = 0
+recovered_queue_overflows = 0
+maximum_gap_ms = 6200
 ```
 
-O próximo `FETCH?` foi enviado aproximadamente:
+As dez respostas tardias foram consumidas uma vez cada; as 13 cópias repetidas
+foram descartadas explicitamente. Os quatro cenários AT+GPM existentes
+(invalid, timeout, closed, partial) preservaram a sessão e persistiram 200
+amostras por fonte em cada cenário. A reconexão ocorreu somente quando exigida
+pela falha simulada correspondente.
 
-```text
-~462 ms após o fim do RX anterior
-```
+Fixtures antigas de 1 Hz foram ajustadas à guarda conservadora. A fixture
+all-open passou a gerar timestamps distintos em vez de repetir a mesma amostra.
+Uma captura de testes frontend foi interrompida por tratamento de stderr no
+PowerShell; somente os testes sem resultado foram retomados. Lint, typecheck e
+build não foram repetidos. Permanecem avisos Matplotlib/Pyparsing e React Router.
 
-Esse segundo FETCH entrou em timeout. A sequência seguinte apresentou múltiplos timeouts e reconexão.
+Evidências locais: `build/gate-066-soak.xml`, `build/gate-066-physical.xml`,
+`build/gate-066-full.xml` e `build/gate-066-frontend.log`.
+Candidata Windows: `engineering/ThermoPower-0.6.6-client-preview-at4532-20260929`.
+O empacotamento reutiliza esses gates e só promove o ZIP após os smokes normais,
+manifesto SHA-256 e extração/verificação integral. As evidências acompanham o
+pacote. A build identifica as fontes locais não commitadas por manifesto;
+`iniciar-windows.bat` e sua modificação preexistente ficam fora da entrega.
 
-Resumo observado:
+## Limites que dependem da bancada
 
-```text
-fetch_attempts = 7
-successful_fetches = 1
-fetch_timeouts = 6
-consecutive_fetch_timeouts = 6
-reconnect_count = 1
-maximum_gap ≈ 28.4 s
-```
+A guarda de 1 s e o frescor de 5 s são parâmetros candidatos de engenharia.
+O instante de observação dos bytes não prova quando o firmware produziu a
+medição. Retrocesso/reset do relógio do equipamento pode resultar em rejeição
+conservadora; deduplicação é limitada à memória da instância e não promete
+eliminação global de replays após reiniciar o aplicativo. Validar frequência
+sustentável, recuperação, relógio e estabilidade AT+GPM nos equipamentos reais.
 
-Portanto a aquisição contínua do AT ainda não está aprovada.
-
-## Evidência adicional
-
-Durante ressincronização, os diagnósticos também mostraram fragmentos iniciais de 6–7 bytes que foram completados em frames válidos:
-
-```text
-full_frame_length = 694
-prefix = TCP-32
-terminator_found = true
-```
-
-A política atual pode classificar esses frames completos como tardios e descartá-los antes de enviar outro `FETCH?`. Isso deve ser reavaliado: um frame completo, válido, fresco e ainda não consumido pode representar uma medição física real recuperável, desde que não seja associado cegamente ao comando mais recente nem duplicado.
-
-## Hipótese prioritária a investigar
-
-A lógica de cadência permite efetivamente algo equivalente a:
-
-```text
-max(previous_fetch_started + 1 s,
-    previous_fetch_completed + 0.4 s)
-```
-
-Na bancada isso resultou em novo TX apenas ~462 ms após o RX anterior, seguido de timeout.
-
-Hipótese prioritária: polling pós-RX agressivo, combinado com tratamento inadequado de frames completos recuperados durante `resync`.
-
-Isso ainda deve ser comprovado pela implementação/testes; não transformar `1 s após RX` em verdade física sem validação.
-
-## Direção da próxima correção
-
-Prioridade:
-
-1. estabilidade contínua;
-2. nenhuma perda/mutilação;
-3. nenhuma duplicação;
-4. nenhuma reconexão desnecessária;
-5. somente depois maximizar a frequência sustentável.
-
-Investigar inicialmente apenas:
-
-- `backend/app/adapters/specific.py`
-- `backend/app/adapters/transports.py`
-- `backend/app/services/protocol_probe.py`
-- testes AT4532/transporte diretamente relacionados.
-
-Pontos de projeto a avaliar:
-
-- guarda pós-RX mais segura e instrumentada;
-- consumo de frame `TCP-32` válido/fresco encontrado durante resync;
-- pequena fila/buffer de frames completos do AT, se necessária;
-- deduplicação por timestamp do equipamento + conteúdo/hash;
-- timeout isolado sem assumir perda física da COM;
-- reconnect apenas para erro físico/porta desaparecida ou falha persistente real;
-- evitar novo `*IDN?` em toda recuperação transitória após validação por medição naquela conexão lógica;
-- mesma política de framing/recuperação em `Testar leitura`, `Teste completo` e aquisição contínua.
-
-## Testes focados exigidos antes da suíte completa
-
-- resposta de ~1030 ms sem novo FETCH ~400 ms após RX;
-- frame de 694 bytes fragmentado e completado durante resync;
-- late/recovered frame válido consumido exatamente uma vez;
-- deduplicação do mesmo frame;
-- timeout isolado recuperado sem reconnect físico;
-- perda real da COM causando reconnect;
-- regressão do GPM preservada.
-
-Depois dos testes focados: gate físico automatizado; depois backend completo; frontend completo somente se contrato/UI for afetado; build Windows apenas no final.
 
 ## Próximo aceite físico
 
@@ -156,3 +175,50 @@ reconnects desnecessários = 0
 ```
 
 A frequência exata não é prioridade sobre estabilidade. Uma cadência menor, porém contínua e auditável, é preferível a forçar 1 Hz causando timeouts.
+
+## Engenharia de caracterização e prontidão — 30/09/2026
+
+Ferramenta isolada em `app/engineering/at4532_characterization.py`, acessível
+no executável por `--characterize-at4532`. Reutiliza o assembler de frames e
+parser AT de produção, sem conectar o adaptador, IDN, polling, recovery ou
+reconnect. Observa abertura passiva (5–10 s), configuração Celsius (10 s),
+primeiro FETCH (10 s) e segundo FETCH (10 s) somente após frame saudável na
+janela do primeiro. Fronteira parcial bloqueia TX; bytes e motivos permanecem
+na evidência. Guarda de 1 s preservada, sem aumento arbitrário.
+
+No Windows, pyserial 3.5 executa PurgeComm internamente ao abrir. A ferramenta
+usa exclusivamente para engenharia uma abertura equivalente sem essa limpeza;
+o transporte de produção permanece inalterado. DTR/RTS e intervalos de chamadas
+ao driver são registrados. Não confundir esses horários com instrumentação
+elétrica do fio. Uso: `docs/AT4532_CHARACTERIZATION.md`.
+
+`prepare_common_start` agora define T0 antes de conectar fontes e captura também
+leituras recebidas enquanto a outra fonte conecta. Uma observação nova, saudável
+e não duplicada torna cada fonte pronta, independentemente de delta ou idade
+relativa à outra. `sync_tolerance_ms` permanece aceito por compatibilidade de API,
+mas não participa da autorização de início. Prazo global de preparação: 15 s;
+limite explícito de 4096 amostras por fonte, com falha observável ao excedê-lo.
+Cancelamento/timeout limpa preparação, preservando leitores independentes.
+Ativação usa `started_at=T0`, mesmo session_id, horários originais e transferência
+única das amostras preparatórias. Sem interpolação nem criação de pares.
+
+Probe AT read informa uma medição válida, sem afirmar continuidade. Full exige
+duas medições distintas; runtime ativo deve produzir novas observações após o
+pedido, sem abrir outra COM ou reutilizar latest como prova de progressão.
+O teste exclusivo de identidade e o protocolo/parser GPM foram preservados.
+
+Validação focal consolidada: **172 testes distintos aprovados**, incluindo
+GPM em T0+0,4 s e AT em T0+6 s, ordem inversa, preservação de amostras,
+deduplicação, captura durante conexão, timeout, cancelamento pela rota,
+probes, framing, recuperação e regressões existentes AT/GPM/sessões.
+Cinco falhas iniciais da fixture (nome ausente) foram corrigidas e reexecutadas;
+os XML originais e os resultados posteriores permanecem disponíveis.
+Evidências: `build/characterization-focused-{protocols,core,tool}.xml`.
+Backend completo e frontend não foram repetidos nesta etapa; frontend estático
+reutilizado. O ZIP interno só é montado após esses testes e smokes do pacote.
+
+O silêncio do AT após FETCH permanece sem causa física estabelecida. A nova
+barreira não torna pronta uma fonte que nunca entrega nova leitura. Aceite
+físico obrigatório: 10/10 completos AT; 5 min AT; 10 inícios combinados; 10 min
+com ambos contadores aumentando; depois 30–60 min combinado. Qualquer falha
+mantém a candidata reprovada.

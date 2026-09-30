@@ -6,14 +6,18 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from app.adapters.specific import At4532SerialAdapter, Gpm8213UsbSerialAdapter
+from app.adapters.transports import SerialTransportError
 from app.models.entities import Device
 from app.services.device_policy import at4532_identity_fallback_policy
+from app.services.reading_identity import reading_identity
 
 logger = logging.getLogger(__name__)
 ProbeMode = Literal["identity", "read", "full"]
 
 
 class ProtocolProbeService:
+    observation_timeout_seconds = 15.0
+
     def __init__(self) -> None:
         self.latest_results: dict[int, dict[str, Any]] = {}
         self.pending_close_adapters: dict[int, list[Any]] = {}
@@ -49,6 +53,11 @@ class ProtocolProbeService:
                 status = await acquisition_service.status(device.id)
                 identity = await adapter.get_device_information()
                 ready = runtime.latest is not None and not status.get("persistent_failure")
+                observed = [runtime.latest] if runtime.latest else []
+                at_observation = device.protocol == "at4532_serial" and mode in {"read", "full"}
+                if at_observation:
+                    observed = await self._observe_progress(runtime, 2 if mode == "full" else 1)
+                    ready = len(observed) >= (2 if mode == "full" else 1)
                 report = {
                     "device_id": device.id,
                     "device": device.name,
@@ -67,17 +76,34 @@ class ProtocolProbeService:
                     "input_boundary_diagnostics": adapter.input_boundary_diagnostics()
                     if hasattr(adapter, "input_boundary_diagnostics")
                     else {},
-                    "readings": [runtime.latest.model_dump(mode="json")] if runtime.latest else [],
-                    "result": "passed_with_warning" if ready else "pending",
-                    "errors": [],
+                    "readings": [r.model_dump(mode="json") for r in observed],
+                    "continuous_acquisition_verified": ready
+                    and mode == "full"
+                    and len(observed) >= 2,
+                    "result": "passed_with_warning"
+                    if ready
+                    else "failed"
+                    if at_observation
+                    else "pending",
+                    "errors": [
+                        {
+                            "code": "no_measurement_progress",
+                            "message": "Leitor não produziu as novas medições exigidas.",
+                        }
+                    ]
+                    if at_observation and not ready
+                    else [],
                     "stages": [
                         self._stage(
                             "acquisition",
                             "Aquisição existente",
                             ready,
-                            "Diagnóstico da sessão ativa, sem enviar comandos adicionais. "
+                            "Observação de novas medições do leitor existente; "
+                            "leitura isolada não comprova aquisição contínua."
+                            if at_observation
+                            else "Diagnóstico da sessão ativa, sem enviar comandos adicionais. "
                             "Consulte o horário da última leitura válida.",
-                            status="warning",
+                            status="failed" if at_observation and not ready else "warning",
                         )
                     ],
                 }
@@ -85,6 +111,34 @@ class ProtocolProbeService:
                 return report
             acquisition_service.assert_diagnostic_port_available(device.port or "")
             return await self._run(device, mode)
+
+    async def _observe_progress(self, runtime, required):
+        requested_at = datetime.now(UTC)
+        seen = {reading_identity(r) for r in runtime.observed_readings}
+        if runtime.latest:
+            seen.add(reading_identity(runtime.latest))
+        observed = []
+        try:
+            async with asyncio.timeout(self.observation_timeout_seconds):
+                while len(observed) < required:
+                    if not runtime.task or runtime.task.done() or runtime.task.cancelling():
+                        break
+                    for reading in list(runtime.observed_readings):
+                        key = reading_identity(reading)
+                        if (
+                            reading.received_timestamp >= requested_at
+                            and key not in seen
+                            and any(v is not None for v in reading.temperatures_c)
+                        ):
+                            seen.add(key)
+                            observed.append(reading)
+                            if len(observed) == required:
+                                break
+                    if len(observed) < required:
+                        await asyncio.sleep(0.01)
+        except TimeoutError:
+            pass
+        return observed
 
     async def _run(self, device: Device, mode: ProbeMode) -> dict[str, Any]:
         await self._retry_pending_closes(device.id)
@@ -149,7 +203,14 @@ class ProtocolProbeService:
                 )
             if mode == "full":
                 await asyncio.sleep(adapter.expected_interval_seconds)
-                readings.append((await adapter.read_once()).model_dump(mode="json"))
+                second = await adapter.read_once()
+                if device.protocol == "at4532_serial":
+                    from app.adapters.base import DeviceReading
+
+                    first = DeviceReading.model_validate(readings[0])
+                    if reading_identity(first) == reading_identity(second):
+                        raise SerialTransportError("duplicate_frame", "Segunda medição repetida.")
+                readings.append(second.model_dump(mode="json"))
                 stages[6] = self._stage(
                     "acquisition", "Aquisição", True, "Duas leituras consecutivas válidas."
                 )
@@ -250,6 +311,22 @@ class ProtocolProbeService:
                     status="failed",
                 )
 
+        if device.protocol == "at4532_serial" and readings:
+            stages[5] = self._stage(
+                "reading",
+                "Leitura",
+                True,
+                "Medição válida recebida; isoladamente não comprova continuidade.",
+            )
+            if mode == "full" and len(readings) < 2:
+                stages[6] = self._stage(
+                    "acquisition",
+                    "Aquisição",
+                    False,
+                    "Não foram obtidas duas medições físicas distintas.",
+                    status="failed",
+                )
+
         for transaction in adapter.transactions:
             transaction.setdefault("parsed", {})
         report = {
@@ -275,6 +352,9 @@ class ProtocolProbeService:
             if hasattr(adapter, "input_boundary_diagnostics")
             else {},
             "readings": readings,
+            "continuous_acquisition_verified": mode == "full"
+            and len(readings) >= 2
+            and result != "failed",
             "stages": stages,
             "result": result,
             "errors": errors,

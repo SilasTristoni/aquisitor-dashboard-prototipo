@@ -102,6 +102,10 @@ def setup_transport(monkeypatch, transport_type=At4532SerialTransport):
     monkeypatch.setattr("app.adapters.transports.monotonic", clock.monotonic)
     monkeypatch.setattr("app.adapters.specific.monotonic", clock.monotonic)
     monkeypatch.setattr("app.adapters.specific.asyncio", SimpleNamespace(sleep=clock.sleep))
+    monkeypatch.setattr(
+        "app.adapters.transports.asyncio",
+        SimpleNamespace(**{**vars(asyncio), "sleep": clock.sleep}),
+    )
     config = SerialTransportConfiguration("COM_BOUNDARY", 19200, 8, "N", 1, 1, 2)
     transport = transport_type(config, serial_factory=lambda **_: connection)
     return clock, connection, transport
@@ -122,7 +126,7 @@ def test_bench_fixture_and_strict_parser():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("split", [1, 2, 6, 50, 347, "multiple"])
+@pytest.mark.parametrize("split", [1, 2, 6, 7, 50, 347, "multiple"])
 async def test_pending_frame_is_completed_before_next_tx(monkeypatch, split):
     clock, serial, transport = setup_transport(monkeypatch)
     await transport.open()
@@ -147,7 +151,8 @@ async def test_pending_frame_is_completed_before_next_tx(monkeypatch, split):
         assert serial.writes[0][0] >= 100 + (len(sizes) - 1) * 0.1
         assert bytes(serial.read_bytes) == PHYSICAL_FRAME + frame_for(1)
         assert transport.synchronization_metrics["discarded_partial_bytes"] == 0
-        assert transport.synchronization_metrics["discarded_complete_frames"] == 1
+        assert transport.synchronization_metrics["discarded_complete_frames"] == 0
+        assert len(transport.recovered_frames) == 1
         assert serial.input_resets == 0
     finally:
         await transport.close()
@@ -206,7 +211,8 @@ async def test_timeout_late_response_never_becomes_next_fetch(monkeypatch, parti
         assert (await transport.query(b"FETCH?\n", b"\n"))[0] == frame_for(3)
         assert bytes(serial.read_bytes) == frame_for(1) + frame_for(2) + frame_for(3)
         metrics = transport.synchronization_metrics
-        assert metrics["completed_late_frames"] == metrics["discarded_complete_frames"] == 1
+        assert metrics["completed_late_frames"] == 1
+        assert metrics["discarded_complete_frames"] == 0
         assert metrics["discarded_partial_bytes"] == metrics["resynchronization_failures"] == 0
         assert serial.writes[2][0] >= serial.writes[1][0] + 2 + delay + 0.1
         assert serial.is_open and serial.input_resets == 0
@@ -222,7 +228,8 @@ async def test_multiple_late_frames_and_partial_tail_are_not_merged(monkeypatch)
     serial.schedule(0.2, frame_for(1)[6:])
     try:
         assert await transport.synchronize_input_boundary() == [PHYSICAL_FRAME, frame_for(1)]
-        assert transport.synchronization_metrics["discarded_complete_frames"] == 2
+        assert transport.synchronization_metrics["discarded_complete_frames"] == 0
+        assert len(transport.recovered_frames) == 2
         assert serial.writes == []
     finally:
         await transport.close()
@@ -367,9 +374,8 @@ async def test_probe_uses_same_real_transport_boundary(monkeypatch, mode):
     metrics = report["input_boundary_diagnostics"]
     assert metrics["completed_late_frames"] == 1
     assert metrics["discarded_partial_bytes"] == 0
-    assert all(
-        r["raw_payload"]["raw_hex"] != PHYSICAL_FRAME.hex(" ").upper() for r in report["readings"]
-    )
+    assert report["readings"][0]["raw_payload"]["raw_hex"] == PHYSICAL_FRAME.hex(" ").upper()
+    assert fetches == (1 if mode == "full" else 0)
     assert serial.input_resets == 0
 
 
@@ -401,6 +407,9 @@ async def test_real_transport_mixed_1000_cycle_soak(monkeypatch, caplog, record_
     fetches = 0
     late_sequences = set()
     lost_sequences = set()
+    silent_sequences = set()
+    duplicate_sequences = set()
+    expected_wire = []
     opens = 0
 
     def open_serial(**_):
@@ -421,15 +430,25 @@ async def test_real_transport_mixed_1000_cycle_soak(monkeypatch, caplog, record_
             lost_sequences.add(fetches)
             serial.is_open = False
             raise pyserial.SerialException("USB disconnected")
+        if fetches % 137 == 0:
+            silent_sequences.add(fetches)
+            return
+        expected_wire.append(frame)
         if fetches % 100 == 0:
             late_sequences.add(fetches)
             serial.schedule(2.1, frame[:6])
             serial.schedule(2.3, frame[6:])
         else:
+            duration = 0.7 + (fetches % 6) * 0.1
             serial.schedule(0.01, frame[:1])
             serial.schedule(0.05, frame[1:50])
-            serial.schedule(0.10, frame[50:347])
-            serial.schedule(0.20, frame[347:])
+            serial.schedule(duration / 2, frame[50:347])
+            serial.schedule(duration, frame[347:])
+            if fetches % 73 == 0:
+                duplicate_sequences.add(fetches)
+                expected_wire.append(frame)
+                serial.schedule(duration + 0.1, frame[:7])
+                serial.schedule(duration + 0.3, frame[7:])
 
     serial.on_write = respond
     adapter = At4532SerialAdapter("COM_BOUNDARY", 19200, transport, allow_identity_fallback=True)
@@ -439,20 +458,22 @@ async def test_real_transport_mixed_1000_cycle_soak(monkeypatch, caplog, record_
         readings = [await anext(stream) for _ in range(1000)]
         received = [bytes.fromhex(r.raw_payload["raw_hex"]) for r in readings]
         expected = [
-            frame_for(i) for i in range(1, fetches + 1) if i not in late_sequences | lost_sequences
+            frame_for(i) for i in range(1, fetches + 1)
+            if i not in lost_sequences | silent_sequences
         ]
         assert received == expected
         assert len({hashlib.sha256(r).digest() for r in received}) == 1000
         assert all(r.startswith(b"TCP-32,") and len(r) == 694 for r in received)
-        assert bytes(serial.read_bytes) == b"".join(
-            frame_for(i) for i in range(1, fetches + 1) if i not in lost_sequences
-        )
+        assert bytes(serial.read_bytes) == b"".join(expected_wire)
         metrics = adapter.fetch_diagnostics.snapshot(clock.now)
         assert metrics["unknown_responses"] == 0
         assert metrics["reconnect_count"] == 1
         assert opens == 2
         assert metrics["discarded_partial_bytes"] == metrics["resynchronization_failures"] == 0
-        assert metrics["completed_late_frames"] == metrics["fetch_timeouts"] == 10
+        assert metrics["completed_late_frames"] == len(late_sequences | duplicate_sequences)
+        assert metrics["fetch_timeouts"] == len(late_sequences | silent_sequences)
+        assert metrics["recovered_frames_consumed"] == len(late_sequences)
+        assert adapter.duplicate_frames == len(duplicate_sequences)
         assert metrics["successful_fetches"] == 1000
         assert len(transport.input_boundary_diagnostics()["recent_resynchronizations"]) <= 32
         record_property(
@@ -464,6 +485,11 @@ async def test_real_transport_mixed_1000_cycle_soak(monkeypatch, caplog, record_
                     "unnecessary_reconnects": 0,
                     "necessary_reconnects": 1,
                     "unique_published_frames": len(received),
+                    "duplicate_samples": len(received) - len(set(received)),
+                    "unknown_response_from_framing": metrics["unknown_responses"],
+                    "duplicate_frames_rejected": adapter.duplicate_frames,
+                    "silent_timeouts": len(silent_sequences),
+                    "response_latency_ms": [700, 800, 900, 1000, 1100, 1200],
                 }
             ),
         )

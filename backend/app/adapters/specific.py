@@ -8,10 +8,12 @@ values on the client instruments remains an explicit engineering step.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import math
 import re
 from asyncio import Lock
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -34,9 +36,7 @@ AT4532_MANUAL_URL = "https://www.anbai.cn/app_file/products/AT4532/ug_en_AT4532.
 GPM8213_MANUAL_URL = "https://www.gwinstek.com/en-US/download/downloadFile/11551"
 AT4532_PHYSICAL_FRAME_BYTES = 694
 AT4532_SERIAL_BITS_PER_BYTE = 10
-AT4532_CONTINUOUS_READ_GUARD_SECONDS = (
-    math.ceil(AT4532_PHYSICAL_FRAME_BYTES * AT4532_SERIAL_BITS_PER_BYTE / 19200 * 10) / 10
-)
+AT4532_CONTINUOUS_READ_GUARD_SECONDS = 1.0
 
 
 class ProtocolDocumentationRequired(RuntimeError):
@@ -1193,10 +1193,18 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         *,
         allow_identity_fallback: bool = False,
         association_source: str | None = None,
+        post_rx_guard_seconds: float = AT4532_CONTINUOUS_READ_GUARD_SECONDS,
     ) -> None:
         super().__init__(port, baud_rate, transport)
         self.allow_identity_fallback = allow_identity_fallback
         self.association_source = association_source
+        if not math.isfinite(post_rx_guard_seconds) or post_rx_guard_seconds < 1.0:
+            raise ValueError("A guarda pós-RX do AT4532 deve ser de pelo menos 1 s.")
+        self.continuous_read_guard_seconds = post_rx_guard_seconds
+        self._consumed_frames: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._latest_device_timestamp: datetime | None = None
+        self._measurement_validated = False
+        self.duplicate_frames = 0
         self._primed_reading: DeviceReading | None = None
         self._last_fetch_started_monotonic: float | None = None
         self._last_fetch_completed_monotonic: float | None = None
@@ -1261,14 +1269,75 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         return self.allow_identity_fallback and exc.code == "protocol_timeout"
 
     def _normalize_payload(self, payload: bytes) -> DeviceReading:
-        return self.normalizer.normalize(
-            self.parser.parse(
-                payload,
-                allow_all_open=self.fetch_diagnostics.successful_fetches > 0
-                and not self._reconnecting,
-            ),
+        parsed = self.parser.parse(
             payload,
+            allow_all_open=self.fetch_diagnostics.successful_fetches > 0
+            and not self._reconnecting,
         )
+        key = self._frame_key(parsed, payload)
+        if parsed.frame_type == "TCP-32" and key in self._consumed_frames:
+            self.duplicate_frames += 1
+            raise SerialTransportError("duplicate_frame", "Frame AT4532 já consumido.")
+        if (
+            parsed.device_timestamp is not None
+            and self._latest_device_timestamp is not None
+            and parsed.device_timestamp < self._latest_device_timestamp
+        ):
+            raise SerialTransportError("stale_frame", "Frame AT4532 anterior à última medição.")
+        reading = self.normalizer.normalize(parsed, payload)
+        boundary = getattr(self.transport, "last_query_boundary", {})
+        if boundary.get("timestamp_rx"):
+            reading.received_timestamp = datetime.fromisoformat(boundary["timestamp_rx"])
+        reading.raw_payload["response_source"] = boundary.get("response_source", "query")
+        if parsed.frame_type == "TCP-32":
+            self._consumed_frames[key] = None
+            if len(self._consumed_frames) > 256:
+                self._consumed_frames.popitem(last=False)
+        if parsed.device_timestamp is not None:
+            self._latest_device_timestamp = parsed.device_timestamp
+        if parsed.frame_type == "TCP-32":
+            self._measurement_validated = True
+        return reading
+
+    @staticmethod
+    def _frame_key(parsed: At4532ParsedFrame, payload: bytes) -> tuple[str, str]:
+        return str(parsed.device_timestamp), hashlib.sha256(payload).hexdigest()
+
+    def _accept_recovered_frame(self, payload: bytes) -> bool:
+        try:
+            parsed = self.parser.parse(
+                payload,
+                allow_all_open=(
+                    self.fetch_diagnostics.successful_fetches > 0 and not self._reconnecting
+                ),
+            )
+        except ProtocolResponseError:
+            return False
+        if self._frame_key(parsed, payload) in self._consumed_frames:
+            self.duplicate_frames += 1
+            return False
+        return (
+            self._latest_device_timestamp is None
+            or parsed.device_timestamp is not None
+            and parsed.device_timestamp >= self._latest_device_timestamp
+        )
+
+    async def _transaction(self, command: DocumentedCommand, *, expect_response: bool) -> bytes:
+        previous_tx = self._last_command_tx_monotonic.get(command.name)
+        response = await super()._transaction(command, expect_response=expect_response)
+        boundary = getattr(self.transport, "last_query_boundary", {})
+        if expect_response:
+            self.transactions[-1]["tx_sent"] = boundary.get("tx_sent", True)
+        if expect_response and boundary.get("response_source") == "recovered_frame":
+            self.transactions[-1].update({
+                "timestamp_tx": None, "tx_sent": False, "response_source": "recovered_frame",
+                "interval_since_previous_tx_ms": None, "interval_since_previous_rx_ms": None,
+            })
+            if previous_tx is None:
+                self._last_command_tx_monotonic.pop(command.name, None)
+            else:
+                self._last_command_tx_monotonic[command.name] = previous_tx
+        return response
 
     async def _after_identity(self) -> None:
         self._primed_reading = None
@@ -1289,6 +1358,31 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             self._primed_reading = reading
 
     async def _query_reading(self) -> DeviceReading:
+        # One bounded logical retry also serves connect/read/full probes. The continuous
+        # reader retains its watchdog for persistent silence and physical failures.
+        for attempt in range(2):
+            try:
+                return await self._query_reading_attempt()
+            except SerialTransportError as exc:
+                if (attempt or exc.code not in {
+                    "protocol_timeout", "incomplete_frame", "incomplete_late_frame",
+                    "duplicate_frame", "stale_frame",
+                } or not self.transport or not self.transport.is_open):
+                    raise
+                if self.fetch_diagnostics.last_failure:
+                    self.fetch_diagnostics.last_failure["recovery_reason"] = (
+                        "isolated_fetch_timeout" if exc.code == "protocol_timeout"
+                        else "logical_frame_recovery"
+                    )
+                if self.fetch_diagnostics.recovery_started is None:
+                    self.fetch_diagnostics.recovery_started = (
+                        self.fetch_diagnostics.last_rx
+                        if self.fetch_diagnostics.last_rx is not None else self._connected_at
+                    )
+                await self._wait_until_next_fetch_window()
+        raise AssertionError("Unreachable logical retry")
+
+    async def _query_reading_attempt(self) -> DeviceReading:
         metrics = self.fetch_diagnostics
         started = monotonic()
         metrics.fetch_attempts += 1
@@ -1325,7 +1419,8 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             )
             raise
         else:
-            received = monotonic()
+            boundary = getattr(self.transport, "last_query_boundary", {})
+            received = float(boundary.get("rx_monotonic", monotonic()))
             if metrics.last_rx is not None:
                 metrics.maximum_gap_ms = max(
                     metrics.maximum_gap_ms, (received - metrics.last_rx) * 1000
@@ -1424,6 +1519,10 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         return reading
 
     async def _wait_until_next_fetch_window(self) -> None:
+        if isinstance(self.transport, At4532SerialTransport):
+            # The real AT transport owns the atomic RX/guard/TX boundary. It may
+            # deliver a queued reading immediately without waiting or sending FETCH.
+            return
         if (
             self._last_fetch_started_monotonic is None
             or self._last_fetch_completed_monotonic is None
@@ -1459,8 +1558,18 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
 
     async def connect(self) -> None:
         self.connection_state = "recovering" if self._reconnecting else "connecting"
+        self.transport = self.transport or self._transport(self._configuration())
+        if isinstance(self.transport, At4532SerialTransport):
+            self.transport.post_rx_guard_s = self.continuous_read_guard_seconds
+            self.transport.accept_recovered_frame = self._accept_recovered_frame
         try:
-            await super().connect()
+            if self._reconnecting and self._measurement_validated:
+                await self.transport.open()
+                self._connected_at = monotonic()
+                self._primed_reading = None
+                self._primed_reading = await self._query_reading()
+            else:
+                await super().connect()
         except (SerialTransportError, ProtocolResponseError):
             self.connection_state = "recovering" if self._reconnecting else "disconnected"
             raise
@@ -1554,6 +1663,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                         isinstance(exc, SerialTransportError)
                         and exc.code not in {
                             "protocol_timeout", "incomplete_frame", "incomplete_late_frame",
+                            "duplicate_frame", "stale_frame",
                         }
                     )
                     # A single delayed query is not physical loss, even after a long
@@ -1600,7 +1710,8 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
 
     def input_boundary_diagnostics(self) -> dict:
         if isinstance(self.transport, At4532SerialTransport):
-            return self.transport.input_boundary_diagnostics()
+            return {**self.transport.input_boundary_diagnostics(),
+                    "duplicate_frames": self.duplicate_frames}
         return {}
 
     async def get_device_information(self) -> DeviceInformation:
@@ -1609,7 +1720,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             {
                 "identity_fallback_allowed": self.allow_identity_fallback,
                 "association_source": self.association_source,
-                "polling_anchor": "fetch_start_interval_with_post_rx_guard",
+                "polling_anchor": "latest_physical_rx_with_post_rx_guard",
                 "continuous_read_guard_seconds": self.continuous_read_guard_seconds,
                 "physical_frame_bytes": AT4532_PHYSICAL_FRAME_BYTES,
             }

@@ -107,7 +107,7 @@ async def test_soak_a_to_e(monkeypatch, fault, count, reconnects, record_propert
             assert "communication_gap" in readings[100].raw_payload
             assert all(item["connected"] for item in transport.snapshots)
         else:
-            assert metrics["maximum_gap_ms"] == pytest.approx(1000)
+            assert metrics["maximum_gap_ms"] == pytest.approx(1375)
             assert metrics["average_query_duration_ms"] == pytest.approx(375)
     finally:
         await stream.aclose()
@@ -347,6 +347,8 @@ async def test_soak_f_dual_source_service_keeps_session_and_electrical_stream(
 
 @pytest.mark.asyncio
 async def test_all_open_channels_after_validation_are_sensor_state_not_port_loss(monkeypatch):
+    from datetime import timedelta
+
     clock, transport, adapter = setup_adapter(monkeypatch)
     await adapter.connect()
     fields = tcp32_physical_fixture().decode("cp936").strip().split(",")
@@ -356,8 +358,15 @@ async def test_all_open_channels_after_validation_are_sensor_state_not_port_loss
 
     async def all_open(command, *args):
         if command == b"FETCH?\n":
+            tx = clock.monotonic()
             clock.advance(0.375)
-            return payload, 375
+            transport.fetch_count += 1
+            timestamp = transport.started_at + timedelta(seconds=transport.fetch_count)
+            fresh_payload = payload.replace(
+                b"2026/08/25 16:35:12", timestamp.strftime("%Y/%m/%d %H:%M:%S").encode()
+            )
+            transport.last_query_boundary = transport._boundary(tx, clock.monotonic())
+            return fresh_payload, 375
         return await original(command, *args)
 
     transport.query = all_open
