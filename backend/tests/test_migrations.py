@@ -12,6 +12,81 @@ from app.models.entities import Device
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_analysis_migrations_preserve_sqlite_history_with_foreign_keys(tmp_path):
+    import importlib.util
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    database = create_engine(f"sqlite:///{tmp_path / 'history.db'}")
+    with database.begin() as connection:
+        connection.execute(text("PRAGMA foreign_keys=ON"))
+        connection.execute(text("CREATE TABLE users (id INTEGER PRIMARY KEY)"))
+        connection.execute(text("INSERT INTO users VALUES (1)"))
+        connection.execute(text("CREATE TABLE measurement_sessions (id INTEGER PRIMARY KEY)"))
+        connection.execute(text("INSERT INTO measurement_sessions VALUES (42)"))
+        connection.execute(
+            text(
+                "CREATE TABLE historical_samples (id INTEGER PRIMARY KEY, "
+                "session_id INTEGER REFERENCES measurement_sessions(id) ON DELETE CASCADE, "
+                "value FLOAT)"
+            )
+        )
+        connection.execute(text("INSERT INTO historical_samples VALUES (1, 42, 123.456)"))
+        with Operations.context(MigrationContext.configure(connection)):
+            for name in ["0009_session_analysis", "0010_session_shares"]:
+                spec = importlib.util.spec_from_file_location(
+                    name, BACKEND_ROOT / f"alembic/versions/{name}.py"
+                )
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                module.upgrade()
+        assert connection.scalar(text("SELECT value FROM historical_samples WHERE id=1")) == 123.456
+        assert (
+            connection.scalar(text("SELECT analysis_start FROM measurement_sessions WHERE id=42"))
+            is None
+        )
+        assert {"session_annotations", "session_shares"} <= set(
+            inspect(connection).get_table_names()
+        )
+        assert not connection.execute(text("PRAGMA foreign_key_check")).all()
+
+
+def test_new_migrations_compile_for_postgresql(monkeypatch):
+    """Compile the actual upgrade operations with the PostgreSQL dialect, without a server."""
+    import importlib.util
+    import io
+    from unittest.mock import Mock
+
+    import sqlalchemy as sa
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    output = io.StringIO()
+    context = MigrationContext.configure(
+        dialect_name="postgresql", opts={"as_sql": True, "output_buffer": output}
+    )
+    inspector = Mock()
+    inspector.get_columns.return_value = [{"name": "id"}]
+    inspector.get_table_names.return_value = ["users", "measurement_sessions"]
+    monkeypatch.setattr(sa, "inspect", lambda _: inspector)
+    with Operations.context(context):
+        for name in ["0009_session_analysis", "0010_session_shares"]:
+            spec = importlib.util.spec_from_file_location(
+                name, BACKEND_ROOT / f"alembic/versions/{name}.py"
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            module.upgrade()
+    sql = output.getvalue()
+    assert "TIMESTAMP WITH TIME ZONE" in sql
+    assert "CREATE TABLE session_shares" in sql
+    assert "CREATE TABLE session_annotations" in sql
+    assert "FOREIGN KEY(analysis_selected_by) REFERENCES users (id)" in sql
+    assert "DROP TABLE" not in sql
+
+
 def test_upgrade_accepts_schema_precreated_by_sqlalchemy(tmp_path):
     """Regression: old startup created new tables before Alembic recorded revision 0002."""
     database_path = tmp_path / "precreated.db"
@@ -52,7 +127,7 @@ def test_upgrade_accepts_schema_precreated_by_sqlalchemy(tmp_path):
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            "0008_session_metadata"
+            "0010_session_shares"
         )
         assert "metadata" in {
             column["name"] for column in inspect(connection).get_columns("measurement_sessions")

@@ -18,6 +18,7 @@ from app.models.entities import (
     ElectricalSample,
     Measurement,
     MeasurementSession,
+    SessionAnnotation,
     SessionChannelConfiguration,
     SessionDevice,
     TemperatureSample,
@@ -715,6 +716,24 @@ class PeriodReportDataService:
         )
         session_rows = self._session_rows(sessions, device_ids_by_session, electrical, temperatures)
         data = {
+            "annotations": [
+                {
+                    "session_id": row.session_id,
+                    "timestamp": _utc(row.timestamp).isoformat(),
+                    "title": row.title,
+                    "description": row.description,
+                    "kind": row.kind,
+                }
+                for row in self.db.scalars(
+                    select(SessionAnnotation)
+                    .where(
+                        SessionAnnotation.session_id.in_(session_ids),
+                        SessionAnnotation.timestamp >= request.start,
+                        SessionAnnotation.timestamp <= request.end,
+                    )
+                    .order_by(SessionAnnotation.timestamp, SessionAnnotation.id)
+                )
+            ],
             "request": request,
             "sessions": session_rows,
             "electrical": electrical,
@@ -781,6 +800,7 @@ class PeriodReportDataService:
                 "time_axis_mode": request.time_axis_mode,
             },
             "sessions": data["sessions"],
+            "annotations": data["annotations"],
             "statistics": data["statistics"],
             "alerts": data["alerts"] if request.include_alerts else [],
             "selected_channels": data["selected_channels"],
@@ -1087,6 +1107,13 @@ class PeriodReportDataService:
                 "started_at": _utc(session.started_at).isoformat(),
                 "ended_at": _utc(session.ended_at).isoformat() if session.ended_at else None,
                 "status": session.status,
+                "analysis_period": {
+                    "start": _utc(session.analysis_start).isoformat(),
+                    "end": _utc(session.analysis_end).isoformat(),
+                    "label": session.analysis_label,
+                }
+                if session.analysis_start
+                else None,
                 "operator": users[session.user_id].name if session.user_id in users else None,
                 "metadata": dict(session.metadata_json or {}),
                 "devices": [

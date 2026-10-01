@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
 SEED_KEY = "thermopower_ux_demo_v1"
+VIEWER_EMAIL = "viewer.ux@demo.thermopower.com"
 START = datetime(2026, 9, 1, 13, 0, tzinfo=UTC)
 DEVICE_NAMES = ("ThermoPower Simulator — GPM", "ThermoPower Simulator — AT4532")
 COLORS = (
@@ -44,6 +45,14 @@ SCENARIOS = (
     ("thermal", "Somente temperatura", 900, 5, "finished", "temperature"),
     ("cancelled", "Ensaio cancelado pelo operador", 300, 5, "cancelled", "both"),
     ("long", "Ensaio longo de uma hora", 3600, 1, "finished", "both"),
+    (
+        "analysis",
+        "Análise visual — aquecimento, regime e desligamento",
+        2400,
+        5,
+        "finished",
+        "both",
+    ),
 )
 
 
@@ -90,6 +99,12 @@ def thermal_value(
     if channel == 32:
         return round(ambient, 2), "good"
     target = (43, 65, 52, 49, 78, 39, 35)[channel - 25]
+    if scenario == "analysis":
+        rise = (target - 23.5) * (1 - math.exp(-min(seconds, 1500) / 100))
+        cooling = math.exp(-max(0, seconds - 1500) / 240)
+        return round(
+            ambient + rise * cooling + 0.08 * math.sin(seconds / 31 + channel), 2
+        ), "good"
     value = ambient + (target - 23.5) * (1 - math.exp(-seconds / 180))
     value += 0.15 * math.sin(seconds / 31 + channel)
     if scenario == "cycling":
@@ -104,6 +119,10 @@ def electrical_values(scenario: str, seconds: int) -> dict:
     on = (seconds // 90) % 2 == 0
     power = 1180 if seconds < 360 or on else 320
     power += 7 * math.sin(seconds / 19)
+    if scenario == "analysis":
+        power = (1180 if seconds < 600 else 780) + 3 * math.sin(seconds / 19)
+        if seconds >= 1500:
+            power = 0.0
     if scenario == "peak":
         power += 380 * math.exp(-(((seconds - 690) / 30) ** 2))
     factor = 0.97 + 0.005 * math.sin(seconds / 53)
@@ -133,6 +152,7 @@ def seed_demo(db, user, *, environment: str) -> dict:
         Device,
         ElectricalSample,
         MeasurementSession,
+        SessionAnnotation,
         SessionChannelConfiguration,
         SessionDevice,
         SystemEvent,
@@ -140,7 +160,7 @@ def seed_demo(db, user, *, environment: str) -> dict:
         TemperatureSample,
     )
 
-    if environment not in {"development", "test"}:
+    if getattr(sys, "frozen", False) or environment not in {"development", "test"}:
         raise ValueError("Seed UX permitido exclusivamente em development/test.")
     devices = []
     for name, role in zip(DEVICE_NAMES, ("electrical", "temperature"), strict=True):
@@ -316,13 +336,19 @@ def seed_demo(db, user, *, environment: str) -> dict:
         db.flush()
         db.add(
             SessionDevice(
-                session_id=session.id, device_id=thermal.id, role="temperature", created_at=start
+                session_id=session.id,
+                device_id=thermal.id,
+                role="temperature",
+                created_at=start,
             )
         )
         if role == "both":
             db.add(
                 SessionDevice(
-                    session_id=session.id, device_id=electrical.id, role="electrical", created_at=start
+                    session_id=session.id,
+                    device_id=electrical.id,
+                    role="electrical",
+                    created_at=start,
                 )
             )
         db.add_all(
@@ -403,6 +429,23 @@ def seed_demo(db, user, *, environment: str) -> dict:
                 details={"seed": SEED_KEY, "synthetic": True},
             )
         )
+        if scenario == "analysis":
+            for seconds, kind, title in (
+                (600, "stabilization", "Início do regime estável — demonstração"),
+                (1500, "shutdown", "Desligamento sintético"),
+                (1800, "note", "Resfriamento após desligamento — demonstração"),
+            ):
+                db.add(
+                    SessionAnnotation(
+                        session_id=session.id,
+                        timestamp=start + timedelta(seconds=seconds),
+                        kind=kind,
+                        title=title,
+                        description="Evento de exemplo em dados sintéticos; sem hardware físico.",
+                        created_by=user.id,
+                        created_at=start + timedelta(seconds=seconds),
+                    )
+                )
         if scenario == "gap":
             db.add(
                 SystemEvent(
@@ -456,8 +499,47 @@ def seed_demo(db, user, *, environment: str) -> dict:
         "devices": [{"id": d.id, "name": d.name, "port": d.port} for d in devices],
         "sessions": [{"id": s.id, "name": s.name} for s in sessions],
         **counts,
-        "period_utc": [START.isoformat(), (START + timedelta(days=7)).isoformat()],
+        "period_utc": [
+            START.isoformat(),
+            (START + timedelta(days=len(SCENARIOS))).isoformat(),
+        ],
+        "recommended_session": next(
+            {"id": s.id, "name": s.name}
+            for s in sessions
+            if s.metadata_json.get("scenario") == "analysis"
+        ),
     }
+
+
+def ensure_demo_viewer(db, *, environment: str, password: str | None = None):
+    """Create one development viewer; never reset or repurpose an existing account."""
+    from sqlalchemy import select
+
+    from app.core.security import hash_password
+    from app.models.entities import User
+
+    if getattr(sys, "frozen", False) or environment not in {"development", "test"}:
+        raise ValueError("Seed UX permitido exclusivamente em development/test.")
+    viewer = db.scalar(select(User).where(User.email == VIEWER_EMAIL))
+    if viewer is not None:
+        if viewer.role != "viewer" or not viewer.active:
+            raise ValueError(
+                "Conta viewer de demonstração conflitante; usuário preservado."
+            )
+        return viewer, None
+    password = password or secrets.token_urlsafe(24)
+    viewer = User(
+        name="Visualizador de desenvolvimento UX",
+        email=VIEWER_EMAIL,
+        password_hash=hash_password(password),
+        role="viewer",
+        active=True,
+        created_at=START,
+        updated_at=START,
+    )
+    db.add(viewer)
+    db.flush()
+    return viewer, password
 
 
 def main() -> int:
@@ -523,22 +605,38 @@ def main() -> int:
                 )
                 db.add(user)
                 db.flush()
-            elif not user.active:
+            elif not user.active or user.role != "admin":
                 raise ValueError(
-                    "Administrador local inativo; nenhum usuário foi alterado."
+                    "Administrador local inativo ou perfil conflitante; usuário preservado."
                 )
+            viewer, viewer_password = ensure_demo_viewer(
+                db,
+                environment=settings.environment,
+                password=os.environ.get("THERMOPOWER_UX_VIEWER_PASSWORD"),
+            )
             result = seed_demo(db, user, environment=settings.environment)
+            result["viewer"] = {
+                "email": viewer.email,
+                "created": viewer_password is not None,
+            }
+        credentials = []
         if generated_password:
+            credentials.append((settings.demo_admin_email, generated_password))
+        if viewer_password:
+            credentials.append((VIEWER_EMAIL, viewer_password))
+        if credentials:
             access_file = ROOT / "build" / "ux-demo-access.txt"
             access_file.parent.mkdir(parents=True, exist_ok=True)
-            access_file.write_text(
-                f"Email: {settings.demo_admin_email}\nSenha: {generated_password}\n",
-                encoding="utf-8",
-            )
+            with access_file.open("a", encoding="utf-8") as stream:
+                for email, password in credentials:
+                    stream.write(
+                        f"\nAcesso local de desenvolvimento\nEmail: {email}\nSenha: {password}\n"
+                    )
             print(f"Credenciais locais geradas: {access_file}")
         print(json.dumps(result, ensure_ascii=False, indent=2))
         print(
-            "Seed concluído. Abra Sessões e procure DEMO UX; período: 01 a 07/09/2026."
+            "Seed concluído. Abra Sessões e procure DEMO UX; período: 01 a 08/09/2026. "
+            "Nenhuma share foi criada; contas e senhas existentes foram preservadas."
         )
         return 0
     finally:

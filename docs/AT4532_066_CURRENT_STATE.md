@@ -4,6 +4,16 @@
 
 ## Estado da candidata
 
+**Evidência nova em 01/10/2026:** no ZIP
+`AT4532-observation-20261001-093505-613.zip`, a janela passiva de 10 s teve RX=0;
+Celsius foi seguido por um TCP-32 válido de 694 bytes (~16 ms até primeiro RX).
+FETCH, enviado 9,343 s após último RX, teve RX=0 por 10 s. A guarda de 1 s
+não explica esse silêncio. Não está estabelecido que Celsius seja comando de
+aquisição. Próxima etapa autorizada: somente caracterização passiva de 5 s +
+três Celsius separados por observações de 5 s, sem FETCH. Ferramenta independente,
+evidência detalhada e interpretação: [AT4532_REPEATED_CELSIUS.md](AT4532_REPEATED_CELSIUS.md).
+Driver, GPM e aquisição de produção preservados nesta etapa. Bancada nova pendente.
+
 - **Bancada reprovada em 29/09/2026.** Os dois novos ZIPs mostram um TCP-32
   recuperado antes de qualquer FETCH transmitido na conexão. No completo,
   FETCHs às 18:15:27.874 e 18:15:32.093 UTC retornaram zero bytes; a guarda

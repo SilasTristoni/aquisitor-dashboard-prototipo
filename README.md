@@ -128,7 +128,8 @@ e um segredo JWT forte no ambiente. Não exponha a configuração local em rede.
 Para auditar telas com histórico sintético, execute
 `.venv\Scripts\python.exe scripts\seed-ux-demo.py` na raiz.
 O [seed de UX/UI](docs/UX_DEMO_SEED.md) é exclusivo de development/test, sem COM física,
-e cria sete sessões determinísticas sem duplicar os dados ao repetir o comando.
+e cria oito sessões determinísticas, um viewer local e eventos de exemplo, sem duplicar
+os dados ao repetir o comando e sem criar links públicos.
 
 1. Faça login.
 2. Em **Tempo real**, selecione `Aquisitor simulado`.

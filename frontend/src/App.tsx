@@ -1,9 +1,10 @@
 import { lazy, Suspense } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useAuth } from "./auth";
 import Layout from "./components/Layout";
 import { Spinner } from "./components/ui";
 
+const SharedSessionPage = lazy(() => import("./pages/SharedSessionPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const ImportPage = lazy(() => import("./pages/ImportPage"));
@@ -24,7 +25,9 @@ const SetupWizardPage = lazy(() => import("./pages/SetupWizardPage"));
 
 function ProtectedLayout() {
   const { user, loading } = useAuth();
+  const location = useLocation();
   if (loading) return <div className="boot-screen"><Spinner label="Preparando ambiente seguro" /></div>;
+  if (user?.role === "viewer" && !/^\/(sessoes(?:\/\d+)?|executivo|medicoes|relatorios|comparacao)\/?$/.test(location.pathname)) return <Navigate to="/sessoes" replace />;
   return user ? <Layout /> : <Navigate to="/login" replace />;
 }
 
@@ -35,6 +38,7 @@ function AdminOnly() {
 
 export default function App() {
   return <Suspense fallback={<div className="boot-screen"><Spinner label="Carregando módulo" /></div>}><Routes>
+    <Route path="/compartilhado" element={<SharedSessionPage />} />
     <Route path="/login" element={<LoginPage />} />
     <Route element={<ProtectedLayout />}>
       <Route index element={<DashboardPage />} />

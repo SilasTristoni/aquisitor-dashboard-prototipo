@@ -1,3 +1,4 @@
+import { CadenceNotice, hasSourceFailure } from "../components/CadenceNotice";
 import { AlertTriangle, Pause, Play, Plug, Power, Radio, Square, Wifi, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { CartesianGrid, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -224,7 +225,7 @@ export default function DashboardPage() {
     </>} />
     <div className="operator-progress" aria-label="Etapas do ensaio"><span className={!allConnected ? "current" : "complete"}>1 · Conectar fontes</span><span className={allConnected && !activeSession && !finishedSessionId ? "current" : ""}>2 · Iniciar ensaio</span><span className={activeSession ? "current" : ""}>3 · Acompanhar</span><span className={finishedSessionId ? "current" : ""}>4 · Resultados</span></div>
     {error && <ErrorNotice message={error} retry={allConnected ? start : connectAll} />}
-    {statuses[temperatureDeviceId]?.cadence_degraded && <div className="notice warning" role="status"><AlertTriangle /><div><strong>Leitura térmica abaixo da frequência esperada</strong><span>As leituras recebidas continuam válidas. Confira a conexão e os detalhes de aquisição.</span></div><a className="button ghost small" href="/diagnostico">Ver detalhes</a></div>}
+    <CadenceNotice status={statuses[temperatureDeviceId]} />
     <div className="combined-source-status">{statusCard("GPM-8213", electricalDevice, latestElectrical)}{statusCard("AT4532", temperatureDevice, latestTemperature)}
       <div className="source-status session-source-status"><span className="device-orb connected">{connection === "connected" ? <Wifi /> : <WifiOff />}</span><div><span>ESTADO DO ENSAIO</span><strong>{busy && operation === "start" ? "Sincronizando fontes…" : activeSession?.status === "running" ? "Ensaio em andamento" : activeSession?.status === "paused" ? "Ensaio pausado" : finishedSessionId ? "Ensaio finalizado" : allConnected ? "Fontes prontas" : "Aguardando conexão"}</strong><small>{activeSession ? formatDuration((now - parseUtcTimestamp(activeSession.started_at)) / 1000) : "Inicie um ensaio para gravar as leituras."}</small><small>{connection === "connected" ? "Atualização ao vivo conectada" : "Reconectando atualização ao vivo"}</small></div></div>
     </div>
@@ -235,7 +236,7 @@ export default function DashboardPage() {
       <Metric label="Energia monitorada" value={`${energyWh.toFixed(3)} Wh`} hint="Calculada com os horários reais" help="Energia estimada pela integração da potência medida ao longo do tempo." />
       <Metric label="Canal crítico" value={thermalPeak ? channelLabel(Number(thermalPeak.key.slice(1))) : "—"} help="Canal com a maior temperatura no histórico exibido." />
       <Metric label="ΔT entre canais" value={deltaTemperature == null ? "—" : `${deltaTemperature.toFixed(1)} °C`} hint="Leitura térmica mais recente" help="Diferença entre a maior e a menor temperatura observada entre os canais ativos." />
-      <Metric label="Integridade" value={statuses[temperatureDeviceId]?.cadence_degraded ? "Atenção" : combined.chartData.length ? "Em acompanhamento" : "Aguardando"} hint={statuses[temperatureDeviceId]?.cadence_degraded ? "Frequência térmica reduzida" : "Detalhes disponíveis no diagnóstico"} help="A integridade distingue frequência reduzida, ausência de leituras e erros de comunicação." />
+      <Metric label="Integridade" value={hasSourceFailure(statuses[temperatureDeviceId]) ? "Atenção" : combined.chartData.length ? "Em acompanhamento" : "Aguardando"} hint={statuses[temperatureDeviceId]?.cadence_degraded ? "Frequência térmica reduzida" : "Detalhes disponíveis no diagnóstico"} help="A integridade distingue frequência reduzida, ausência de leituras e erros de comunicação." />
     </div>
     <details className="secondary-metrics"><summary>Mais detalhes do ensaio</summary><div className="metrics-grid three">
       <Metric label="Potência atual" value={latestElectrical?.power_w == null ? "—" : `${latestElectrical.power_w.toFixed(1)} W`} hint={latestElectrical?.raw_power == null ? "Grandeza indisponível" : `Recebido: ${latestElectrical.raw_power} ${latestElectrical.raw_power_unit}`} tone="primary" />

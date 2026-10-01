@@ -24,7 +24,7 @@ Cadastros físicos, sessões reais, senhas e permissões existentes são preserv
 ## O que revisar
 
 Abra a aplicação de desenvolvimento e procure **DEMO UX** em **Sessões**. Os dados têm
-datas fixas entre **01 e 07/09/2026**, a partir das **10h de São Paulo**. Em relatórios por
+datas fixas entre **01 e 08/09/2026**, a partir das **10h de São Paulo**. Em relatórios por
 período, selecione essa semana e os dois simuladores. As datas fixas permitem reproduzir
 a mesma auditoria sem depender do dia de execução.
 
@@ -37,9 +37,10 @@ a mesma auditoria sem depender do dia de execução.
 | Somente temperatura | 15 minutos sem potência fabricada |
 | Ensaio cancelado pelo operador | Histórico de cancelamento com cinco minutos de dados |
 | Ensaio longo de uma hora | 3.601 amostras por fonte, para zoom, downsampling e exportação |
+| Análise visual — aquecimento, regime e desligamento | 40 minutos, 481 leituras por fonte, oito canais e três eventos manuais |
 
-São **7 sessões**, **4.746 amostras elétricas**, **4.921 amostras térmicas**,
-**157.472 valores/estados de canais**, **32 configurações de canal**, um perfil, duas regras,
+São **8 sessões**, **5.227 amostras elétricas**, **5.402 amostras térmicas**,
+**172.864 valores/estados de canais**, **32 configurações de canal**, um perfil, duas regras,
 dois alertas e eventos sintéticos. Canais 1–24 ficam Open; 25–32 têm temperaturas plausíveis.
 Potência é armazenada em watts, preservando as representações originais em mW, W e kW.
 Valores ausentes permanecem nulos; a lacuna não recebe dados repetidos.
@@ -71,3 +72,85 @@ SQLAlchemy, mas limitado a localhost e bancos com sufixo `_dev` ou `_test`.
 
 Dados e exportações são exclusivamente sintéticos e não constituem validação metrológica,
 física ou de estabilidade dos equipamentos.
+
+
+## Validação das funcionalidades de produto
+
+Sessão recomendada: **DEMO UX — Análise visual — aquecimento, regime e desligamento**,
+em **08/09/2026, 10:00–10:40 (America/Sao_Paulo)**. Dados explicitamente sintéticos:
+
+- 10:00–10:10: aquecimento, potência próxima de 1.180 W;
+- 10:10–10:25: regime estável, potência próxima de 780 W;
+- 10:25–10:40: potência zero após desligamento e resfriamento térmico perceptível;
+- termopares ativos T25–T32, com T32 como ambiente;
+- eventos de exemplo às 10:10, 10:25 e 10:30.
+
+Nenhum período oficial vem salvo: selecione o patamar e salve durante a validação.
+Nenhuma share pública é criada pelo seed. Repetir o comando preserva eventos editados,
+período oficial escolhido, compartilhamentos e senhas existentes.
+
+O seed também cria **viewer.ux@demo.thermopower.com**, exclusivamente como viewer de
+desenvolvimento. Para conta nova, a senha vem de `THERMOPOWER_UX_VIEWER_PASSWORD` ou
+é gerada aleatoriamente. Ela é gravada em `build/ux-demo-access.txt`, ignorado pelo Git;
+nenhuma senha existente é redefinida. Admin/operator existentes mantêm todos os campos.
+Uma colisão do e-mail reservado com outro perfil ou conta inativa é rejeitada.
+
+Roteiro manual sem hardware:
+
+1. Abra o frontend local e entre como admin existente. Em Sessões, procure o nome
+   recomendado. Não é necessário conectar fontes nem iniciar aquisição.
+2. Escolha **Selecionar no gráfico**, marque 10:10–10:24:55 por cliques, Brush ou campos
+   e aplique. Confira a área destacada, campos, potência média próxima de 780 W,
+   médias térmicas e exportações. Compare com sessão completa e com o resfriamento.
+3. Salve o período aplicado como **Regime permanente**, reabra a sessão e confira a
+   preferência. Volte temporariamente a Sessão completa sem apagar o período salvo.
+4. Edite um evento, adicione outro com horário dentro da sessão e confira marcador e
+   relatório. Remova o evento criado por você; um horário fora da sessão deve ser rejeitado.
+5. Saia e entre como viewer: consulte gráficos, eventos, período oficial, comparação e
+   downloads. Não devem aparecer controles de operação, edição ou compartilhamento.
+6. Como admin, crie manualmente um link com senha, expiração e somente PDF permitido.
+   Abra em janela anônima; teste senha errada/correta, ausência de XLSX/CSV, contadores,
+   cópia após recarregar e revogação. O seed não faz esta etapa automaticamente.
+7. Para integridade histórica, compare o cenário recomendado com **Lacuna térmica e
+   sensor aberto**. O banner de cadência em tempo real usa estados de runtime e não é
+   acionado por sessões históricas; sua apresentação é coberta pelos testes frontend,
+   sem necessidade de hardware ou alteração de thresholds.
+
+O arquivo continua fora de `thermopower.spec` e das importações da aplicação. A execução
+empacotada (`sys.frozen`) é rejeitada, inclusive nas funções de geração de dados/usuário.
+
+## Ambiente preparado em 01/10/2026
+
+Banco local `backend/thermopower.db`, já na revisão `0010_session_shares`.
+Sessão recomendada nesta instalação: **#13**, acessível em
+`http://127.0.0.1:5173/sessoes/13`. Os IDs podem variar em outros bancos.
+
+Foram verificados pelo frontend/proxy local: login de admin e viewer, detalhe da sessão,
+preview de 10:10–10:24:55 com média de **780,12 W**, oito canais, sugestão de estabilidade,
+três eventos, zero compartilhamentos e resposta 403 para viewer na gestão de links.
+Uma segunda execução criou zero sessões e preservou contas/senhas.
+
+Os processos locais usam frontend Vite na porta 5173 e backend na 8000. O backend foi
+iniciado com `--lifespan off` para esta validação sobre banco já migrado/populado, evitando
+a rotina normal de startup que revisa cadastros físicos. Nenhuma rota de conexão, probe,
+início ou controle de aquisição foi chamada. Para reiniciar esta mesma validação:
+
+```powershell
+# Terminal 1, a partir da raiz
+cd backend
+..\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --lifespan off
+```
+
+```powershell
+# Terminal 2, a partir da raiz
+cd frontend
+npm run dev -- --host 127.0.0.1 --port 5173 --strictPort
+```
+
+Validação: **262 testes backend aprovados**; os **13 testes focados do seed** incluem
+preservação, idempotência, fases da curva, estabilidade calculada pelo relatório,
+eventos, ausência de shares, restrições de ambiente e login real do viewer.
+O teste de login cobre a rejeição que motivou trocar o domínio reservado `.test`
+pelo endereço de demonstração aceito pela API. Ruff e `git diff --check` aprovados.
+Frontend/API/migrations não tiveram alterações nesta preparação; seus gates anteriores
+não foram repetidos. Nenhum build Windows ou push foi realizado.

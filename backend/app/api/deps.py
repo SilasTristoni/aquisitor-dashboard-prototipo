@@ -24,6 +24,16 @@ def get_current_user(
     user = db.get(User, int(payload["sub"]))
     if not user or not user.active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuário inativo")
+    if user.role == "viewer":
+        path = request.url.path.removeprefix("/api/v1")
+        report_read = request.method == "POST" and path.startswith("/reports/period/")
+        operational_read = (
+            path.startswith(("/hardware/", "/simulator/", "/support/"))
+            or path in {"/device-ports", "/diagnostics", "/acquisition/combined-status"}
+            or path.endswith(("/acquisition-diagnostics", "/diagnostic-export", "/shares"))
+        )
+        if operational_read or (request.method not in {"GET", "HEAD"} and not report_read):
+            raise HTTPException(status_code=403, detail="Perfil visualizador: somente consulta")
     if context := getattr(request.state, "support_context", None):
         context["user_id"] = user.id
     return user

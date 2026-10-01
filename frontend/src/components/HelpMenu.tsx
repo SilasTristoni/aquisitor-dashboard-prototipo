@@ -4,7 +4,7 @@ import { SupportButton } from "./SupportButton";
 
 type BuildInfo = { version: string; build: string; environment: string; build_date: string | null };
 
-export function HelpMenu() {
+export function HelpMenu({ allowSupport = true }: { allowSupport?: boolean }) {
   const [about, setAbout] = useState<BuildInfo | null>(null);
   const [error, setError] = useState("");
   async function guide() {
@@ -19,7 +19,7 @@ export function HelpMenu() {
     <details className="help-menu"><summary className="button ghost">Ajuda</summary><div className="help-menu-content">
       <button className="button ghost" onClick={() => void guide()}>Guia do usuário</button>
       <button className="button ghost" onClick={() => void showAbout()}>Sobre o ThermoPower</button>
-      <SupportButton />
+      {allowSupport && <SupportButton />}
       {error && <p role="alert">{error}</p>}
     </div></details>
     {about && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="about-title"><h2 id="about-title">Sobre o ThermoPower</h2>

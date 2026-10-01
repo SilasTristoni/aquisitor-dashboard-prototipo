@@ -308,6 +308,19 @@ def render_period_chart(
                             if segment_index == 0
                             else None,
                         )
+        for event in data.get("annotations", []):
+            event_time = datetime.fromisoformat(event["timestamp"])
+            origin = next(
+                datetime.fromisoformat(session["started_at"])
+                for session in data["sessions"]
+                if session["id"] == event["session_id"]
+            )
+            coordinate = (
+                event_time
+                if request.time_axis_mode == "real"
+                else (event_time - origin).total_seconds()
+            )
+            power_axis.axvline(coordinate, color="#7c3aed", linestyle="--", linewidth=0.8)
         mark_peaks(data, request, power_axis, temperature_axis, group, power_scale)
         power_axis.set_ylabel(f"Potência ativa ({power_unit})", color=POWER_COLOR)
         power_axis.grid(True, color=grid, alpha=0.6, linewidth=0.55)
@@ -650,6 +663,36 @@ def render_period_pdf(data: dict[str, Any], request: PeriodReportRequest) -> byt
             Spacer(1, 6 * mm),
         ]
     )
+    for session in data["sessions"]:
+        official = session.get("analysis_period")
+        if official:
+            matches = (
+                datetime.fromisoformat(official["start"]) == request.start
+                and datetime.fromisoformat(official["end"]) == request.end
+            )
+            label = (
+                "Período oficial analisado"
+                if matches
+                else "Período oficial salvo (janela atual diferente)"
+            )
+            story.append(
+                Paragraph(
+                    escape(
+                        f"{label}: {official['start']} → {official['end']} · {official['label']}"
+                    ),
+                    styles["Normal"],
+                )
+            )
+    for event in data.get("annotations", []):
+        story.append(
+            Paragraph(
+                escape(
+                    f"Evento: {event['timestamp']} · {event['title']} · "
+                    f"{event.get('description') or ''}"
+                ),
+                styles["Normal"],
+            )
+        )
     metadata_labels = {
         "product": "Produto",
         "model": "Modelo",

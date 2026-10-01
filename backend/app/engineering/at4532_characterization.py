@@ -201,27 +201,7 @@ class Characterization:
             )
             self.transport = At4532SerialTransport(config)
             self.transport.connection = self.connection
-            self.window = "passive"
-            self.observe(passive_seconds)
-            self.window = "after_celsius"
-            if not self.write(At4532Protocol.celsius.request):
-                return
-            self.observe(10)
-            self.window = "after_fetch_1"
-            if not self.write(At4532Protocol.temperatures.request):
-                return
-            self.observe(10)
-            eligible = any(
-                f["window"] == "after_fetch_1"
-                and f["valid"]
-                and any(v is not None for v in f["temperatures_c"])
-                for f in self.frames
-            )
-            self.window = "after_fetch_2"
-            if eligible and self.write(At4532Protocol.temperatures.request):
-                self.observe(10)
-            elif not eligible:
-                self.emit("window_skipped", reason="No healthy valid frame after first FETCH")
+            self.run_sequence(passive_seconds)
         finally:
             if self.connection is not None:
                 try:
@@ -235,6 +215,29 @@ class Characterization:
                 finally:
                     self.connection.close()
                     self.emit("closed")
+
+    def run_sequence(self, passive_seconds):
+        self.window = "passive"
+        self.observe(passive_seconds)
+        self.window = "after_celsius"
+        if not self.write(At4532Protocol.celsius.request):
+            return
+        self.observe(10)
+        self.window = "after_fetch_1"
+        if not self.write(At4532Protocol.temperatures.request):
+            return
+        self.observe(10)
+        eligible = any(
+            f["window"] == "after_fetch_1"
+            and f["valid"]
+            and any(v is not None for v in f["temperatures_c"])
+            for f in self.frames
+        )
+        self.window = "after_fetch_2"
+        if eligible and self.write(At4532Protocol.temperatures.request):
+            self.observe(10)
+        elif not eligible:
+            self.emit("window_skipped", reason="No healthy valid frame after first FETCH")
 
 
 def main(argv=None):

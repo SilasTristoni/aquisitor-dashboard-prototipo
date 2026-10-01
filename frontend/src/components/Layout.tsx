@@ -44,7 +44,8 @@ export default function Layout() {
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <div className="brand"><span className="brand-mark"><Activity /></span><div><strong>ThermoPower</strong><small>MONITOR</small></div><button className="mobile-close" aria-label="Fechar menu" onClick={() => setOpen(false)}><X /></button></div>
       <nav aria-label="Navegação principal">{navigationGroups.map((group) => {
-        const links = group.paths.map((path) => navigation.find((item) => item.to === path)!).filter((item) => (!item.admin || user?.role === "admin") && (item.to !== "/importar" || user?.role !== "viewer")).map((item) => <NavLink key={item.to} to={item.to} end={item.to === "/"}><item.icon /><span>{item.label}</span></NavLink>);
+        const links = group.paths.map((path) => navigation.find((item) => item.to === path)!).filter((item) => (!item.admin || user?.role === "admin") && (user?.role !== "viewer" || ["/sessoes", "/executivo", "/medicoes", "/relatorios", "/comparacao"].includes(item.to))).map((item) => <NavLink key={item.to} to={item.to} end={item.to === "/"}><item.icon /><span>{item.label}</span></NavLink>);
+        if (!links.length) return null;
         return group.collapsed ? <details className="nav-group" key={group.label} open={group.paths.includes(location.pathname) || undefined}><summary>{group.label}</summary>{links}</details> : <div className="nav-group" key={group.label}><span className="nav-group-label">{group.label}</span>{links}</div>;
       })}</nav>
       <div className="sidebar-status"><i /><div><strong>ThermoPower Monitor</strong><small>Laboratório · aquisição e análise</small></div></div>
@@ -52,7 +53,7 @@ export default function Layout() {
     </aside>
     {open && <button className="sidebar-backdrop" onClick={() => setOpen(false)} aria-label="Fechar menu" />}
     <main className="main-content">
-      <header className="topbar"><button className="menu-button" aria-label="Abrir menu" onClick={() => setOpen(true)}><Menu /></button><div className="breadcrumbs"><span>ThermoPower</span><ChevronRight /><strong>{titles[segment] ?? "Tempo real"}</strong></div><div className="topbar-actions"><HelpMenu /><span className="system-pill"><i /> Online</span><button className="icon-button" onClick={() => setDark(!dark)} aria-label="Alternar tema">{dark ? <Sun /> : <Moon />}</button><Link className="icon-button" to="/configuracao-inicial" aria-label="Configuração inicial"><Settings2 /></Link><button className="icon-button warning-dot" aria-label="Alertas"><AlertTriangle /></button></div></header>
+      <header className="topbar"><button className="menu-button" aria-label="Abrir menu" onClick={() => setOpen(true)}><Menu /></button><div className="breadcrumbs"><span>ThermoPower</span><ChevronRight /><strong>{titles[segment] ?? "Tempo real"}</strong></div><div className="topbar-actions"><HelpMenu allowSupport={user?.role !== "viewer"} /><span className="system-pill"><i /> Online</span><button className="icon-button" onClick={() => setDark(!dark)} aria-label="Alternar tema">{dark ? <Sun /> : <Moon />}</button>{user?.role !== "viewer" && <Link className="icon-button" to="/configuracao-inicial" aria-label="Configuração inicial"><Settings2 /></Link>}<button className="icon-button warning-dot" aria-label="Alertas"><AlertTriangle /></button></div></header>
       <div className="page">{location.pathname === "/" && <FirstUseHint />}<Outlet /></div>
     </main>
   </div>;

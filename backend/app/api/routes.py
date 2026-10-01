@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.adapters.simulator import SCENARIOS
 from app.adapters.specific import ProtocolDocumentationRequired
 from app.adapters.transports import SerialTransportConfiguration, SerialTransportError
+from app.api.analysis_routes import analysis_period
 from app.api.deps import get_current_user, require_roles
 from app.core.config import get_settings
 from app.core.database import engine, get_db
@@ -49,8 +50,10 @@ from app.models.entities import (
     Measurement,
     MeasurementSession,
     Report,
+    SessionAnnotation,
     SessionChannelConfiguration,
     SessionDevice,
+    SessionShare,
     SystemEvent,
     TemperatureChannelValue,
     TemperatureMeasurement,
@@ -1018,6 +1021,7 @@ def list_sessions(
                 else max_temp,
                 "alert_count": alert_count,
                 "notes": session.notes,
+                "analysis_period": analysis_period(session),
             }
         )
     return _page(items, total, page, page_size)
@@ -1320,6 +1324,7 @@ def get_session(session_id: int, db: Db, _: CurrentUser) -> dict:
         "name": session.name,
         "description": session.description,
         "notes": session.notes,
+        "analysis_period": analysis_period(session),
         "metadata": session.metadata_json or {},
         "status": session.status,
         "started_at": utc(session.started_at),
@@ -1393,6 +1398,7 @@ def update_session(
         "name": session.name,
         "description": session.description,
         "notes": session.notes,
+        "analysis_period": analysis_period(session),
         "metadata": session.metadata_json or {},
         "channel_names": payload.channel_names or {},
     }
@@ -1606,6 +1612,8 @@ def delete_session(session_id: int, db: Db, _: User = Depends(require_roles("adm
         )
     )
     for model in (
+        SessionAnnotation,
+        SessionShare,
         Measurement,
         TemperatureSample,
         ElectricalSample,
@@ -2176,6 +2184,21 @@ def download_report(
     user: CurrentUser,
     orientation: Literal["portrait", "landscape"] = "landscape",
 ) -> StreamingResponse:
+    session = db.get(MeasurementSession, session_id)
+    if not session:
+        raise HTTPException(404, "Sessão não encontrada")
+    if session.analysis_start:
+        payload = PeriodReportRequest(
+            start=utc(session.analysis_start), end=utc(session.analysis_end),
+            session_ids=[session.id], title=session.name, orientation=orientation,
+        )
+        if report_type == "pdf":
+            return download_period_pdf(payload, db, user)
+        if report_type == "xlsx":
+            return download_period_xlsx(payload, db, user)
+        if report_type == "csv":
+            return download_period_csv(payload, db, user)
+        return _period_chart_response(payload, db, user, "png" if report_type == "png" else "jpeg")
     builders = {"csv": create_csv, "xlsx": create_xlsx}
     if report_type == "pdf":
         content = create_pdf(db, session_id, user.id, orientation)

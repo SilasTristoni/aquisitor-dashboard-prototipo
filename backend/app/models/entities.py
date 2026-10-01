@@ -84,7 +84,14 @@ class MeasurementSession(Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     device: Mapped[Device] = relationship()
-    user: Mapped[User] = relationship()
+    user: Mapped[User] = relationship(foreign_keys=[user_id])
+    analysis_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    analysis_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    analysis_label: Mapped[str | None] = mapped_column(String(120))
+    analysis_selected_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", name="fk_analysis_selected_by")
+    )
+    analysis_selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Measurement(Base):
@@ -330,3 +337,35 @@ class Report(Base):
     generated_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     status: Mapped[str] = mapped_column(String(20), default="completed", index=True)
     error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class SessionAnnotation(Base):
+    __tablename__ = "session_annotations"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("measurement_sessions.id", ondelete="CASCADE"), index=True
+    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    kind: Mapped[str] = mapped_column(String(32))
+    title: Mapped[str] = mapped_column(String(160))
+    description: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SessionShare(Base):
+    __tablename__ = "session_shares"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("measurement_sessions.id", ondelete="CASCADE"), index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    token_nonce: Mapped[str] = mapped_column(String(64))
+    password_hash: Mapped[str | None] = mapped_column(String(255))
+    permissions: Mapped[dict[str, Any]] = mapped_column(JSON)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    access_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -620,6 +620,25 @@ def render_period_xlsx(data: dict[str, Any], request: PeriodReportRequest) -> by
             for key in ("serial_number", "port", "baud_rate", "cadence_ms"):
                 if device.get(key) is not None:
                     metadata_sheet.append([f"  {key}", device[key]])
+    for session in data["sessions"]:
+        if official := session.get("analysis_period"):
+            matches = (
+                datetime.fromisoformat(official["start"]) == request.start
+                and datetime.fromisoformat(official["end"]) == request.end
+            )
+            metadata_sheet.append(
+                [
+                    "Período oficial analisado" if matches else "Período oficial salvo",
+                    f"{official['start']} → {official['end']} · {official['label']}",
+                ]
+            )
+    if data.get("annotations"):
+        events_sheet = workbook.create_sheet("Eventos do Ensaio")
+        events_sheet.append(["Horário", "Evento", "Descrição"])
+        for event in data.get("annotations", []):
+            events_sheet.append([event["timestamp"], event["title"], event.get("description")])
+        _header(events_sheet, 1, 3)
+        _finish_sheet(events_sheet)
     _header(metadata_sheet, 1, 2)
     _finish_sheet(metadata_sheet)
 

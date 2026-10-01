@@ -666,3 +666,5 @@ th, td small, .pagination, .pagination button, .timeline time, .timeline small, 
 .support-events details { margin: 10px 0; }
 .support-error-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .first-use-hint { margin-bottom: 18px; }
+
+.shared-result { max-width: 1600px; margin: 0 auto; padding: 32px; }

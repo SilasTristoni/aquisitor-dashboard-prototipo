@@ -42,6 +42,6 @@ test("combina potência do GPM e temperatura do AT sem fabricar zero", async () 
   expect(screen.getByText(/Atualização ao vivo conectada/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Início da sessão" })).toHaveClass("active");
   expect((await screen.findAllByText("Fontes prontas")).length).toBeGreaterThan(0);
-  expect(screen.getByText("Leitura térmica abaixo da frequência esperada", { exact: false })).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Ver detalhes" })).toHaveAttribute("href", "/diagnostico");
+  expect(screen.getByText("Cadência térmica reduzida · As medições continuam válidas.", { exact: false })).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });

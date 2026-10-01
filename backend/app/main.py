@@ -10,7 +10,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
+from app.api.analysis_routes import router as analysis_router
 from app.api.routes import router
+from app.api.share_routes import router as share_router
 from app.api.support_routes import router as support_router
 from app.core.config import get_settings
 from app.core.database import Base, SessionLocal, engine
@@ -264,6 +266,8 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Correlation-ID"],
 )
+app.include_router(share_router)
+app.include_router(analysis_router)
 app.include_router(router)
 app.include_router(support_router)
 
