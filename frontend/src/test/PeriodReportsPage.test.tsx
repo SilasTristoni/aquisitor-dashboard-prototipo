@@ -53,7 +53,7 @@ test("gera prévia por período e mantém abas de sessão e histórico", async (
   expect(JSON.parse(String(previewCall?.[1]?.body))).toMatchObject({ timezone: "America/Sao_Paulo", channels: null, include_open_channels: false, time_axis_mode: "synchronized" });
 
   await userEvent.click(screen.getByRole("button", { name: "Por sessão" }));
-  expect(screen.getByText("COMPATIBILIDADE PRESERVADA")).toBeInTheDocument();
+  expect(screen.getByText("ENSAIO REGISTRADO")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Histórico" }));
   expect(screen.getByText("ARQUIVOS RECENTES")).toBeInTheDocument();
 });

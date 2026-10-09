@@ -13,10 +13,11 @@ const downloadMock = vi.hoisted(() => vi.fn());
 
 vi.mock("recharts", () => {
   const Container = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
-  const Chart = ({ children, onClick }: { children?: ReactNode; onClick?: (state: any) => void }) => <div data-testid="period-chart">{children}<button onClick={() => onClick?.({ activeLabel: 60 })}>Marcar 1 minuto</button><button onClick={() => onClick?.({ activeLabel: 90 })}>Marcar 90 segundos</button></div>;
+  const Chart = ({ children, onClick }: { children?: ReactNode; onClick?: (state: any, event?: { target: EventTarget | null }) => void }) => <div data-testid="period-chart" onClick={event => { if (event.target instanceof Element && event.target.closest(".recharts-brush")) onClick?.({ activeLabel: 0 }, event); }}>{children}<button onClick={() => onClick?.({ activeLabel: 60 })}>Marcar 1 minuto</button><button onClick={() => onClick?.({ activeLabel: 90 })}>Marcar 90 segundos</button></div>;
+  const Brush = ({ onChange }: { onChange?: (range: { startIndex: number; endIndex: number }) => void }) => <div className="recharts-brush"><button onClick={() => onChange?.({ startIndex: 1, endIndex: 2 })}>Arrastar seleção</button></div>;
   const Primitive = () => null;
   return {
-    Brush: Primitive,
+    Brush,
     CartesianGrid: Primitive,
     ComposedChart: Chart,
     Legend: Primitive,
@@ -119,14 +120,16 @@ test("abre período oficial salvo e viewer não recebe controles de edição", a
   const official = { start: "2026-09-03T13:00:15.125Z", end: "2026-09-03T13:02:45.250Z", label: "Regime permanente" };
   apiMock.mockImplementation((path: string) => Promise.resolve(path === "/sessions/42" ? { ...session, analysis_period: official } : path === "/reports/period/preview" ? analysis : { items: [], total: 0 }));
   render(<MemoryRouter initialEntries={["/sessoes/42"]}><Routes><Route path="/sessoes/:id" element={<SessionDetailPage />} /></Routes></MemoryRouter>);
-  await screen.findByText(/Período oficial salvo:/);
+  await screen.findByText(/Período oficial:/);
   await waitFor(() => expect(apiMock.mock.calls.some(([path]) => path === "/reports/period/preview")).toBe(true));
   const preview = apiMock.mock.calls.find(([path]) => path === "/reports/period/preview");
   expect(JSON.parse(preview?.[1].body)).toMatchObject({ start: official.start, end: official.end });
+  expect(screen.queryByLabelText("Nome do período oficial")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("radio", { name: "Selecionar no gráfico" }));
   expect(screen.getByLabelText("Início")).toHaveValue("2026-09-03T10:00:15.125");
   for (const name of ["Editar informações", "Salvar período aplicado como oficial", "Salvar evento", "Gerar link"]) expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("radio", { name: "Sessão completa" }));
-  expect(screen.getByText(/Período oficial salvo:/)).toBeInTheDocument();
+  expect(screen.getByText(/Período oficial:/)).toBeInTheDocument();
   expect(apiMock.mock.calls.filter(([, options]) => options?.method === "PUT")).toHaveLength(0);
   authState.role = "admin";
 });
@@ -146,6 +149,45 @@ test("dois cliques sincronizam campos e só recalculam após aplicar", async () 
   await waitFor(() => expect(apiMock.mock.calls.filter(([path]) => path === "/reports/period/preview")).toHaveLength(2));
   const preview = apiMock.mock.calls.filter(([path]) => path === "/reports/period/preview").at(-1);
   expect(JSON.parse(preview?.[1].body)).toMatchObject({ start: "2026-09-03T10:01:00", end: "2026-09-03T10:01:30" });
+});
+
+test("clique propagado pelo Brush não sobrescreve o intervalo arrastado", async () => {
+  apiMock.mockClear();
+  const brushAnalysis = { ...analysis, series: [{ ...analysis.series[0], electrical: [
+    analysis.series[0].electrical[0],
+    { timestamp: "2026-09-03T13:01:00Z", active_power_w: 500 },
+    analysis.series[0].electrical[1],
+  ] }] };
+  apiMock.mockImplementation((path: string) => Promise.resolve(path === "/sessions/42" ? session : path === "/reports/period/preview" ? brushAnalysis : { items: [], total: 0 }));
+  render(<MemoryRouter initialEntries={["/sessoes/42"]}><Routes><Route path="/sessoes/:id" element={<SessionDetailPage />} /></Routes></MemoryRouter>);
+  await userEvent.click(await screen.findByRole("radio", { name: "Selecionar no gráfico" }));
+  await userEvent.click(screen.getByRole("button", { name: "Marcar 90 segundos" }));
+  await userEvent.click(screen.getByRole("button", { name: "Arrastar seleção" }));
+  expect(screen.getByLabelText("Início")).toHaveValue("2026-09-03T10:01");
+  expect(screen.getByLabelText("Fim")).toHaveValue("2026-09-03T10:03");
+  expect(screen.queryByText(/Início marcado/)).not.toBeInTheDocument();
+  expect(apiMock.mock.calls.filter(([path]) => path === "/reports/period/preview")).toHaveLength(1);
+  await userEvent.click(screen.getByRole("button", { name: "Aplicar período" }));
+  await waitFor(() => expect(apiMock.mock.calls.filter(([path]) => path === "/reports/period/preview")).toHaveLength(2));
+  expect(JSON.parse(apiMock.mock.calls.filter(([path]) => path === "/reports/period/preview").at(-1)?.[1].body)).toMatchObject({ start: "2026-09-03T10:01:00", end: "2026-09-03T10:03:00" });
+});
+
+test("cancelar seleção preserva KPIs; oficial fica recolhido e pode ser removido", async () => {
+  authState.role = "admin";
+  apiMock.mockClear();
+  const official = { start: session.started_at, end: session.ended_at, label: "Regime permanente" };
+  apiMock.mockImplementation((path: string) => Promise.resolve(path === "/sessions/42" ? { ...session, analysis_period: official } : path === "/reports/period/preview" ? analysis : { items: [], total: 0 }));
+  render(<MemoryRouter initialEntries={["/sessoes/42"]}><Routes><Route path="/sessoes/:id" element={<SessionDetailPage />} /></Routes></MemoryRouter>);
+  await screen.findByText(/Período oficial: Regime permanente/);
+  expect(screen.queryByLabelText("Nome do período oficial")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("radio", { name: "Selecionar no gráfico" }));
+  fireEvent.change(screen.getByLabelText("Início"), { target: { value: "2026-09-03T10:01:00" } });
+  expect(screen.getByRole("button", { name: "Salvar como período oficial" })).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: "Cancelar seleção" }));
+  expect(apiMock.mock.calls.filter(([path]) => path === "/reports/period/preview")).toHaveLength(1);
+  await userEvent.click(screen.getByRole("button", { name: "Remover período oficial" }));
+  await waitFor(() => expect(screen.queryByText(/Período oficial: Regime permanente/)).not.toBeInTheDocument());
+  expect(apiMock).toHaveBeenCalledWith("/sessions/42/analysis-period", { method: "DELETE" });
 });
 
 test("recalcula a visão executiva da sessão para o período selecionado", async () => {

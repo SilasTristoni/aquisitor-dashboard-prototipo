@@ -64,11 +64,21 @@ def save_analysis(session_id: int, payload: AnalysisInput, db: Db, user: Operato
     validate_timestamp(session, payload.end)
     if payload.start >= payload.end:
         raise HTTPException(422, "O fim deve ser posterior ao início")
-    session.analysis_start, session.analysis_end = payload.start, payload.end
+    # SQLite drops offsets on DateTime columns; store UTC explicitly for both databases.
+    session.analysis_start, session.analysis_end = utc(payload.start), utc(payload.end)
     session.analysis_label = payload.label
     session.analysis_selected_by, session.analysis_selected_at = user.id, datetime.now(UTC)
     db.commit()
     return analysis_period(session)
+
+
+@router.delete("/{session_id}/analysis-period", status_code=204)
+def remove_analysis(session_id: int, db: Db, user: Operator):
+    session = session_or_404(db, session_id)
+    session.analysis_start = session.analysis_end = None
+    session.analysis_label = session.analysis_selected_by = session.analysis_selected_at = None
+    db.commit()
+    return Response(status_code=204)
 
 
 def annotation_dict(row: SessionAnnotation, db: Session) -> dict:
@@ -115,7 +125,8 @@ def list_annotations(
 @router.post("/{session_id}/annotations", status_code=201)
 def create_annotation(session_id: int, payload: AnnotationInput, db: Db, user: Operator):
     validate_timestamp(session_or_404(db, session_id), payload.timestamp)
-    row = SessionAnnotation(session_id=session_id, created_by=user.id, **payload.model_dump())
+    values = {**payload.model_dump(), "timestamp": utc(payload.timestamp)}
+    row = SessionAnnotation(session_id=session_id, created_by=user.id, **values)
     db.add(row)
     db.commit()
     return annotation_dict(row, db)
@@ -137,7 +148,7 @@ def edit_annotation(
     row = editable_annotation(db, session_id, annotation_id, user)
     validate_timestamp(session_or_404(db, session_id), payload.timestamp)
     for key, value in payload.model_dump().items():
-        setattr(row, key, value)
+        setattr(row, key, utc(value) if key == "timestamp" else value)
     db.commit()
     return annotation_dict(row, db)
 

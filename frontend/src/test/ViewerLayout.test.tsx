@@ -8,7 +8,9 @@ vi.mock("../components/HelpMenu", () => ({ HelpMenu: () => null, FirstUseHint: (
 
 test("viewer navega somente por resultados, sem configuração ou operação", () => {
   render(<MemoryRouter initialEntries={["/sessoes"]}><Layout /></MemoryRouter>);
+  expect(screen.queryByText("Avançado")).not.toBeInTheDocument();
+  expect(screen.getAllByRole("link")).toHaveLength(3);
   expect(screen.getByRole("link", { name: "Sessões" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Comparar sessões" })).toBeInTheDocument();
-  for (const name of ["Tempo real", "Equipamentos", "Termopares", "Alertas", "Diagnóstico", "Usuários", "Importar arquivos", "Configuração inicial"]) expect(screen.queryByRole("link", { name })).not.toBeInTheDocument();
+  for (const name of ["Tempo real", "Equipamentos", "Termopares", "Alertas", "Diagnóstico", "Usuários", "Importar arquivos", "Configuração inicial", "Visão executiva", "Medições"]) expect(screen.queryByRole("link", { name })).not.toBeInTheDocument();
 });

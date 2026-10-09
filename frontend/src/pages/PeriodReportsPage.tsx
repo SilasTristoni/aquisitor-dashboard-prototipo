@@ -237,7 +237,7 @@ export default function PeriodReportsPage() {
 
   return (
     <>
-      <PageHeader eyebrow="DOCUMENTAÇÃO TÉCNICA" title="Central de relatórios" description="Gere relatórios rastreáveis por período ou por sessão, com gráficos renderizados no servidor." />
+      <PageHeader eyebrow="DOCUMENTAÇÃO TÉCNICA" title="Central de relatórios" description="Documente o ensaio com indicadores, gráficos e dados do período escolhido." />
       {error && <ErrorNotice message={error} retry={retryExport} sessionId={(tab === "session" ? sessionId : filterSessionId) || undefined} />}
       <div className="tab-list" role="tablist">
         <button className={tab === "period" ? "active" : ""} onClick={() => setTab("period")}>Por período</button>
@@ -273,7 +273,7 @@ export default function PeriodReportsPage() {
                 <label><input type="checkbox" checked={includeAlerts} onChange={(event) => setIncludeAlerts(event.target.checked)} /> Alertas</label>
                 <label><input type="checkbox" checked={includeQuality} onChange={(event) => setIncludeQuality(event.target.checked)} /> Qualidade</label>
                 <label><input type="checkbox" checked={includeTable} onChange={(event) => setIncludeTable(event.target.checked)} /> Tabela resumida</label>
-                <label><input type="checkbox" checked={includeOpenChannels} onChange={(event) => setIncludeOpenChannels(event.target.checked)} /> Mostrar canais Open</label>
+                <label><input type="checkbox" checked={includeOpenChannels} onChange={(event) => setIncludeOpenChannels(event.target.checked)} /> Mostrar canais sem sensor</label>
               </div>
               <details className="advanced-options"><summary>Opções avançadas</summary><div className="form-grid">
                 <label className="field"><span>Orientação</span><select value={orientation} onChange={(event) => setOrientation(event.target.value)}><option value="landscape">Paisagem</option><option value="portrait">Retrato</option></select></label>
@@ -299,8 +299,8 @@ export default function PeriodReportsPage() {
               {busy && <Spinner label={busy} />}
             </Panel>
 
-            <Panel title="Prévia do período" kicker="DADOS REDUZIDOS PARA VISUALIZAÇÃO">
-              {!preview ? <Empty title="Configure o período e gere uma prévia" text="As estatísticas usarão todos os dados; apenas o gráfico será reduzido." /> : (
+            <Panel title="Prévia do período" kicker="CONFERÊNCIA DO RESULTADO">
+              {!preview ? <Empty title="Configure o período e gere uma prévia" text="Confira os indicadores antes de gerar os documentos." /> : (
                 <div className="period-preview">
                   <div className="metrics-grid four"><Metric label="Sessões" value={preview.statistics.general.session_count} /><Metric label="Potência média" value={preview.statistics.electrical.active_power_w.mean == null ? "—" : `${preview.statistics.electrical.active_power_w.mean.toFixed(2)} W`} /><Metric label="Temperatura máxima" value={preview.statistics.temperature.max == null ? "—" : `${preview.statistics.temperature.max.toFixed(2)} °C`} hint={preview.statistics.temperature.critical_channel_label} help="Maior temperatura registrada entre os canais ativos no período." /><Metric label="Energia" value={`${preview.statistics.electrical.energy_wh.toFixed(3)} Wh`} help="Energia estimada pela integração da potência medida ao longo do tempo." /></div>
                   {preview.warnings.map((warning) => <div className="preview-warning" key={warning}><AlertTriangle /> {warning}</div>)}
@@ -318,7 +318,7 @@ export default function PeriodReportsPage() {
 
       {tab === "session" && (
         <div className="report-layout">
-          <Panel title="Relatório por sessão" kicker="COMPATIBILIDADE PRESERVADA">
+          <Panel title="Relatório por sessão" kicker="ENSAIO REGISTRADO">
             <label className="field"><span>Sessão</span><select value={sessionId} onChange={(event) => setSessionId(Number(event.target.value))}>{sessions.map((session) => <option key={session.id} value={session.id}>{session.name}</option>)}</select></label>
             <div className="report-buttons"><button className="button primary" disabled={!selected} onClick={() => void exportSession("pdf")}><FileText /> PDF</button><button className="button secondary" disabled={!selected} onClick={() => void exportSession("xlsx")}><FileSpreadsheet /> XLSX</button><button className="button ghost" disabled={!selected} onClick={() => void exportSession("csv")}><Download /> CSV</button></div>
           </Panel>

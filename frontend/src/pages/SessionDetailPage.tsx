@@ -1,3 +1,4 @@
+import { EventMarkerLabel, groupChartEvents } from "../components/ResultEvents";
 import { SessionSharing } from "../components/SessionSharing";
 import { useAuth } from "../auth";
 import { SessionAnnotations } from "../components/SessionAnnotations";
@@ -65,6 +66,7 @@ export default function SessionDetailPage() {
   const { id } = useParams();
   const { user } = useAuth();
   const canOperate = user?.role === "admin" || user?.role === "operator";
+  const [officialEditor, setOfficialEditor] = useState(false);
   const [analysisLabel, setAnalysisLabel] = useState("Período oficial");
   const [selectionAnchor, setSelectionAnchor] = useState<number | null>(null);
   const [periodMode, setPeriodMode] = useState("full");
@@ -133,7 +135,7 @@ export default function SessionDetailPage() {
       .then(([detail, allAlerts]) => {
         const analysisStart = saoPauloInput(detail.analysis_period?.start ?? detail.started_at);
         const analysisEnd = saoPauloInput(detail.analysis_period?.end ?? detail.ended_at ?? new Date().toISOString());
-        setPeriodMode(detail.analysis_period ? "custom" : "full"); setSelectionAnchor(null); setFullStabilization(null);
+        setPeriodMode(detail.analysis_period ? "official" : "full"); setSelectionAnchor(null); setFullStabilization(null);
         if (detail.analysis_period) setAnalysisLabel(detail.analysis_period.label);
         setSession(detail); setStart(analysisStart); setEnd(analysisEnd);
         setMetadata(detail.metadata ?? {});
@@ -181,7 +183,7 @@ export default function SessionDetailPage() {
     kind: "pdf" | "xlsx" | "png" | "csv" | "executive.png" | "executive.pdf",
   ) {
     setRetryExport(() => () => { void exportFile(kind); });
-    setBusy("Preparando arquivo profissional…"); setError("");
+    setBusy("Preparando arquivo…"); setError("");
     try {
       const endpoint = kind === "png" ? "/reports/period/chart.png" : `/reports/period/${kind}`;
       const extension = kind.split(".").at(-1) ?? kind;
@@ -207,13 +209,17 @@ export default function SessionDetailPage() {
   function updateFromBrush(range: { startIndex?: number; endIndex?: number }) {
     if (range.startIndex == null || range.endIndex == null || !series.length) return;
     setPeriodMode("custom");
+    setSelectionAnchor(null);
     setStart(saoPauloInput(series[range.startIndex]?.timestamp));
     setEnd(saoPauloInput(series[range.endIndex]?.timestamp));
   }
 
   const axisTime = (timestamp: string) => timeAxisMode === "real" ? parseApiDate(timestamp).getTime() : (parseApiDate(timestamp).getTime() - parseApiDate(session?.started_at).getTime()) / 1000;
   const selectionTime = (value: string) => axisTime(`${value}-03:00`);
-  function selectChartPoint(state: any) {
+  function selectChartPoint(state: any, event?: { target: EventTarget | null }) {
+    // Brush clicks bubble through the chart after a drag. They are not a new
+    // point selection and must not overwrite the interval chosen with the handles.
+    if (event?.target instanceof Element && event.target.closest(".recharts-brush")) return;
     if (periodMode !== "custom" || state?.activeLabel == null) return;
     const value = Number(state.activeLabel);
     const timestamp = (axis: number) => new Date(timeAxisMode === "real" ? axis : parseApiDate(session.started_at).getTime() + axis * 1000).toISOString();
@@ -226,8 +232,22 @@ export default function SessionDetailPage() {
     const asUtc = (value: string) => /Z$|[+-]\d\d:\d\d$/.test(value) ? value : `${value}-03:00`;
     try {
       const official = await api(`/sessions/${id}/analysis-period`, { method: "PUT", body: JSON.stringify({ start: asUtc(appliedPeriod.start), end: asUtc(appliedPeriod.end), label: analysisLabel }) });
-      setSession((current: any) => ({ ...current, analysis_period: official }));
+      setSession((current: any) => ({ ...current, analysis_period: official })); setOfficialEditor(false);
     } catch (reason) { setError((reason as Error).message); } finally { setBusy(""); }
+  }
+
+  const periodMillis = (value?: string) => value ? new Date(/Z$|[+-]\d\d:\d\d$/.test(value) ? value : `${value}-03:00`).getTime() : NaN;
+  const draftChanged = periodMillis(start) !== periodMillis(appliedPeriod?.start) || periodMillis(end) !== periodMillis(appliedPeriod?.end);
+  const selectionDuration = (periodMillis(end) - periodMillis(start)) / 1000;
+  const eventGroups = groupChartEvents(analysis?.annotations ?? [], axisTime, Math.max(1, Number(series.at(-1)?.axisValue) - Number(series[0]?.axisValue)));
+  function cancelSelection() {
+    setStart(saoPauloInput(appliedPeriod?.start)); setEnd(saoPauloInput(appliedPeriod?.end)); setSelectionAnchor(null);
+    if (periodMillis(appliedPeriod?.start) === periodMillis(session.started_at) && periodMillis(appliedPeriod?.end) === periodMillis(session.ended_at)) setPeriodMode("full");
+  }
+  async function removeOfficialPeriod() {
+    setBusy("Removendo período oficial…"); setError("");
+    try { await api(`/sessions/${id}/analysis-period`, { method: "DELETE" }); setSession((current: any) => ({ ...current, analysis_period: null })); setOfficialEditor(false); }
+    catch (reason) { setError((reason as Error).message); } finally { setBusy(""); }
   }
 
   if (error && !session) return <ErrorNotice message={error} />;
@@ -259,20 +279,15 @@ export default function SessionDetailPage() {
       <div><span>PERÍODO ANALISADO</span><strong>{formatDuration(general.analyzed_period_seconds)}</strong></div>
     </div>
 
-    <Panel title="Período de análise" kicker="KPIs RECALCULADOS PARA A JANELA" className="analysis-window-panel">
+    <Panel title="Período de análise" kicker="INDICADORES DO TRECHO APLICADO" className="analysis-window-panel">
       <div className="period-presets" role="radiogroup" aria-label="Período de análise">
-        {[['full', 'Sessão completa'], ['stable', 'Após estabilização sugerida'], ['custom', 'Selecionar no gráfico']].map(([value, label]) => <label key={value}><input type="radio" name="analysis-period" value={value} checked={periodMode === value} disabled={Boolean(busy)} onChange={() => { setPeriodMode(value); if (value === "full") void loadAnalysis(session, session.started_at, session.ended_at ?? new Date().toISOString()).catch((reason) => setError(reason.message)); }} />{label}</label>)}
+        {[["full", "Sessão completa"], ["stable", "Após estabilização sugerida"], ["custom", "Selecionar no gráfico"]].map(([value, label]) => <label key={value}><input type="radio" name="analysis-period" value={value} checked={periodMode === value} disabled={Boolean(busy)} onChange={() => { setPeriodMode(value); setSelectionAnchor(null); if (value === "full") void loadAnalysis(session, session.started_at, session.ended_at ?? new Date().toISOString()).catch((reason) => setError(reason.message)); }} />{label}</label>)}
       </div>
-      {periodMode === "custom" && <div className="analysis-window-controls">
-        <label className="field"><span>Início</span><input type="datetime-local" step="0.001" value={start} onChange={(event) => setStart(event.target.value)} /></label><span className="analysis-arrow">→</span>
-        <label className="field"><span>Fim</span><input type="datetime-local" step="0.001" value={end} onChange={(event) => setEnd(event.target.value)} /></label>
-        <button className="button primary" disabled={Boolean(busy)} onClick={() => void refreshAnalysis()}>Aplicar período</button>
-      </div>}
-      {periodMode === "stable" && (stabilization.suggested ? <div className="stability-note"><Sparkles /><span>Estabilização sugerida: {formatDate(stabilization.start)}. Critério: inclinação ≤ 0,2 °C/min e amplitude ≤ 1,0 °C em janela de 3 min.</span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void loadAnalysis(session, stabilization.start, session.ended_at ?? new Date().toISOString()).catch((reason) => setError(reason.message))}>Usar este período</button></div> : <p className="hint">Não foi identificada uma janela estável. Use a sessão completa ou escolha um período personalizado.</p>)}
-      <p className="hint">Período analisado: {formatDate(appliedPeriod?.start)} → {formatDate(appliedPeriod?.end)}. Indicadores, gráfico e exportações usam esta mesma janela.</p>
-      {periodMode === "custom" && <p className="hint">Clique no gráfico para marcar o início e depois o fim, ou arraste as alças abaixo dele. Aplique para recalcular.</p>}
-      {session.analysis_period && <p className="saved-state">Período oficial salvo: {session.analysis_period.label} · {formatDate(session.analysis_period.start)} → {formatDate(session.analysis_period.end)} <button className="button ghost small" disabled={Boolean(busy)} onClick={() => { setPeriodMode("custom"); void loadAnalysis(session, session.analysis_period.start, session.analysis_period.end).catch((reason) => setError(reason.message)); }}>Usar período oficial</button></p>}
-      {canOperate && <div className="analysis-window-controls"><label className="field"><span>Nome do período oficial</span><input maxLength={120} value={analysisLabel} onChange={(event) => setAnalysisLabel(event.target.value)} /></label><button className="button secondary" disabled={Boolean(busy) || !appliedPeriod || !analysisLabel.trim()} onClick={() => void saveOfficialPeriod()}>Salvar período aplicado como oficial</button></div>}
+      {periodMode === "stable" && (stabilization.suggested ? <div className="stability-note"><Sparkles /><span>Estabilização sugerida: {formatDate(stabilization.start)}. <InfoTip text="Critério: inclinação ≤ 0,2 °C/min e amplitude ≤ 1,0 °C em janela de 3 min." /></span><button className="button secondary" disabled={Boolean(busy)} onClick={() => void loadAnalysis(session, stabilization.start, session.ended_at ?? new Date().toISOString()).catch((reason) => setError(reason.message))}>Usar este período</button></div> : <p className="hint">Não foi identificada uma janela estável. Use a sessão completa ou escolha um período personalizado.</p>)}
+      <p className="applied-period"><strong>Período analisado</strong><span>{formatDate(appliedPeriod?.start)} → {formatDate(appliedPeriod?.end)} · {formatDuration(general.analyzed_period_seconds)}</span></p>
+      {periodMode === "custom" && <p className="hint">Marque o início e o fim no gráfico ou ajuste as alças. <a href="#analysis-chart">Ir para a seleção</a>. Os indicadores mudam somente ao aplicar.</p>}
+      {session.analysis_period && <div className="official-period"><div><strong>Período oficial: {session.analysis_period.label}</strong><span>{formatDate(session.analysis_period.start)} → {formatDate(session.analysis_period.end)} · {formatDuration((periodMillis(session.analysis_period.end) - periodMillis(session.analysis_period.start)) / 1000)}</span></div><div className="action-bar"><button className="button secondary small" disabled={Boolean(busy)} onClick={() => { setPeriodMode("official"); void loadAnalysis(session, session.analysis_period.start, session.analysis_period.end).catch((reason) => setError(reason.message)); }}>Usar período oficial</button>{canOperate && <><button className="button ghost small" onClick={() => { setOfficialEditor(true); setPeriodMode("custom"); }}>Alterar</button><button className="button danger-outline small" disabled={Boolean(busy)} onClick={() => void removeOfficialPeriod()}>Remover período oficial</button></>}</div></div>}
+      {canOperate && <><button className="button ghost small" aria-expanded={officialEditor} disabled={!appliedPeriod || Boolean(busy) || draftChanged} onClick={() => setOfficialEditor(!officialEditor)}>Salvar como período oficial</button>{officialEditor && <form className="action-bar compact-form" onSubmit={(event) => { event.preventDefault(); void saveOfficialPeriod(); }}><label className="field grow"><span>Nome do período oficial</span><input maxLength={120} value={analysisLabel} onChange={(event) => setAnalysisLabel(event.target.value)} autoFocus /></label><button className="button secondary" disabled={Boolean(busy) || !appliedPeriod || draftChanged || !analysisLabel.trim()}>Salvar período aplicado como oficial</button><button type="button" className="button ghost" onClick={() => setOfficialEditor(false)}>Cancelar</button></form>}</>}
     </Panel>
 
     <div className="metrics-grid six executive-kpis">
@@ -290,19 +305,21 @@ export default function SessionDetailPage() {
       <Metric label="Potência média" value={number(electrical.active_power_w?.mean, " W", 2)} hint={`P95 ${number(electrical.active_power_w?.p95, " W", 2)}`} help="P95 indica que 95% das leituras ficaram abaixo desse valor." tone="primary" />
     </div></details>
 
-    <Panel title="Temperatura + potência" kicker={timeAxisMode === "synchronized" ? "LINHA DO TEMPO COMUM · DOIS EIXOS" : "HORÁRIO REAL · DOIS EIXOS"} actions={<div className="chart-actions"><div className="axis-mode-toggle" aria-label="Modo do eixo de tempo"><button className={timeAxisMode === "synchronized" ? "active" : ""} onClick={() => setTimeAxisMode("synchronized")}>Início da sessão</button><button className={timeAxisMode === "real" ? "active" : ""} onClick={() => setTimeAxisMode("real")}>Horário real</button></div><label><input type="checkbox" checked={showOpen} disabled={Boolean(busy)} onChange={(event) => void updateOpenChannels(event.target.checked)} /> Mostrar canais Open</label><button className="button small ghost" disabled={Boolean(busy)} onClick={() => void exportFile("png")}><FileImage /> Exportar gráfico</button></div>}>
+    <div id="analysis-chart"><Panel title="Temperatura + potência" kicker={timeAxisMode === "synchronized" ? "LINHA DO TEMPO COMUM · DOIS EIXOS" : "HORÁRIO REAL · DOIS EIXOS"} actions={<div className="chart-actions"><div className="axis-mode-toggle" aria-label="Modo do eixo de tempo"><button className={timeAxisMode === "synchronized" ? "active" : ""} onClick={() => setTimeAxisMode("synchronized")}>Início da sessão</button><button className={timeAxisMode === "real" ? "active" : ""} onClick={() => setTimeAxisMode("real")}>Horário real</button></div><label><input type="checkbox" checked={showOpen} disabled={Boolean(busy)} onChange={(event) => void updateOpenChannels(event.target.checked)} /> Mostrar canais Open</label><button className="button small ghost" disabled={Boolean(busy)} onClick={() => void exportFile("png")}><FileImage /> Exportar gráfico</button></div>}>
       <SeriesControls series={chartSeries} hidden={hiddenSeries} onChange={setHiddenSeries} />
-      {!series.length ? <Empty title="Nenhuma leitura disponível neste período" text="Ajuste o período ou confirme se as duas fontes registraram dados." /> : <div className="chart-container tall executive-chart"><ResponsiveContainer width="100%" height="100%"><ComposedChart data={series} onClick={selectChartPoint}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="axisValue" type="number" domain={["dataMin", "dataMax"]} minTickGap={35} tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} /><YAxis includeHidden tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="temperature" unit=" °C" width={64} /><YAxis includeHidden tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="power" orientation="right" unit=" W" width={64} /><Tooltip cursor={{ stroke: "#64748b", strokeDasharray: "4 4" }} content={<MeasurementTooltip rows={series} series={chartSeries.filter((item) => !hiddenSeries.includes(item.key))} formatTime={(value) => formatTimeAxis(value, timeAxisMode)} />} /><Line data={series.filter((row) => row.electricalTimestamp)} yAxisId="power" type="linear" hide={hiddenSeries.includes("active_power_w")} dataKey="active_power_w" name="Potência ativa" stroke={POWER_COLOR} strokeWidth={2.7} dot={{ r: 1.5, strokeWidth: 0, fill: POWER_COLOR }} connectNulls={false} isAnimationActive={false} />{channels.map((channel) => <Line data={series.filter((row) => row.thermalTimestamp)} key={channel} yAxisId="temperature" type="linear" hide={hiddenSeries.includes(`channel_${channel}`)} dataKey={`channel_${channel}`} name={analysis.channel_labels?.[String(channel)] ?? `T${channel}`} stroke={CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length]} dot={{ r: 1.5, strokeWidth: 0, fill: CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length] }} connectNulls={false} isAnimationActive={false} />)}{periodMode === "custom" && <Brush dataKey="axisValue" height={28} tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} onChange={updateFromBrush} />}{periodMode === "custom" && start && end && <ReferenceArea yAxisId="temperature" x1={selectionTime(start)} x2={selectionTime(end)} fill="#2563eb" fillOpacity={0.12} />}{(analysis?.annotations ?? []).map((event: any, index: number) => <ReferenceLine key={index} yAxisId="temperature" x={axisTime(event.timestamp)} stroke="#7c3aed" strokeDasharray="4 4" label={event.title} />)}<PeakMarkers rows={series} powerKey="active_power_w" channels={channels.map((channel) => `channel_${channel}`)} /></ComposedChart></ResponsiveContainer></div>}
-      <p className="hint">{timeAxisMode === "synchronized" ? "O tempo decorrido parte do início real da sessão para as duas fontes. Nenhum timestamp, valor ou indicador é alterado." : "Arraste o controle inferior para marcar uma janela; depois clique em “Aplicar período” para recalcular indicadores e exportações."}</p>
-    </Panel>
+      {!series.length ? <Empty title="Nenhuma leitura disponível neste período" text="Ajuste o período ou confirme se as duas fontes registraram dados." /> : <div className="chart-container tall executive-chart"><ResponsiveContainer width="100%" height="100%"><ComposedChart data={series} onClick={selectChartPoint}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="axisValue" type="number" domain={["dataMin", "dataMax"]} minTickGap={35} tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} /><YAxis includeHidden tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="temperature" unit=" °C" width={64} /><YAxis includeHidden tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="power" orientation="right" unit=" W" width={64} /><Tooltip cursor={{ stroke: "#64748b", strokeDasharray: "4 4" }} content={<MeasurementTooltip rows={series} series={chartSeries.filter((item) => !hiddenSeries.includes(item.key))} formatTime={(value) => formatTimeAxis(value, timeAxisMode)} />} /><Line data={series.filter((row) => row.electricalTimestamp)} yAxisId="power" type="linear" hide={hiddenSeries.includes("active_power_w")} dataKey="active_power_w" name="Potência ativa" stroke={POWER_COLOR} strokeWidth={2.7} dot={{ r: 1.5, strokeWidth: 0, fill: POWER_COLOR }} connectNulls={false} isAnimationActive={false} />{channels.map((channel) => <Line data={series.filter((row) => row.thermalTimestamp)} key={channel} yAxisId="temperature" type="linear" hide={hiddenSeries.includes(`channel_${channel}`)} dataKey={`channel_${channel}`} name={analysis.channel_labels?.[String(channel)] ?? `T${channel}`} stroke={CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length]} dot={{ r: 1.5, strokeWidth: 0, fill: CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length] }} connectNulls={false} isAnimationActive={false} />)}{periodMode === "custom" && <Brush dataKey="axisValue" height={34} travellerWidth={12} stroke="var(--primary)" fill="var(--surface-soft)" tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} onChange={updateFromBrush} />}{periodMode === "custom" && start && end && <ReferenceArea yAxisId="temperature" x1={selectionTime(start)} x2={selectionTime(end)} fill="var(--primary)" fillOpacity={0.16} stroke="var(--primary)" strokeOpacity={0.5} />}{eventGroups.map((group, index) => <ReferenceLine key={index} yAxisId="temperature" x={group.x} stroke="var(--muted)" strokeOpacity={0.6} strokeDasharray="3 5" label={<EventMarkerLabel events={group.events} index={index} />} />)}<PeakMarkers rows={series} powerKey="active_power_w" channels={channels.map((channel) => `channel_${channel}`)} /></ComposedChart></ResponsiveContainer></div>}
+      {periodMode === "custom" && <div className="selection-toolbar"><div className="form-grid"><label className="field"><span>Início</span><input type="datetime-local" step="0.001" value={start} onChange={(event) => setStart(event.target.value)} /></label><label className="field"><span>Fim</span><input type="datetime-local" step="0.001" value={end} onChange={(event) => setEnd(event.target.value)} /></label></div><div className="action-bar"><span className="grow" role="status">{selectionAnchor !== null ? "Início marcado. Escolha o fim no gráfico." : selectionDuration > 0 ? `Trecho selecionado · ${formatDuration(selectionDuration)}` : "Selecione um início anterior ao fim."}{draftChanged && " · Ainda não aplicado"}</span><button className="button primary" disabled={Boolean(busy) || !(selectionDuration > 0)} onClick={() => void refreshAnalysis()}>Aplicar período</button><button className="button ghost" onClick={cancelSelection}>Cancelar seleção</button>{canOperate && !draftChanged && <button className="button secondary" onClick={() => { setOfficialEditor(true); document.querySelector(".analysis-window-panel")?.scrollIntoView({ behavior: "smooth" }); }}>Salvar trecho como oficial</button>}</div></div>}
+      <p className="hint">{periodMode === "custom" ? "A região sombreada marca a seleção. Aplique para atualizar indicadores e exportações." : "Indicadores e exportações correspondem ao período analisado acima."} Eventos próximos são agrupados; posicione o cursor sobre E1, E2 ou o grupo para ver os detalhes.</p>
+    </Panel></div>
+    <SessionAnnotations sessionId={Number(id)} initialTime={start} onChange={() => { void loadAnalysis(session, appliedPeriod?.start ?? start, appliedPeriod?.end ?? end).catch((reason) => setError(reason.message)); }} />
 
     <div className="charts-grid">
       <Panel title="Fontes do ensaio" kicker="RASTREABILIDADE"><div className="instrument-list">{session.devices?.map((item: any) => <div key={`${item.role}-${item.device.id}`}><span>{item.role === "electrical" ? "Fonte elétrica" : item.role === "temperature" ? "Fonte térmica" : "Fonte combinada"}</span><strong>{[item.device.manufacturer, item.device.model].filter(Boolean).join(" ") || item.device.name}</strong><small>{[item.device.serial_number, item.device.port, item.device.baud_rate ? `${item.device.baud_rate} baud` : null].filter(Boolean).join(" · ") || "Identificação de conexão não informada"}</small></div>)}</div></Panel>
       <Panel title="Destaques térmicos" kicker="PERÍODO ANALISADO"><div className="insight-list"><div><span>Canal crítico</span><strong>{temperature.critical_channel_label ?? "—"}</strong></div><div><span>Máxima registrada</span><strong>{number(temperature.critical_value_c, " °C", 2)}</strong></div><div><span>Horário da máxima</span><strong>{formatDate(temperature.critical_timestamp)}</strong></div><div><span>Maior taxa de aquecimento</span><strong>{temperature.greatest_heating_rate ? `T${temperature.greatest_heating_rate.channel} · ${number(temperature.greatest_heating_rate.value_c_per_minute, " °C/min", 2)}` : "—"}</strong></div></div></Panel>
     </div>
 
-    <Panel title="Resumo por ponteira" kicker="SOMENTE CANAIS COM LEITURA" actions={<button className="button small ghost" disabled={Boolean(busy)} onClick={() => void updateOpenChannels(!showOpen)}>{showOpen ? "Ocultar Open" : "Mostrar canais Open"}</button>}>
-      <div className="table-scroll"><table><thead><tr><th>Canal</th><th>Identificação</th><th>Leituras <InfoTip text="Quantidade de medições recebidas do equipamento de temperatura." /></th><th>Média</th><th>Máx</th><th>Mín</th><th>ΔT <InfoTip text="Diferença entre a maior e a menor temperatura deste canal." /></th><th>Desvio</th><th>P95 <InfoTip text="95% das leituras ficaram abaixo deste valor." /></th></tr></thead><tbody>{(statistics?.channels ?? []).filter((item: any) => showOpen || item.count).map((item: any) => <tr key={item.channel}><td><strong style={{ color: CHANNEL_COLORS[(item.channel - 1) % CHANNEL_COLORS.length] }}>T{item.channel}</strong></td><td>{item.friendly_name || `T${item.channel}`}</td><td>{item.count}</td><td>{number(item.mean, " °C", 2)}</td><td>{number(item.max, " °C", 2)}</td><td>{number(item.min, " °C", 2)}</td><td>{number(item.range, " °C", 2)}</td><td>{number(item.standard_deviation, " °C", 2)}</td><td>{number(item.p95, " °C", 2)}</td></tr>)}</tbody></table></div>
+    <Panel title="Indicadores por canal" kicker="SOMENTE CANAIS COM LEITURA" actions={<button className="button small ghost" disabled={Boolean(busy)} onClick={() => void updateOpenChannels(!showOpen)}>{showOpen ? "Ocultar Open" : "Mostrar canais Open"}</button>}>
+      <div className="table-scroll" tabIndex={0} role="region" aria-label="Indicadores por canal"><table className="numeric-table"><thead><tr><th>Canal</th><th>Identificação</th><th>Leituras <InfoTip text="Quantidade de medições recebidas do equipamento de temperatura." /></th><th>Média</th><th>Máx</th><th>Mín</th><th>ΔT <InfoTip text="Diferença entre a maior e a menor temperatura deste canal." /></th><th>Desvio</th><th>P95 <InfoTip text="95% das leituras ficaram abaixo deste valor." /></th></tr></thead><tbody>{(statistics?.channels ?? []).filter((item: any) => showOpen || item.count).map((item: any) => <tr key={item.channel}><td><strong style={{ color: CHANNEL_COLORS[(item.channel - 1) % CHANNEL_COLORS.length] }}>T{item.channel}</strong></td><td>{item.friendly_name || `T${item.channel}`}</td><td>{item.count}</td><td>{number(item.mean, " °C", 2)}</td><td>{number(item.max, " °C", 2)}</td><td>{number(item.min, " °C", 2)}</td><td>{number(item.range, " °C", 2)}</td><td>{number(item.standard_deviation, " °C", 2)}</td><td>{number(item.p95, " °C", 2)}</td></tr>)}</tbody></table></div>
     </Panel>
 
     <div id="session-identification" hidden={!editing || !canOperate}><Panel title="Identificação do ensaio" kicker="CAMPOS OPCIONAIS PARA DOCUMENTOS">
@@ -316,7 +333,6 @@ export default function SessionDetailPage() {
     </div>
 
     {canOperate && <SessionSharing sessionId={Number(id)} />}
-    <SessionAnnotations sessionId={Number(id)} initialTime={start} onChange={() => { void loadAnalysis(session, appliedPeriod?.start ?? start, appliedPeriod?.end ?? end).catch((reason) => setError(reason.message)); }} />
     <Panel title="Alertas da sessão" kicker="QUALIDADE"><div className="alert-list">{alerts.length ? alerts.map((alert) => <div key={alert.id}><AlertTriangle /><div><strong>{alert.metric === "power" ? "Potência" : `Termopar T${alert.channel}`}</strong><span>{number(alert.measured_value, "")} · limite {alert.threshold}</span></div><Badge tone={alert.severity === "critical" ? "danger" : "warning"}>{alert.severity}</Badge><time>{formatDate(alert.timestamp)}</time></div>) : <Empty title="Nenhum alerta nesta sessão" />}</div></Panel>
   </>;
 }
