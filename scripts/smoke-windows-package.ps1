@@ -1,4 +1,4 @@
-﻿param([string]$Executable, [string]$PackageVersion)
+﻿param([string]$Executable, [string]$PackageVersion, [string]$PackageEnvironment = "client-preview")
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -38,7 +38,7 @@ try {
     }
     $env:THERMOPOWER_APP_DATA_DIR = $SmokeData
     $env:THERMOPOWER_NO_BROWSER = "1"
-    $env:THERMOPOWER_ENVIRONMENT = "client-preview"
+    $env:THERMOPOWER_ENVIRONMENT = $PackageEnvironment
     $env:THERMOPOWER_MUTEX_NAME = "ThermoPowerMonitorSmoke-" + [guid]::NewGuid().ToString("N")
     $ExpectedDatabase = Join-Path $SmokeData "data\thermopower.db"
     $ExpectedPort = $null
@@ -83,7 +83,7 @@ try {
     $Spa = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$Port/" -TimeoutSec 5
     $BuildInfo = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/build-info" -TimeoutSec 5
     if ($BuildInfo.version -ne $ExpectedVersion -or
-        $BuildInfo.environment -ne "client-preview" -or
+        $BuildInfo.environment -ne $PackageEnvironment -or
         $null -ne $BuildInfo.demo_credentials) {
         throw "A configuracao da client preview ou a ocultacao de credenciais esta incorreta."
     }

@@ -1,7 +1,7 @@
 {
   "name": "thermopower-monitor-frontend",
   "private": true,
-  "version": "0.6.6-client-preview",
+  "version": "0.7.0-engineering-AT4532-celsius-trigger",
   "type": "module",
   "scripts": {
     "dev": "vite",

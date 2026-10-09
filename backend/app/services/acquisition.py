@@ -275,6 +275,8 @@ class AcquisitionService:
             }
         )
         await websocket_hub.publish("measurement.created", payload)
+        if isinstance(runtime.adapter, At4532Adapter):
+            runtime.adapter.record_published(reading, runtime.session_id)
 
     def _device_lock(self, device_id: int) -> asyncio.Lock:
         return self._device_locks.setdefault(device_id, asyncio.Lock())
@@ -334,12 +336,19 @@ class AcquisitionService:
             return MockFailureAdapter()
         if device.protocol == "at4532_serial":
             policy = at4532_identity_fallback_policy(device)
-            return At4532Adapter(
+            adapter = At4532Adapter(
                 device.port,
                 device.baud_rate,
                 allow_identity_fallback=policy.allowed,
                 association_source=policy.association_source,
             )
+            device_id = device.id
+            adapter.diagnostic_context = lambda: {
+                "device_id": device_id,
+                "session_id": getattr(self.runtimes.get(device_id), "session_id", None),
+                "operation": "acquisition",
+            }
+            return adapter
         if device.protocol == "gpm8213_serial":
             return Gpm8213Adapter(device.port, device.baud_rate)
         raise ValueError(f"Protocolo não suportado: {device.protocol}")
@@ -761,6 +770,17 @@ class AcquisitionService:
             raise flush_error or close_error
 
         logger.info("device disconnected device_id=%s", device_id)
+        if runtime.protocol in {"at4532_serial", "gpm8213_serial"}:
+            from app.core.physical_trace import journal
+
+            try:
+                journal.snapshot(kind="disconnected_runtime", device_id=device_id,
+                                 status=await self.status(device_id),
+                                 transactions=list(getattr(runtime.adapter, "transactions", [])),
+                                 input_boundary_metrics=getattr(
+                                     runtime.adapter, "input_boundary_diagnostics", lambda: {})())
+            except Exception:
+                journal.write_errors += 1
         self.runtimes.pop(device_id, None)
         self.last_connection_results[device_id] = {
             "device_id": device_id,

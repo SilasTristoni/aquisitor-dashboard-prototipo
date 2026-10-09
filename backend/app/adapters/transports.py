@@ -197,7 +197,9 @@ class SerialTransport:
             raise SerialTransportError("disconnected", "O equipamento foi desconectado.")
         started = monotonic()
         try:
-            written = await serial_io(self.connection.write, payload)
+            written = await serial_io(
+                getattr(self, "_write_observed", self.connection.write), payload
+            )
             if hasattr(self.connection, "flush"):
                 await serial_io(self.connection.flush)
         except (serial.SerialException, PermissionError, OSError) as exc:
@@ -237,6 +239,8 @@ class SerialTransport:
                 first_byte = now if first_byte is None else first_byte
                 last_byte = now
                 buffer.extend(chunk)
+                if observer := getattr(self, "_trace_read_chunk", None):
+                    observer(chunk, now, last_byte_at, len(buffer) == len(chunk))
         finally:
             if hasattr(connection, "timeout"):
                 connection.timeout = original_timeout
@@ -363,6 +367,9 @@ class At4532SerialTransport(SerialTransport):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        from app.core.physical_trace import AtTrace
+
+        self.trace = AtTrace(self.configuration.port, self.configuration.baud_rate)
         self._partial_input = bytearray()
         self._settle_required = False
         self.synchronization_metrics = dict.fromkeys(
@@ -381,6 +388,9 @@ class At4532SerialTransport(SerialTransport):
         self.recovered_frames: deque[dict] = deque(maxlen=8)
         self.recovered_frame_max_age_s = 5.0
         self.post_rx_guard_s = 1.0
+        self.trigger_interval_s = 5.0
+        self.last_trigger_tx_monotonic: float | None = None
+        self.on_trigger_write: Callable[[], None] | None = None
         self.last_physical_rx_monotonic: float | None = None
         self._partial_started_monotonic: float | None = None
         self._last_physical_rx_at: str | None = None
@@ -393,10 +403,37 @@ class At4532SerialTransport(SerialTransport):
 
     async def _open_unlocked(self) -> float:
         was_open = self.is_open
-        elapsed = await super()._open_unlocked()
+        try:
+            elapsed = await super()._open_unlocked()
+        except Exception as exc:
+            self.trace.emit("AT_OPEN", outcome="failed",
+                            error_code=getattr(exc, "code", type(exc).__name__))
+            raise
         if not was_open:
             self._quarantine_open_input = bool(self.open_boundary.get("pending_input_bytes"))
+            self.trace.emit("AT_OPEN", outcome="opened", tx_sent=False,
+                            pending_input_bytes=self.open_boundary.get("pending_input_bytes"))
         return elapsed
+
+    def _write_observed(self, payload):
+        trigger = payload == b"SYST:UNIT CEL\n"
+        if trigger and self.on_trigger_write:
+            self.on_trigger_write()
+        try:
+            return self.trace.write(self.connection, payload, clock=monotonic)
+        finally:
+            if trigger:
+                self.last_trigger_tx_monotonic = self.trace.previous_tx
+                self.last_query_boundary["tx_monotonic"] = self.trace.previous_tx
+
+    def _trace_read_chunk(self, chunk, now, utc, first):
+        self.trace.received(chunk, now, utc, first, "query")
+
+    def _trace_frame(self, event, frame, **fields):
+        from app.core.physical_trace import frame_fields
+
+        self.trace.emit(event, queue_size=len(self.recovered_frames),
+                        **frame_fields(frame), **fields)
 
     def input_boundary_diagnostics(self) -> dict:
         return {
@@ -405,29 +442,43 @@ class At4532SerialTransport(SerialTransport):
             "recent_resynchronizations": list(self._resynchronization_history),
             "queued_recovered_frames": len(self.recovered_frames),
             "post_rx_guard_s": self.post_rx_guard_s,
+            "trigger_interval_s": self.trigger_interval_s,
             "last_physical_rx_at": self._last_physical_rx_at,
         }
 
     def _queue_recovered_frame(self, frame: bytes) -> None:
         if not frame.startswith(b"TCP-32,"):
             self.synchronization_metrics["discarded_complete_frames"] += 1
+            self._trace_frame("AT_FRAME_REJECTED", frame, reason="non_tcp32_recovered_frame")
             return
         if len(self.recovered_frames) == self.recovered_frames.maxlen:
             self.synchronization_metrics["recovered_queue_overflows"] += 1
             self.synchronization_metrics["discarded_complete_frames"] += 1
+            self._trace_frame("AT_FRAME_REJECTED", self.recovered_frames[0]["payload"],
+                              reason="queue_overflow")
         self.recovered_frames.append({
             "payload": frame,
             "first_byte_monotonic": self._partial_started_monotonic,
+            "first_byte_utc": self.trace.first_rx_utc,
             "rx_monotonic": self.last_physical_rx_monotonic,
             "timestamp_rx": self._last_physical_rx_at,
             "eligible": not self._quarantine_open_input,
         })
+        self._trace_frame("AT_FRAME_RECOVERED", frame, tx_sent=False,
+                          response_source="recovered_frame",
+                          eligible=not self._quarantine_open_input)
 
     def _take_recovered_frame(self) -> dict | None:
         if self.accept_recovered_frame is None:
             return None
         while self.recovered_frames:
             frame = self.recovered_frames.popleft()
+            self.trace.first_rx = frame["first_byte_monotonic"]
+            self.trace.first_rx_utc = frame.get("first_byte_utc")
+            self.trace.last_rx = frame["rx_monotonic"]
+            self.trace.last_rx_utc = frame["timestamp_rx"]
+            self.trace.tx_sent = False
+            self.trace.response_source = "recovered_frame"
             age = monotonic() - frame["first_byte_monotonic"]
             if not frame["eligible"]:
                 reason = "untrusted_recovered_frames"
@@ -440,13 +491,15 @@ class At4532SerialTransport(SerialTransport):
                 return frame
             self.synchronization_metrics[reason] += 1
             self.synchronization_metrics["discarded_complete_frames"] += 1
+            self._trace_frame("AT_FRAME_REJECTED", frame["payload"], reason=reason,
+                              tx_sent=False, response_source="recovered_frame")
             logger.info("AT4532 recovered frame discarded reason=%s age_s=%.3f", reason, age)
         return None
 
     async def query(
         self, payload: bytes, response_terminator: bytes, max_bytes: int = 65_536
     ) -> tuple[bytes, float]:
-        if payload != b"FETCH?\n":
+        if payload != b"SYST:UNIT CEL\n":
             return await super().query(payload, response_terminator, max_bytes)
         async with self._io_lock:
             self.last_query_boundary = {
@@ -454,7 +507,8 @@ class At4532SerialTransport(SerialTransport):
                 "buffer_drained_bytes": 0, "pending_before_tx_bytes": 0,
             }
             # Recheck the boundary after every guard wait: bytes may arrive while asleep.
-            deadline = monotonic() + self.resynchronization_timeout_s + self.post_rx_guard_s
+            deadline = (monotonic() + self.trigger_interval_s
+                        + self.resynchronization_timeout_s + self.post_rx_guard_s)
             while True:
                 await self._synchronize_input_boundary(response_terminator, max_bytes)
                 recovered = self._take_recovered_frame()
@@ -474,6 +528,9 @@ class At4532SerialTransport(SerialTransport):
                     self.last_physical_rx_monotonic + self.post_rx_guard_s - monotonic()
                     if self.last_physical_rx_monotonic is not None else 0
                 )
+                if self.last_trigger_tx_monotonic is not None:
+                    remaining = max(remaining, self.last_trigger_tx_monotonic
+                                    + self.trigger_interval_s - monotonic())
                 if remaining <= 0:
                     break
                 if monotonic() + remaining > deadline:
@@ -486,6 +543,7 @@ class At4532SerialTransport(SerialTransport):
             self.last_query_boundary.update({
                 "timestamp_tx": datetime.now(UTC).isoformat(), "tx_monotonic": started,
                 "post_rx_guard_s": self.post_rx_guard_s,
+                "trigger_interval_s": self.trigger_interval_s,
                 "physical_rx_to_tx_ms": (started - self.last_physical_rx_monotonic) * 1000
                 if self.last_physical_rx_monotonic is not None else None,
             })
@@ -549,6 +607,8 @@ class At4532SerialTransport(SerialTransport):
             while monotonic() < deadline and consumed < max_bytes:
                 if self._partial_input.endswith(terminator):
                     frame = bytes(self._partial_input)
+                    self._trace_frame("AT_RX_COMPLETE", frame, tx_sent=False,
+                                      response_source="recovered_frame")
                     frames.append(frame)
                     event["frames"].append(
                         {
@@ -580,6 +640,9 @@ class At4532SerialTransport(SerialTransport):
                     self._partial_started_monotonic = monotonic()
                 self.last_physical_rx_monotonic = monotonic()
                 self._last_physical_rx_at = datetime.now(UTC).isoformat()
+                self.trace.received(chunk, self.last_physical_rx_monotonic,
+                                    self._last_physical_rx_at, not self._partial_input,
+                                    "recovered_frame")
                 self._partial_input.extend(chunk)
                 consumed += len(chunk)
                 if len(self._partial_input) >= max_bytes:
@@ -614,6 +677,9 @@ class At4532SerialTransport(SerialTransport):
                 metrics["resynchronization_failures"] += 1
                 self._settle_required = True
             self._resynchronization_history.append(event)
+            self.trace.emit("AT_RESYNC", outcome="clean" if clean else "incomplete",
+                            raw_byte_count=consumed, queue_size=len(self.recovered_frames),
+                            pending_partial_bytes=len(self._partial_input))
             self.last_query_boundary["input_resynchronization"] = event
             logger.info(
                 "AT4532 input resynchronization port=%s details=%s", self.configuration.port, event
@@ -641,6 +707,12 @@ class At4532SerialTransport(SerialTransport):
             # This runs inside the I/O worker, also on cancellation or physical error.
             # Retaining only in query() would lose the fragment when its await is cancelled.
             response = bytes(self.last_query_boundary.get("received_bytes", []))
+            if response.endswith(terminator):
+                self._trace_frame("AT_RX_COMPLETE", response)
+            elif response:
+                self._trace_frame("AT_FRAME_REJECTED", response, reason="incomplete_retained")
+            else:
+                self.trace.emit("AT_TIMEOUT", raw_byte_count=0, reason="read_window_without_bytes")
             if response:
                 self.last_physical_rx_monotonic = self.last_query_boundary["last_byte_monotonic"]
                 self._last_physical_rx_at = self.last_query_boundary["timestamp_last_byte"]
@@ -673,7 +745,14 @@ class At4532SerialTransport(SerialTransport):
                     self.configuration.port,
                     exc_info=True,
                 )
-        await super()._close_unlocked(release=release)
+        try:
+            await super()._close_unlocked(release=release)
+        except Exception as exc:
+            self.trace.emit("AT_CLOSE", outcome="failed",
+                            reason=getattr(exc, "code", type(exc).__name__))
+            raise
+        self.trace.emit("AT_CLOSE", outcome="closed", queue_size=len(self.recovered_frames),
+                        pending_partial_bytes=len(self._partial_input), release_port=release)
         # A closed physical connection cannot carry queued measurements into a new one.
         self.synchronization_metrics["discarded_complete_frames"] += len(self.recovered_frames)
         self.recovered_frames.clear()

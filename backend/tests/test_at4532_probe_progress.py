@@ -8,7 +8,7 @@ from test_physical_engineering import _manual_at4532_device
 from test_runtime_synchronization import sample
 
 from app.adapters.base import DeviceInformation
-from app.adapters.specific import At4532SerialAdapter
+from app.adapters.specific import At4532Normalizer, At4532Parser, At4532SerialAdapter
 from app.services.acquisition import DeviceRuntime, acquisition_service
 from app.services.protocol_probe import ProtocolProbeService
 
@@ -57,6 +57,7 @@ async def test_active_runtime_requires_new_distinct_observations(
     adapter.transactions = []
     adapter.identity_status = "unconfirmed"
     adapter.protocol_status = "verified_by_measurement"
+    adapter.expected_interval_seconds = 5.0
     adapter.input_boundary_diagnostics = lambda: {}
     old = sample("temperature", datetime.now(UTC) - timedelta(seconds=60))
     runtime = DeviceRuntime(adapter=adapter, latest=old)
@@ -64,9 +65,11 @@ async def test_active_runtime_requires_new_distinct_observations(
     async def reader():
         # Re-publishing latest with identical provenance is not progress.
         runtime.observed_readings.append(old)
-        for _ in range(new_count):
+        for index in range(new_count):
             await asyncio.sleep(0.02)
-            reading = sample("temperature", datetime.now(UTC))
+            frame = frame_for(index)
+            reading = At4532Normalizer().normalize(At4532Parser().parse(frame), frame)
+            reading.received_timestamp = datetime.now(UTC)
             runtime.latest = reading
             runtime.observed_readings.extend([reading, reading])
         await asyncio.Event().wait()

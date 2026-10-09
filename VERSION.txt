@@ -1,1 +1,1 @@
-0.6.6-client-preview
+0.7.0-engineering-AT4532-celsius-trigger

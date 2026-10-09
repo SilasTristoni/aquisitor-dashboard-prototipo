@@ -27,6 +27,14 @@ Evoluir o ThermoPower Monitor como produto industrial full-stack, mantendo a int
 - Não propor atualização de firmware como correção de software para o AT4532 sem necessidade externa explícita.
 - A integração do GPM-8213 já possui validação física; não alterar protocolo, parser ou aquisição do GPM sem evidência específica de regressão.
 
+## Evidência AT4532 / TCP-32 de 06/10/2026
+
+- Britânia AT4532: repeated `SYST:UNIT CEL` physically produced distinct measurements (3/3, timestamps, SHA-256 e temperaturas distintos, passivo 5 s sem RX). `FETCH?` repeatedly produced no response in continuous acquisition (16 timeouts/17 tentativas; o único frame não prova resposta ao FETCH).
+- O perfil de produção usa Celsius como trigger periódico fisicamente validado no alvo, não deduzido do manual de configuração. Nunca restaurar aquisição contínua por `FETCH?` sem nova evidência física.
+- Cadência inicial 5 s entre TX, configurável para intervalos maiores; janela de frame 4 s. Frequências menores exigem bancada. Framing parcial impede novo TX; preservar CP936, TCP-32 estrito, timestamps, fila e dedupe.
+- Teste completo exige timestamp E hash diferentes. Timeout isolado preserva COM; recuperação de instância validada não repete IDN. GPM e common-start independente permanecem preservados.
+- Evidência completa e política: `docs/AT4532_CELSIUS_TRIGGER_070.md`. A estabilidade contínua da nova candidata ainda exige validação física.
+
 ## Escopo durante investigação física
 
 - Ao corrigir aquisição física, não alterar UX, relatórios ou componentes não relacionados sem evidência de dependência real.

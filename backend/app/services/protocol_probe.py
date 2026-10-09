@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -108,6 +109,9 @@ class ProtocolProbeService:
                     ],
                 }
                 self.latest_results[device.id] = report
+                from app.core.physical_trace import journal
+
+                journal.snapshot(kind="runtime_probe", device_id=device.id, report=report)
                 return report
             acquisition_service.assert_diagnostic_port_available(device.port or "")
             return await self._run(device, mode)
@@ -119,7 +123,9 @@ class ProtocolProbeService:
             seen.add(reading_identity(runtime.latest))
         observed = []
         try:
-            async with asyncio.timeout(self.observation_timeout_seconds):
+            interval = getattr(runtime.adapter, "expected_interval_seconds", 5.0)
+            timeout = self.observation_timeout_seconds + required * max(0.0, interval - 5.0)
+            async with asyncio.timeout(timeout):
                 while len(observed) < required:
                     if not runtime.task or runtime.task.done() or runtime.task.cancelling():
                         break
@@ -128,6 +134,7 @@ class ProtocolProbeService:
                         if (
                             reading.received_timestamp >= requested_at
                             and key not in seen
+                            and all(self._distinct_at_frames(r, reading) for r in observed)
                             and any(v is not None for v in reading.temperatures_c)
                         ):
                             seen.add(key)
@@ -140,6 +147,15 @@ class ProtocolProbeService:
             pass
         return observed
 
+    @staticmethod
+    def _distinct_at_frames(first, second):
+        def digest(reading):
+            return hashlib.sha256(bytes(reading.raw_payload.get("raw_bytes", []))).digest()
+
+        return (first.device_timestamp is not None and second.device_timestamp is not None
+                and first.device_timestamp != second.device_timestamp
+                and digest(first) != digest(second))
+
     async def _run(self, device: Device, mode: ProbeMode) -> dict[str, Any]:
         await self._retry_pending_closes(device.id)
         if device.protocol == "at4532_serial":
@@ -150,6 +166,9 @@ class ProtocolProbeService:
                 allow_identity_fallback=policy.allowed and mode in {"read", "full"},
                 association_source=policy.association_source,
             )
+            adapter.diagnostic_context = lambda: {
+                "device_id": device.id, "operation": f"probe_{mode}"
+            }
         elif device.protocol == "gpm8213_serial":
             adapter = Gpm8213UsbSerialAdapter(device.port, device.baud_rate)
         else:
@@ -202,13 +221,14 @@ class ProtocolProbeService:
                     "reading", "Leitura", True, "Resposta de medição interpretada."
                 )
             if mode == "full":
-                await asyncio.sleep(adapter.expected_interval_seconds)
+                if device.protocol != "at4532_serial":
+                    await asyncio.sleep(adapter.expected_interval_seconds)
                 second = await adapter.read_once()
                 if device.protocol == "at4532_serial":
                     from app.adapters.base import DeviceReading
 
                     first = DeviceReading.model_validate(readings[0])
-                    if reading_identity(first) == reading_identity(second):
+                    if not self._distinct_at_frames(first, second):
                         raise SerialTransportError("duplicate_frame", "Segunda medição repetida.")
                 readings.append(second.model_dump(mode="json"))
                 stages[6] = self._stage(
@@ -247,7 +267,7 @@ class ProtocolProbeService:
                 )
                 stages[2] = self._stage("port", "Porta", True, "Porta aberta.")
                 configured = any(
-                    transaction["command_name"] == "configure_celsius"
+                    transaction["command_name"] == "temperatures"
                     and not transaction.get("error")
                     for transaction in adapter.transactions
                 )
@@ -263,9 +283,9 @@ class ProtocolProbeService:
                     "protocol",
                     "Protocolo",
                     bool(fetch and fetch.get("bytes_received")),
-                    "FETCH? respondeu; parser/critério de leitura falhou."
+                    "SYST:UNIT CEL respondeu; parser/critério de leitura falhou."
                     if fetch and fetch.get("bytes_received")
-                    else "FETCH? não produziu uma resposta classificável.",
+                    else "SYST:UNIT CEL não produziu uma resposta classificável.",
                     status="passed" if fetch and fetch.get("bytes_received") else "failed",
                 )
                 stages[4] = self._stage(
@@ -392,6 +412,9 @@ class ProtocolProbeService:
                 "unknown_tokens": raw.get("unknown_tokens", []),
             }
         self.latest_results[device.id] = report
+        from app.core.physical_trace import journal
+
+        journal.snapshot(kind="probe", device_id=device.id, report=report)
         return report
 
     async def shutdown(self) -> None:

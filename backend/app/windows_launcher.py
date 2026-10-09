@@ -78,7 +78,11 @@ def _configure_environment(runtime: Path, application: Path) -> None:
     for path in (data, logs, reports):
         path.mkdir(parents=True, exist_ok=True)
     os.environ["THERMOPOWER_APP_DATA_DIR"] = str(application.resolve())
-    os.environ.setdefault("THERMOPOWER_ENVIRONMENT", "client-preview")
+    from app.core.version import APPLICATION_VERSION
+
+    os.environ.setdefault("THERMOPOWER_ENVIRONMENT",
+                          "engineering" if "engineering-AT4532" in APPLICATION_VERSION
+                          else "client-preview")
     database_url = f"sqlite:///{(data / 'thermopower.db').as_posix()}"
     os.environ.setdefault("THERMOPOWER_DATABASE_URL", database_url)
     os.environ.setdefault("THERMOPOWER_REPORT_OUTPUT_DIRECTORY", str(reports))
@@ -138,13 +142,10 @@ def _apply_migrations(runtime: Path) -> None:
 
 
 def main() -> None:
-    if "--characterize-at4532" in sys.argv:
-        from app.engineering.at4532_characterization import main as characterize
-
-        characterize(sys.argv[sys.argv.index("--characterize-at4532") + 1:])
-        return
     mutex_name = os.environ.get("THERMOPOWER_MUTEX_NAME", "ThermoPowerMonitorRunning")
     if not _acquire_single_instance(mutex_name):
+        if "--characterize-at4532-repeated-celsius" in sys.argv:
+            raise RuntimeError("Feche o ThermoPower antes da caracterização Celsius.")
         import ctypes
 
         ctypes.windll.user32.MessageBoxW(
@@ -156,6 +157,16 @@ def main() -> None:
         return
     runtime = _runtime_root()
     application = _application_directory()
+    if "--characterize-at4532-repeated-celsius" in sys.argv:
+        # Same executable/modules and mutex as the product; never opens a second runtime.
+        from app.engineering.at4532_repeated_celsius import entrypoint
+
+        os.environ["THERMOPOWER_APP_DATA_DIR"] = str(application.resolve())
+        try:
+            entrypoint(sys.argv[sys.argv.index("--characterize-at4532-repeated-celsius") + 1:])
+        finally:
+            _release_single_instance()
+        return
     _configure_environment(runtime, application)
     _apply_migrations(runtime)
     # Alembic's logging configuration may replace root handlers while applying migrations.

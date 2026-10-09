@@ -16,7 +16,7 @@ async def connected_adapter(monkeypatch, delay=1.031):
 
     def respond(payload):
         nonlocal count
-        if payload == b"FETCH?\n":
+        if payload == b"SYST:UNIT CEL\n":
             count += 1
             serial.schedule(delay, frame_for(count))
 
@@ -33,7 +33,7 @@ async def test_1031_ms_response_has_full_physical_rx_guard(monkeypatch):
     first_rx = transport.last_physical_rx_monotonic
     try:
         await adapter.read_once()
-        tx = [t for t, p in serial.writes if p == b"FETCH?\n"][-1]
+        tx = [t for t, p in serial.writes if p == b"SYST:UNIT CEL\n"][-1]
         assert tx - first_rx >= 1.0
         assert adapter.transactions[-1]["transaction_boundary"]["post_rx_guard_s"] == 1.0
     finally:
@@ -49,7 +49,7 @@ async def test_resync_during_guard_reanchors_tx(monkeypatch):
     expected_rx = clock.now + 1.2
     try:
         reading = await adapter.read_once()
-        tx = [t for t, p in serial.writes if p == b"FETCH?\n"][-1]
+        tx = [t for t, p in serial.writes if p == b"SYST:UNIT CEL\n"][-1]
         assert tx >= expected_rx + 1.0
         assert reading.raw_payload["raw_hex"] == frame_for(2).hex(" ").upper()
         assert adapter.duplicate_frames == 1
@@ -66,7 +66,7 @@ async def test_timeout_recovers_once_without_new_fetch_or_identity(monkeypatch, 
             serial.schedule(2.1, frame_for(2)[:split]),
             serial.schedule(2.3, frame_for(2)[split:]),
         )
-        if payload == b"FETCH?\n"
+        if payload == b"SYST:UNIT CEL\n"
         else None
     )
     try:
@@ -79,7 +79,7 @@ async def test_timeout_recovers_once_without_new_fetch_or_identity(monkeypatch, 
         assert reading.received_timestamp == datetime.fromisoformat(
             transport.last_query_boundary["timestamp_rx"]
         )
-        assert len([p for _, p in serial.writes if p == b"FETCH?\n"]) == 2
+        assert len([p for _, p in serial.writes if p == b"SYST:UNIT CEL\n"]) == 2
         assert len([p for _, p in serial.writes if p == b"*IDN?\n"]) == 1
         assert adapter.fetch_diagnostics.reconnect_count == 0
         assert adapter.fetch_diagnostics.fetch_timeouts == 1
@@ -125,7 +125,7 @@ async def test_probe_logical_recovery_and_identity_semantics(monkeypatch, mode):
 
     def respond(payload):
         nonlocal count
-        if payload == b"FETCH?\n":
+        if payload == b"SYST:UNIT CEL\n":
             count += 1
             serial.schedule(2.1, frame_for(count)[:6])
             serial.schedule(2.3, frame_for(count)[6:])
@@ -169,7 +169,8 @@ async def test_initial_port_backlog_is_not_a_fresh_measurement(monkeypatch):
     serial.schedule(0, frame_for(1)[:6])
     serial.schedule(0.1, frame_for(1)[6:])
     serial.on_write = (
-        lambda payload: serial.schedule(0.1, frame_for(2)) if payload == b"FETCH?\n" else None
+        lambda payload: serial.schedule(0.1, frame_for(2))
+        if payload == b"SYST:UNIT CEL\n" else None
     )
     adapter = At4532SerialAdapter("COM_BOUNDARY", 19200, transport, allow_identity_fallback=True)
     try:
@@ -198,7 +199,7 @@ async def test_dedup_survives_reopen_and_same_timestamp_new_content_is_distinct(
 
     def respond(payload):
         nonlocal fetches
-        if payload == b"FETCH?\n":
+        if payload == b"SYST:UNIT CEL\n":
             fetches += 1
             serial.schedule(0.1, frame_for(1) if fetches == 1 else changed)
 

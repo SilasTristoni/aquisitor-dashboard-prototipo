@@ -37,6 +37,8 @@ GPM8213_MANUAL_URL = "https://www.gwinstek.com/en-US/download/downloadFile/11551
 AT4532_PHYSICAL_FRAME_BYTES = 694
 AT4532_SERIAL_BITS_PER_BYTE = 10
 AT4532_CONTINUOUS_READ_GUARD_SECONDS = 1.0
+AT4532_TRIGGER_INTERVAL = 5.0
+AT4532_FRAME_TIMEOUT = 4.0
 
 
 class ProtocolDocumentationRequired(RuntimeError):
@@ -100,12 +102,12 @@ class At4532Protocol:
     )
     temperatures = DocumentedCommand(
         name="temperatures",
-        request=b"FETCH?\n",
+        request=b"SYST:UNIT CEL\n",
         response_terminator=b"\n",
         source=AT4532_MANUAL_URL,
-        section="9.1 e 9.5.3.1",
+        section="9.5.2.3; repeated-celsius physical evidence 2026-10-06",
         expected_response_type="temperature_measurement",
-        purpose="Consultar os valores dos canais de temperatura.",
+        purpose="Configurar Celsius e receber TCP-32; trigger validado na bancada Britânia.",
     )
     celsius = DocumentedCommand(
         name="configure_celsius",
@@ -1178,7 +1180,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
     equipment = "Applent AT4532"
     manufacturer = "Applent Instruments"
     model = "AT4532"
-    expected_interval_seconds = 1.0
+    expected_interval_seconds = AT4532_TRIGGER_INTERVAL
     continuous_read_guard_seconds = AT4532_CONTINUOUS_READ_GUARD_SECONDS
     polling_managed_by_read_once = True
     protocol = At4532Protocol()
@@ -1194,8 +1196,17 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         allow_identity_fallback: bool = False,
         association_source: str | None = None,
         post_rx_guard_seconds: float = AT4532_CONTINUOUS_READ_GUARD_SECONDS,
+        trigger_interval_seconds: float | None = None,
     ) -> None:
         super().__init__(port, baud_rate, transport)
+        from app.core.config import get_settings
+
+        interval = (get_settings().at4532_trigger_interval_seconds
+                    if trigger_interval_seconds is None else trigger_interval_seconds)
+        if not math.isfinite(interval) or interval < AT4532_TRIGGER_INTERVAL:
+            raise ValueError("Intervalo Celsius deve ser de pelo menos 5 s até nova bancada.")
+        self.expected_interval_seconds = interval
+        self.engine_state = "READY"
         self.allow_identity_fallback = allow_identity_fallback
         self.association_source = association_source
         if not math.isfinite(post_rx_guard_seconds) or post_rx_guard_seconds < 1.0:
@@ -1210,11 +1221,66 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         self._last_fetch_completed_monotonic: float | None = None
         from app.adapters.acquisition_diagnostics import FetchDiagnostics
 
-        self.fetch_diagnostics = FetchDiagnostics()
+        self.fetch_diagnostics = FetchDiagnostics(trigger_interval_seconds=interval)
+        from app.core.physical_trace import AtTrace
+
+        self.diagnostic_context = lambda: {}
+        self.trace = AtTrace(port, baud_rate, self._trace_context)
+        self._sample_evidence: OrderedDict[tuple[str, str], dict] = OrderedDict()
         self._stop_requested = False
         self.connection_state = "disconnected"
         self._fetch_lock = Lock()
         self._reconnecting = False
+
+    def _set_engine_state(self, state):
+        previous = self.engine_state
+        self.engine_state = state
+        if previous != state:
+            self.trace.emit("AT_STATE", previous_state=previous, current_state=state)
+
+    def _trace_context(self):
+        metrics = self.fetch_diagnostics
+        return {"current_state": getattr(self, "_connection_state", None),
+                "engine_state": self.engine_state,
+                "trigger_interval_seconds": self.expected_interval_seconds,
+                "frame_timeout_seconds": AT4532_FRAME_TIMEOUT,
+                "trigger_attempt": metrics.fetch_attempts,
+                "fetch_attempt": metrics.fetch_attempts, "timeout_count": metrics.fetch_timeouts,
+                "reconnect_count": metrics.reconnect_count,
+                "queue_size": len(getattr(self.transport, "recovered_frames", [])),
+                **self.diagnostic_context()}
+
+    @property
+    def connection_state(self):
+        return self._connection_state
+
+    @connection_state.setter
+    def connection_state(self, value):
+        previous = getattr(self, "_connection_state", None)
+        self._connection_state = value
+        if previous != value:
+            self.trace.emit("AT_STATE", previous_state=previous, current_state=value)
+
+    def _trace_payload(self, event, payload, **fields):
+        from app.core.physical_trace import frame_fields
+
+        self.trace.emit(event, **frame_fields(payload), **fields)
+
+    def record_published(self, reading, session_id):
+        digest = hashlib.sha256(bytes(reading.raw_payload.get("raw_bytes", []))).hexdigest()
+        evidence = self._sample_evidence.get((digest, reading.received_timestamp.isoformat()), {})
+        self.trace.emit("AT_SAMPLE_PUBLISHED", session_id=session_id,
+                        received_timestamp=reading.received_timestamp.isoformat(),
+                        device_timestamp_original=reading.raw_payload.get("device_timestamp_raw"),
+                        frame_sha256=digest,
+                        first_byte_monotonic=evidence.get("first_byte_monotonic"),
+                        last_byte_monotonic=evidence.get("last_byte_monotonic"),
+                        first_byte_utc=evidence.get("first_byte_utc"),
+                        last_byte_utc=evidence.get("last_byte_utc"),
+                        command=evidence.get("command"), tx_sent=evidence.get("tx_sent"),
+                        frame_length=len(reading.raw_payload.get("raw_bytes", [])),
+                        response_source=reading.raw_payload.get("response_source"),
+                        temperatures_c=reading.temperatures_c, dedupe_result="accepted")
 
     def _configuration(self) -> SerialTransportConfiguration:
         if self.baud_rate != 19200:
@@ -1226,7 +1292,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             parity="N",
             stop_bits=1,
             timeout_s=1,
-            read_timeout_s=2,
+            read_timeout_s=AT4532_FRAME_TIMEOUT,
             line_terminator="LF (0x0A)",
             framing="SCPI ASCII TX; ASCII simple or TCP-32 CP936 RX",
         )
@@ -1277,12 +1343,16 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         key = self._frame_key(parsed, payload)
         if parsed.frame_type == "TCP-32" and key in self._consumed_frames:
             self.duplicate_frames += 1
+            self._trace_payload("AT_FRAME_DUPLICATE", payload, dedupe_result="duplicate",
+                                device_timestamp_original=parsed.device_timestamp_raw)
             raise SerialTransportError("duplicate_frame", "Frame AT4532 já consumido.")
         if (
             parsed.device_timestamp is not None
             and self._latest_device_timestamp is not None
             and parsed.device_timestamp < self._latest_device_timestamp
         ):
+            self._trace_payload("AT_FRAME_REJECTED", payload, dedupe_result="stale",
+                                device_timestamp_original=parsed.device_timestamp_raw)
             raise SerialTransportError("stale_frame", "Frame AT4532 anterior à última medição.")
         reading = self.normalizer.normalize(parsed, payload)
         boundary = getattr(self.transport, "last_query_boundary", {})
@@ -1297,6 +1367,18 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             self._latest_device_timestamp = parsed.device_timestamp
         if parsed.frame_type == "TCP-32":
             self._measurement_validated = True
+        self._sample_evidence[(key[1], reading.received_timestamp.isoformat())] = {
+            "first_byte_monotonic": self.trace.first_rx,
+            "last_byte_monotonic": self.trace.last_rx,
+            "first_byte_utc": self.trace.first_rx_utc, "last_byte_utc": self.trace.last_rx_utc,
+            "command": self.trace.command, "tx_sent": self.trace.tx_sent,
+        }
+        if len(self._sample_evidence) > 4096:
+            self._sample_evidence.popitem(last=False)
+        self._trace_payload("AT_FRAME_ACCEPTED", payload, dedupe_result="accepted",
+                            device_timestamp_original=parsed.device_timestamp_raw,
+                            received_timestamp=reading.received_timestamp.isoformat(),
+                            temperatures_c=reading.temperatures_c)
         return reading
 
     @staticmethod
@@ -1312,9 +1394,12 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                 ),
             )
         except ProtocolResponseError:
+            self._trace_payload("AT_FRAME_REJECTED", payload, reason="recovered_parser_rejected")
             return False
         if self._frame_key(parsed, payload) in self._consumed_frames:
             self.duplicate_frames += 1
+            self._trace_payload("AT_FRAME_DUPLICATE", payload, dedupe_result="duplicate",
+                                device_timestamp_original=parsed.device_timestamp_raw)
             return False
         return (
             self._latest_device_timestamp is None
@@ -1324,7 +1409,17 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
 
     async def _transaction(self, command: DocumentedCommand, *, expect_response: bool) -> bytes:
         previous_tx = self._last_command_tx_monotonic.get(command.name)
-        response = await super()._transaction(command, expect_response=expect_response)
+        try:
+            response = await super()._transaction(command, expect_response=expect_response)
+        except (SerialTransportError, ProtocolResponseError) as exc:
+            boundary = getattr(self.transport, "last_query_boundary", {})
+            payload = bytes(boundary.get("received_bytes", []))
+            self._trace_payload(
+                                "AT_TIMEOUT" if exc.code == "protocol_timeout"
+                                else "AT_FRAME_REJECTED", payload, reason=exc.code,
+                                command=command.request.decode("ascii").strip(),
+                                tx_sent=boundary.get("tx_sent", False))
+            raise
         boundary = getattr(self.transport, "last_query_boundary", {})
         if expect_response:
             self.transactions[-1]["tx_sent"] = boundary.get("tx_sent", True)
@@ -1343,7 +1438,6 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         self._primed_reading = None
         self._last_fetch_started_monotonic = None
         self._last_fetch_completed_monotonic = None
-        await self._transaction(self.protocol.celsius, expect_response=False)
 
         if self.identity_status == "unconfirmed":
             reading = await self._query_reading()
@@ -1351,7 +1445,8 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             valid = reading.raw_payload["valid_channels"]
             if received != 32 or valid < 1:
                 raise ProtocolResponseError(
-                    "Fallback de identidade exige FETCH? válido com 32 canais e ao menos "
+                    "Fallback de identidade exige TCP-32 após Celsius válido "
+                    "com 32 canais e ao menos "
                     "uma temperatura numérica."
                 )
             self.protocol_status = "verified_by_measurement"
@@ -1371,7 +1466,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                     raise
                 if self.fetch_diagnostics.last_failure:
                     self.fetch_diagnostics.last_failure["recovery_reason"] = (
-                        "isolated_fetch_timeout" if exc.code == "protocol_timeout"
+                        "isolated_trigger_timeout" if exc.code == "protocol_timeout"
                         else "logical_frame_recovery"
                     )
                 if self.fetch_diagnostics.recovery_started is None:
@@ -1379,16 +1474,16 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                         self.fetch_diagnostics.last_rx
                         if self.fetch_diagnostics.last_rx is not None else self._connected_at
                     )
+                self.trace.emit("AT_RECOVERY", reason=exc.code, recovery_kind="logical_retry")
                 await self._wait_until_next_fetch_window()
         raise AssertionError("Unreachable logical retry")
 
     async def _query_reading_attempt(self) -> DeviceReading:
         metrics = self.fetch_diagnostics
         started = monotonic()
+        if not isinstance(self.transport, At4532SerialTransport):
+            self._set_engine_state("WAITING_FRAME")
         metrics.fetch_attempts += 1
-        if metrics.first_tx is None:
-            metrics.first_tx = started
-        metrics.last_tx = started
         try:
             reading = await self._query_and_normalize()
         except (SerialTransportError, ProtocolResponseError) as exc:
@@ -1401,9 +1496,10 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             if exc.code == "protocol_timeout":
                 metrics.fetch_timeouts += 1
                 metrics.consecutive_fetch_timeouts += 1
+                self.trace.emit("AT_TIMEOUT", stage="trigger_attempt", reason=exc.code)
             transaction = self.transactions[-1] if self.transactions else {}
             metrics.last_failure = {
-                "command": "FETCH?",
+                "command": "SYST:UNIT CEL",
                 "tx": transaction.get("tx_hex"),
                 "rx": transaction.get("rx_hex"),
                 "timestamp_tx": transaction.get("timestamp_tx"),
@@ -1415,8 +1511,9 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                 "attempt": metrics.fetch_attempts,
             }
             logger.warning(
-                "AT4532 FETCH failure port=%s details=%s", self.port, metrics.last_failure
+                "AT4532 Celsius failure port=%s details=%s", self.port, metrics.last_failure
             )
+            self.connection_state = "degraded"
             raise
         else:
             boundary = getattr(self.transport, "last_query_boundary", {})
@@ -1446,13 +1543,24 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             metrics.input_boundary_metrics = dict(
                 getattr(self.transport, "synchronization_metrics", {})
             )
-            # A failed FETCH still consumed a serial window. Never retry in a tight loop.
-            self._last_fetch_started_monotonic = started
+            self._set_engine_state("READY")
+            # Failed cycles retain their TX anchor; wait before attempting another trigger.
+            boundary = getattr(self.transport, "last_query_boundary", {})
+            self._last_fetch_started_monotonic = boundary.get("tx_monotonic", started)
             self._last_fetch_completed_monotonic = monotonic()
-            metrics.query_duration_ms += (monotonic() - started) * 1000
+            if boundary.get("tx_sent", True):
+                metrics.last_tx = boundary.get("tx_monotonic", started)
+                if metrics.first_tx is None:
+                    metrics.first_tx = metrics.last_tx
+            metrics.query_duration_ms += boundary.get(
+                "query_duration_ms", (monotonic() - started) * 1000
+            )
 
     async def _query_and_normalize(self) -> DeviceReading:
         payload = await self._transaction(self.protocol.temperatures, expect_response=True)
+        if not payload.startswith(b"TCP-32,"):
+            self._trace_payload("AT_FRAME_REJECTED", payload, reason="tcp32_required")
+            raise ProtocolResponseError("O perfil Celsius exige frame TCP-32 completo.")
         reading = self._normalize_payload(payload)
         self._last_fetch_started_monotonic = self._last_command_tx_monotonic.get(
             self.protocol.temperatures.name
@@ -1499,7 +1607,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         }
         transaction = self.transactions[-1]
         logger.info(
-            "AT4532 FETCH diagnostic sample=%s tx=%s rx=%s interval_tx_ms=%s "
+            "AT4532 Celsius diagnostic sample=%s tx=%s rx=%s interval_tx_ms=%s "
             "interval_rx_ms=%s duration_ms=%s bytes=%s buffer_pending=%s "
             "buffer_drained=%s frame=%s encoding=%s parsed_channels=%s timeout=%s",
             transaction.get("sample_sequence"),
@@ -1521,7 +1629,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
     async def _wait_until_next_fetch_window(self) -> None:
         if isinstance(self.transport, At4532SerialTransport):
             # The real AT transport owns the atomic RX/guard/TX boundary. It may
-            # deliver a queued reading immediately without waiting or sending FETCH.
+            # deliver a queued reading immediately without waiting or sending Celsius.
             return
         if (
             self._last_fetch_started_monotonic is None
@@ -1560,7 +1668,10 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
         self.connection_state = "recovering" if self._reconnecting else "connecting"
         self.transport = self.transport or self._transport(self._configuration())
         if isinstance(self.transport, At4532SerialTransport):
+            self.transport.trace = self.trace
             self.transport.post_rx_guard_s = self.continuous_read_guard_seconds
+            self.transport.trigger_interval_s = self.expected_interval_seconds
+            self.transport.on_trigger_write = lambda: self._set_engine_state("WAITING_FRAME")
             self.transport.accept_recovered_frame = self._accept_recovered_frame
         try:
             if self._reconnecting and self._measurement_validated:
@@ -1616,6 +1727,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                 if self._stop_requested:
                     return
                 metrics.reconnect_count += 1
+                self.trace.emit("AT_RECONNECT", outcome="attempt")
                 try:
                     await self._close_for_recovery()
                     await self.connect()
@@ -1623,10 +1735,12 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                     if self._primed_reading is None:
                         self._primed_reading = await self._read_once()
                     self._reading = not self._stop_requested
+                    self.trace.emit("AT_RECONNECT", outcome="measurement_recovered")
                     return
                 except (SerialTransportError, ProtocolResponseError) as exc:
                     metrics.reconnect_failures += 1
                     metrics.consecutive_reconnect_failures += 1
+                    self.trace.emit("AT_RECONNECT", outcome="failed", reason=exc.code)
                     self.connection_state = "recovering"
                     logger.warning(
                         "AT4532 automatic recovery failed port=%s attempt=%s error=%s",
@@ -1657,7 +1771,7 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                         metrics.recovery_started = last_valid
                     gap = monotonic() - last_valid
                     metrics.maximum_gap_ms = max(metrics.maximum_gap_ms, gap * 1000)
-                    soft, hard = self.watchdog_windows()
+                    _, hard = self.watchdog_windows()
                     port_open = bool(self.transport and self.transport.is_open)
                     physical_loss = not port_open or (
                         isinstance(exc, SerialTransportError)
@@ -1677,14 +1791,18 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
                             if physical_loss
                             else "watchdog_expired"
                             if exhausted
-                            else "isolated_fetch_timeout"
+                            else "isolated_trigger_timeout"
                             if exc.code == "protocol_timeout"
                             else "invalid_frame"
                         )
                     )
                     if metrics.last_failure:
                         metrics.last_failure["recovery_reason"] = reason
-                    self.connection_state = "recovering" if gap >= soft else "degraded"
+                    self.trace.emit("AT_RECOVERY", reason=reason, recovery_kind="watchdog",
+                                    physical_loss=physical_loss, exhausted=exhausted)
+                    self.connection_state = (
+                        "recovering" if physical_loss or exhausted else "degraded"
+                    )
                     if physical_loss or exhausted:
                         await self._recover_connection()
                     continue
@@ -1720,7 +1838,11 @@ class At4532SerialAdapter(_DocumentedProtocolAdapter):
             {
                 "identity_fallback_allowed": self.allow_identity_fallback,
                 "association_source": self.association_source,
-                "polling_anchor": "latest_physical_rx_with_post_rx_guard",
+                "polling_anchor": "actual_celsius_tx_with_frame_boundary_and_post_rx_guard",
+                "trigger_command": "SYST:UNIT CEL",
+                "trigger_interval_seconds": self.expected_interval_seconds,
+                "frame_timeout_seconds": AT4532_FRAME_TIMEOUT,
+                "engine_state": self.engine_state,
                 "continuous_read_guard_seconds": self.continuous_read_guard_seconds,
                 "physical_frame_bytes": AT4532_PHYSICAL_FRAME_BYTES,
             }

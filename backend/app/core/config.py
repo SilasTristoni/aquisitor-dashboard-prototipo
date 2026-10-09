@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     demo_admin_email: str = "admin@demo.thermopower.com"
     demo_admin_password: str = ""
     initial_admin_name: str = "Administrador local"
+    at4532_trigger_interval_seconds: float = Field(default=5.0, ge=5.0, allow_inf_nan=False)
     measurement_batch_size: int = 25
     websocket_queue_size: int = 100
     login_attempts_per_minute: int = 8

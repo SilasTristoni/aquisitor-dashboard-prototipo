@@ -36,6 +36,9 @@ def build_metadata() -> dict:
         "build": data.get("commit", "development"),
         "commit": data.get("commit"),
         "build_date": data.get("build_date"),
+        "source_dirty": data.get("source_dirty"),
+        "source_manifest_sha256": data.get("source_manifest_sha256"),
+        "production_baseline_sha256": data.get("production_baseline_sha256"),
         "environment": os.environ.get("THERMOPOWER_ENVIRONMENT", "development"),
     }
 

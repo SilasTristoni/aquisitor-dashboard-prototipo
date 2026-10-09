@@ -37,12 +37,15 @@ def main():
         client.headers["Authorization"] = f"Bearer {login.json()['access_token']}"
         for mode in ("electrical", "thermal", "combined"):
             payload = seed_source_session(mode)
-            for kind in ("executive.pdf", "executive.png", "pdf", "xlsx"):
+            for kind in ("executive.pdf", "executive.png", "pdf", "xlsx", "csv", "chart.png"):
                 response = client.post(f"/api/v1/reports/period/{kind}", json=payload)
                 if response.status_code != 200:
                     raise RuntimeError(f"Packaged export failed: {mode}/{kind}: {response.text}")
                 signature = b"%PDF" if kind.endswith("pdf") else b"\x89PNG" if kind.endswith("png") else b"PK"
-                assert response.content.startswith(signature), (mode, kind)
+                if kind == "csv":
+                    assert b"timestamp" in response.content.splitlines()[0], (mode, kind)
+                else:
+                    assert response.content.startswith(signature), (mode, kind)
                 (data / f"{mode}-{kind}").write_bytes(response.content)
                 results.append({"mode": mode, "format": kind, "bytes": len(response.content)})
         guide = client.get("/api/v1/help/user-guide")
@@ -55,7 +58,23 @@ def main():
             for name in archive.namelist():
                 assert password.encode() not in archive.read(name)
         (data / "export-smoke.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
-    print("Packaged exports: 12 passed; user manual and support ZIP: passed")
+        if "engineering-AT4532" in client.get("/health").json()["version"]:
+            diagnostic = client.get("/api/v1/support/physical-package")
+            diagnostic.raise_for_status()
+            with zipfile.ZipFile(io.BytesIO(diagnostic.content)) as archive:
+                required = {
+                    "serial-events.jsonl", "acquisition-state.json", "devices.json",
+                    "transactions.json", "input-boundary-metrics.json", "runtime-state.json",
+                    "build-info.json", "version.txt", "commit.txt", "session-summary.json",
+                    "last-errors.json", "counters-AT-GPM.json", "evidence-status.json",
+                }
+                assert required <= set(archive.namelist())
+                for name in archive.namelist():
+                    assert password.encode() not in archive.read(name)
+                assert json.loads(archive.read("evidence-status.json"))["flush_completed"]
+            (data / "physical-diagnostic.zip").write_bytes(diagnostic.content)
+            print("Packaged physical diagnostic: passed; no serial operation requested")
+    print("Packaged exports: 18 passed; user manual and support ZIP: passed")
 
 
 if __name__ == "__main__":

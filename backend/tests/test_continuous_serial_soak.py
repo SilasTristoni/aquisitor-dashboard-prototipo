@@ -44,7 +44,8 @@ class ScriptedTransport(CadenceSensitiveAt4532Transport):
         return await super().open()
 
     async def query(self, payload, terminator, max_bytes=65536):
-        if payload == b"FETCH?\n" and self.fetch_count == 100 and not self.fired and self.fault:
+        if (payload == b"SYST:UNIT CEL\n" and self.fetch_count == 100
+                and not self.fired and self.fault):
             self.fired = True
             tx = self.clock.monotonic()
             self.clock.advance(2 if self.fault == "timeout" else 0.375)
@@ -107,7 +108,7 @@ async def test_soak_a_to_e(monkeypatch, fault, count, reconnects, record_propert
             assert "communication_gap" in readings[100].raw_payload
             assert all(item["connected"] for item in transport.snapshots)
         else:
-            assert metrics["maximum_gap_ms"] == pytest.approx(1375)
+            assert metrics["maximum_gap_ms"] == pytest.approx(5000)
             assert metrics["average_query_duration_ms"] == pytest.approx(375)
     finally:
         await stream.aclose()
@@ -185,20 +186,20 @@ async def test_fragmented_tcp32_and_partial_timeout_keep_full_raw_evidence():
     await transport.open()
     try:
         complete = tcp32_physical_fixture()
-        connection.responses[b"FETCH?\n"] = complete
-        response, _ = await transport.query(b"FETCH?\n", b"\n")
+        connection.responses[b"SYST:UNIT CEL\n"] = complete
+        response, _ = await transport.query(b"SYST:UNIT CEL\n", b"\n")
         assert response == complete
         boundary = transport.last_query_boundary
         assert boundary["frame_complete"] is True
         assert boundary["bytes_received"] == len(complete)
         assert boundary["last_byte_monotonic"] >= boundary["first_byte_monotonic"]
-        connection.responses[b"FETCH?\n"] = complete[:200]
-        response, _ = await transport.query(b"FETCH?\n", b"\n")
+        connection.responses[b"SYST:UNIT CEL\n"] = complete[:200]
+        response, _ = await transport.query(b"SYST:UNIT CEL\n", b"\n")
         assert response == complete[:200]
         assert transport.last_query_boundary["frame_complete"] is False
         connection.buffer.extend(b"stale tail\r\n")
-        connection.responses[b"FETCH?\n"] = complete
-        response, _ = await transport.query(b"FETCH?\n", b"\n")
+        connection.responses[b"SYST:UNIT CEL\n"] = complete
+        response, _ = await transport.query(b"SYST:UNIT CEL\n", b"\n")
         assert response == complete
         assert transport.last_query_boundary["buffer_drained_bytes"] == 12
     finally:
@@ -357,7 +358,7 @@ async def test_all_open_channels_after_validation_are_sensor_state_not_port_loss
     original = transport.query
 
     async def all_open(command, *args):
-        if command == b"FETCH?\n":
+        if command == b"SYST:UNIT CEL\n":
             tx = clock.monotonic()
             clock.advance(0.375)
             transport.fetch_count += 1

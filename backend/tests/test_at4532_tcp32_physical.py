@@ -45,7 +45,7 @@ def test_at4532_guard_is_conservative_not_derived_from_wire_time() -> None:
 
     assert transmission_seconds == pytest.approx(0.361458, abs=0.000001)
     assert AT4532_CONTINUOUS_READ_GUARD_SECONDS == 1.0
-    assert At4532SerialAdapter.expected_interval_seconds == 1.0
+    assert At4532SerialAdapter.expected_interval_seconds == 5.0
     assert transmission_seconds + AT4532_CONTINUOUS_READ_GUARD_SECONDS > 1.0
 
 
@@ -169,7 +169,7 @@ class CadenceSensitiveAt4532Transport:
             raise SerialTransportError(
                 "protocol_timeout", "Instrumento não respondeu ao comando."
             )
-        assert payload == b"FETCH?\n"
+        assert payload == b"SYST:UNIT CEL\n"
         if (
             self.last_fetch_completed is not None
             and tx + 1e-9
@@ -621,7 +621,7 @@ async def test_tcp32_manual_com5_identity_timeout_verifies_measurement_and_diagn
     monkeypatch.setattr("app.services.protocol_probe.At4532SerialAdapter", adapter_factory)
     report = await ProtocolProbeService().run(manual_at4532_device(), "read")
 
-    assert transport.requests == [b"*IDN?\n", b"SYST:UNIT CEL\n", b"FETCH?\n"]
+    assert transport.requests == [b"*IDN?\n", b"SYST:UNIT CEL\n"]
     assert report["identity_status"] == "unconfirmed"
     assert report["protocol_status"] == "verified_by_measurement"
     assert report["result"] == "passed_with_warning"
@@ -928,15 +928,14 @@ async def test_tcp32_continuous_polling_reuses_handshake_and_tracks_ch29(
     await stream.aclose()
     await adapter.disconnect()
 
-    assert adapter.expected_interval_seconds == 1.0
+    assert adapter.expected_interval_seconds == 5.0
     assert transport.requests.count(b"*IDN?\n") == 1
-    assert transport.requests.count(b"SYST:UNIT CEL\n") == 1
-    assert transport.requests.count(b"FETCH?\n") == 3
+    assert transport.requests.count(b"SYST:UNIT CEL\n") == 3
     assert [reading.temperatures_c[28] for reading in readings] == [21.5, 25.0, 29.0]
     assert [reading.raw_payload["device_timestamp_raw"] for reading in readings] == [
         f"T:{timestamp}" for timestamp in timestamps
     ]
-    assert all(0.9 <= delay <= 1.0 for delay in sleep_calls)
+    assert all(4.9 <= delay <= 5.0 for delay in sleep_calls)
     assert len(sleep_calls) == 2
     assert adapter.identity_status == "unconfirmed"
     assert adapter.protocol_status == "verified_by_measurement"
@@ -974,8 +973,7 @@ async def test_at4532_continuous_acquisition_respects_post_rx_guard(
     assert transport.open_calls == 1
     assert transport.close_calls == 1
     assert transport.requests.count(b"*IDN?\n") == 1
-    assert transport.requests.count(b"SYST:UNIT CEL\n") == 1
-    assert transport.requests.count(b"FETCH?\n") == 100
+    assert transport.requests.count(b"SYST:UNIT CEL\n") == 100
     assert len(readings) == len(fetch_transactions) == 100
     assert [transaction["sample_sequence"] for transaction in fetch_transactions] == list(
         range(1, 101)
@@ -999,7 +997,7 @@ async def test_at4532_continuous_acquisition_respects_post_rx_guard(
         for previous, current in zip(readings, readings[1:], strict=False)
     )
     assert all(
-        1374 <= transaction["interval_since_previous_tx_ms"] <= 1376
+        4999 <= transaction["interval_since_previous_tx_ms"] <= 5001
         and transaction["interval_since_previous_rx_ms"] >= 1000
         for transaction in fetch_transactions[1:]
     )

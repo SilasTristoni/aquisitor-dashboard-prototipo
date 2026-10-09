@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import sys
@@ -19,6 +20,41 @@ from app.services.acquisition import acquisition_service
 from app.services.support import support_snapshot
 
 router = APIRouter(prefix="/api/v1")
+
+
+@router.get("/support/physical-package")
+async def download_physical_package(
+    db: Annotated[Session, Depends(get_db)],
+    _: Annotated[User, Depends(get_current_user)],
+) -> StreamingResponse:
+    from app.services.physical_diagnostic import physical_diagnostic_zip
+    from app.services.protocol_probe import protocol_probe_service
+
+    states, transactions, boundaries = [], {}, {}
+    for device in db.scalars(
+        select(Device).where(Device.protocol.in_(["at4532_serial", "gpm8213_serial"]))
+    ):
+        states.append(await acquisition_service.status(device.id))
+        runtime = acquisition_service.runtimes.get(device.id)
+        if runtime:
+            transactions[device.id] = list(getattr(runtime.adapter, "transactions", []))
+            boundaries[device.id] = getattr(
+                runtime.adapter, "input_boundary_diagnostics", lambda: {}
+            )()
+    content = await asyncio.to_thread(
+        physical_diagnostic_zip,
+        db,
+        states,
+        transactions,
+        boundaries,
+        dict(protocol_probe_service.latest_results),
+    )
+    filename = f"ThermoPower-Diagnostico-Fisico-{datetime.now(UTC):%Y%m%d-%H%M%S}.zip"
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/support/package")

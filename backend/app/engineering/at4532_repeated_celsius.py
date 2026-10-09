@@ -8,6 +8,8 @@ from collections import deque
 from pathlib import Path
 
 from app.adapters.specific import At4532Protocol
+from app.core.observability import sanitize
+from app.core.physical_trace import AtTrace, frame_fields, journal, trace_directory
 from app.engineering.at4532_characterization import Characterization, open_observation_serial
 
 
@@ -68,10 +70,66 @@ class RepeatedCelsiusCharacterization(Characterization):
 
     def run(self, port="COM5"):
         sink = self.emit_event
+        trace = AtTrace(port, 19200, lambda: {
+            "operation": "repeated_celsius", "window": self.window
+        })
+        trace.controlled_observation = True
 
         def record(event):
             self.events.append(event)
             sink(event)
+            kind = event["event"]
+            if kind == "open_completed":
+                trace.emit("AT_OPEN", outcome="opened", input_reset=False)
+            elif kind == "write":
+                started = event["started"]
+                previous = trace.previous_tx
+                trace.previous_tx = started["monotonic"]
+                trace.command = "SYST:UNIT CEL"
+                trace.tx_sent = event["size"] == len(At4532Protocol.celsius.request)
+                trace.emit(
+                    "AT_TX",
+                    monotonic_timestamp=started["monotonic"],
+                    utc_timestamp=started["utc"],
+                    raw_byte_count=event["size"],
+                    write_completed_monotonic=event["ended"]["monotonic"],
+                    interval_since_previous_tx=started["monotonic"] - previous
+                    if previous is not None
+                    else None,
+                    interval_since_previous_rx=event["since_last_rx_s"],
+                )
+            elif kind == "frame":
+                data = {
+                    **frame_fields(bytes.fromhex(event["hex"])),
+                    "response_source": "controlled_observation",
+                    "window": event["window"],
+                    "device_timestamp_original": (
+                        event.get("device_timestamp_original") if event["valid"] else None
+                    ),
+                    "received_timestamp": event["received_timestamp"],
+                    "first_byte_monotonic": event["first_byte_monotonic"],
+                    "last_byte_monotonic": event["last_byte_monotonic"],
+                    "first_byte_utc": event["first_rx"]["utc"],
+                    "last_byte_utc": event["last_rx"]["utc"],
+                    "temperatures_c": event.get("temperatures_c"),
+                    "command_to_first_byte_s": event["command_to_first_byte_s"],
+                    "command_to_frame_complete_s": event["command_to_frame_complete_s"],
+                }
+                trace.emit(
+                    "AT_FRAME_ACCEPTED" if event["valid"] else "AT_FRAME_REJECTED",
+                    dedupe_result="not_applied_observation_only",
+                    **data,
+                )
+            elif kind == "closed":
+                trace.emit("AT_CLOSE", outcome="closed")
+            elif kind == "error":
+                trace.emit(
+                    "AT_STATE", current_state="experiment_failed", reason=event.get("error_type")
+                )
+
+            if self.transport:
+                # The SAME assembler emits RX first/complete events during observation.
+                self.transport.trace = trace
 
         self.emit_event = record
         return super().run(port, passive_seconds=5)
@@ -156,8 +214,15 @@ def main(argv=None):
         description="AT4532: passive 5 s + three Celsius writes, 5 s each"
     )
     parser.add_argument("--port", default="COM5")
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
+    if args.output is None:
+        from datetime import UTC, datetime
+        from uuid import uuid4
+
+        args.output = trace_directory() / "characterizations" / (
+            datetime.now(UTC).strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:8]
+        )
     args.output.mkdir(parents=True, exist_ok=False)
     runtime = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).parents[3]
     metadata = runtime / "build-info.json"
@@ -170,7 +235,7 @@ def main(argv=None):
     with (args.output / "events.jsonl").open("x", encoding="utf-8") as output:
 
         def emit(event):
-            output.write(json.dumps(event, ensure_ascii=False) + "\n")
+            output.write(json.dumps(sanitize(event), ensure_ascii=False) + "\n")
             if event["event"] != "read":
                 output.flush()
 
@@ -184,8 +249,13 @@ def main(argv=None):
             output.flush()
             for name, data in (("frames.json", tool.frames), ("summary.json", tool.summary())):
                 (args.output / name).write_text(
-                    json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+                    json.dumps(sanitize(data), ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+            (args.output / "SHA256SUMS.txt").write_text("\n".join(
+                f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}"
+                for p in sorted(args.output.iterdir()) if p.is_file() and p.name != "SHA256SUMS.txt"
+            ) + "\n", encoding="utf-8")
+            journal.flush()
     # Hash after closing events.jsonl so its persisted bytes are final on Windows.
     return 0
 
@@ -203,7 +273,7 @@ def entrypoint(argv=None):
             hashes = [
                 f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}"
                 for p in sorted(args.output.iterdir())
-                if p.is_file()
+                if p.is_file() and p.name != "SHA256SUMS.txt"
             ]
             (args.output / "SHA256SUMS.txt").write_text("\n".join(hashes) + "\n", encoding="utf-8")
 

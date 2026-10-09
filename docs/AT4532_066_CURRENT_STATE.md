@@ -1,6 +1,14 @@
+# Estado atual AT4532 — 06/10/2026
+
+A evidência nova substitui as hipóteses abaixo: três Celsius produziram três TCP-32 distintos. O runtime 0.7.0 passa a usar Celsius a cada 5 s, com janela de recepção de 4 s, sem FETCH. Consulte [a decisão e os limites da candidata](AT4532_CELSIUS_TRIGGER_070.md). Não restaurar FETCH sem nova evidência física. Estabilidade contínua ainda pendente de bancada.
+
+---
+
+## Histórico anterior à evidência de 06/10/2026
+
 # AT4532 — estado físico atual da 0.6.6
 
-> Documento curto de continuidade. Use este arquivo como primeira referência em novas investigações do AT4532. Histórico detalhado da correção anterior: `docs/AT4532_FRAMING_066.md`.
+> Documento curto de continuidade. Registro histórico; a decisão vigente está no link acima. Histórico detalhado da correção anterior: `docs/AT4532_FRAMING_066.md`.
 
 ## Estado da candidata
 

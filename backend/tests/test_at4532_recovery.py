@@ -30,7 +30,7 @@ class RecoverableTransport(CadenceSensitiveAt4532Transport):
     async def query(self, payload, terminator, max_bytes=65536):
         count = self.failures_by_connection.get(self.open_calls, 0)
         if (
-            payload == b"FETCH?\n"
+            payload == b"SYST:UNIT CEL\n"
             and self.successes_by_connection.get(self.open_calls, 0)
             and count < self.failures
         ):
@@ -43,7 +43,7 @@ class RecoverableTransport(CadenceSensitiveAt4532Transport):
                 self.is_open = False
             raise SerialTransportError("protocol_timeout", "Synthetic transient FETCH timeout")
         result = await super().query(payload, terminator, max_bytes)
-        if payload == b"FETCH?\n":
+        if payload == b"SYST:UNIT CEL\n":
             self.successes_by_connection[self.open_calls] = (
                 self.successes_by_connection.get(self.open_calls, 0) + 1
             )
@@ -69,14 +69,14 @@ async def test_isolated_fetch_timeout_does_not_restart_identity_cycle(monkeypatc
     intervals = [b - a for a, b in zip(times, times[1:], strict=False)]
     assert transport.open_calls == 1, f"Reconnect loop; successful RX intervals: {intervals}"
     assert len({r.raw_payload["device_timestamp_raw"] for r in readings}) == 6
-    assert intervals[-3:] == pytest.approx([1.375, 1.375, 1.375])
+    assert intervals[-3:] == pytest.approx([5.0, 5.0, 5.0])
     metrics = adapter.fetch_diagnostics.snapshot()
     assert metrics["fetch_timeouts"] == 1
     assert metrics["reconnect_count"] == 0
     assert metrics["successful_fetches"] == 6
     assert metrics["consecutive_fetch_timeouts"] == 0
     assert metrics["last_failure"]["port_open"] is True
-    assert metrics["last_failure"]["recovery_reason"] == "isolated_fetch_timeout"
+    assert metrics["last_failure"]["recovery_reason"] == "isolated_trigger_timeout"
 
 
 @pytest.mark.asyncio
@@ -127,10 +127,10 @@ async def test_healthy_fetch_metrics_have_no_reconnects(monkeypatch, count):
     metrics = adapter.fetch_diagnostics.snapshot()
     assert metrics["successful_fetches"] == count
     assert metrics["fetch_timeouts"] == metrics["reconnect_count"] == 0
-    assert metrics["average_fetch_interval_ms"] == pytest.approx(1375)
-    assert metrics["average_successful_rx_interval_ms"] == pytest.approx(1375)
+    assert metrics["average_fetch_interval_ms"] == pytest.approx(5000)
+    assert metrics["average_successful_rx_interval_ms"] == pytest.approx(5000)
     assert metrics["average_query_duration_ms"] == pytest.approx(375)
-    assert metrics["maximum_gap_ms"] == pytest.approx(1375)
+    assert metrics["maximum_gap_ms"] == pytest.approx(5000)
     assert len({r.raw_payload["device_timestamp_raw"] for r in readings}) == count
 
 
@@ -207,7 +207,7 @@ async def test_reconnect_preserves_session_and_persists_only_real_unique_reading
     origin = datetime.now(UTC)
     runtime.received_times.extend(origin + timedelta(seconds=i * 6) for i in range(6))
     status = await service.status(device_id)
-    assert status["expected_interval_ms"] == 1000
+    assert status["expected_interval_ms"] == 5000
     assert status["observed_interval_ms"] == 6000
-    assert status["cadence_degraded"] is True
+    assert status["cadence_degraded"] is False
     assert status["acquisition_diagnostics"]["successful_fetches"] == 3

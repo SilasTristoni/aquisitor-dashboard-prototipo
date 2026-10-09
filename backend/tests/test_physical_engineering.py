@@ -459,23 +459,23 @@ async def test_gpm_transport_reassembles_fragmented_crlf_response():
 
 @pytest.mark.asyncio
 async def test_at4532_adapter_runs_documented_transport_protocol_parser_normalizer_chain():
-    temperatures = b",".join(f"{index}.25".encode() for index in range(1, 33)) + b"\n"
+    temperatures = _at4532_tcp32_payload([f"{index}.25" for index in range(1, 33)])
     transport = FakeVendorTransport([b"AT4532,A6,SN123,Applent\n", temperatures])
     adapter = At4532SerialAdapter("COM5", 19200, transport=transport)
     await adapter.connect()
     reading = await adapter.read_once()
     await adapter.disconnect()
-    assert transport.requests == [b"*IDN?\n", b"SYST:UNIT CEL\n", b"FETCH?\n"]
+    assert transport.requests == [b"*IDN?\n", b"SYST:UNIT CEL\n"]
     assert reading.temperatures_c[0] == 1.25
     assert reading.temperatures_c[31] == 32.25
     assert all(item["vendor_documented"] for item in adapter.transactions)
 
 
 @pytest.mark.asyncio
-async def test_at4532_adapter_keeps_unknown_channel_tokens_and_complete_tx_rx_diagnostic():
-    tokens = ["UNDOCUMENTED"] * 32
+async def test_at4532_adapter_keeps_open_channels_and_complete_tx_rx_diagnostic():
+    tokens = ["Open"] * 32
     tokens[5], tokens[8], tokens[12] = "70.1", "69.8", "70.4"
-    fetch = (",".join(tokens) + "\r\n").encode("ascii")
+    fetch = _at4532_tcp32_payload(tokens)
     transport = FakeVendorTransport([b"AT4532,A6,SN123,Applent\r\n", fetch])
     adapter = At4532SerialAdapter("COM5", 19200, transport=transport)
 
@@ -487,15 +487,30 @@ async def test_at4532_adapter_keeps_unknown_channel_tokens_and_complete_tx_rx_di
     transaction = adapter.transactions[-1]
     assert transaction["actual_response_type"] == "temperature_measurement"
     assert transaction["expected_for_command"] == "temperature_measurement"
-    assert transaction["tx_ascii"] == "FETCH?\\n"
+    assert transaction["tx_ascii"] == "SYST:UNIT CEL\\n"
     assert transaction["rx_ascii"].endswith("\\r\\n")
-    assert transaction["tx_hex"] == "46 45 54 43 48 3F 0A"
+    assert transaction["tx_hex"] == "53 59 53 54 3A 55 4E 49 54 20 43 45 4C 0A"
     assert transaction["rx_hex"] == fetch.hex(" ").upper()
     assert transaction["timestamp_tx"]
     assert transaction["timestamp_rx"]
     assert transaction["elapsed_ms"] >= 0
     assert transaction["parsed"]["valid_channels"] == 3
     assert transaction["parsed"]["unavailable_channels"] == 29
+
+
+def _at4532_tcp32_payload(tokens):
+    from pathlib import Path
+
+    fixture = Path(__file__).parent / "fixtures/at4532_tcp32_20260928.hex"
+    frame = bytes.fromhex(fixture.read_text())
+    fields = frame.decode("cp936").strip().split(",")
+    fields[1] = "T:2026/08/25 16:35:12"
+    fields[3:35] = [f"{token}|K|℃" for token in tokens]
+    return (",".join(fields) + "\r\n").encode("cp936")
+
+
+def _at4532_tcp32_export_payload(values):
+    return _at4532_tcp32_payload(["Open"] * 24 + values)
 
 
 def _manual_at4532_device(port: str = "COM5", confirmed_port: str = "COM5") -> SimpleNamespace:
@@ -529,7 +544,7 @@ def test_at4532_identity_fallback_requires_exact_manual_port_and_serial_paramete
 
 @pytest.mark.asyncio
 async def test_at4532_manual_com5_fallback_verifies_measurement_after_identity_timeout():
-    fetch = _at4532_export_shape_payload([23.2, 23.7, 23.8, 26.5, 35.6, 28.1, 24.4, 21.9])
+    fetch = _at4532_tcp32_export_payload([23.2, 23.7, 23.8, 26.5, 35.6, 28.1, 24.4, 21.9])
     transport = FakeVendorTransport(
         [SerialTransportError("protocol_timeout", "Instrumento não respondeu ao comando."), fetch]
     )
@@ -546,7 +561,7 @@ async def test_at4532_manual_com5_fallback_verifies_measurement_after_identity_t
     information = await adapter.get_device_information()
     await adapter.disconnect()
 
-    assert transport.requests == [b"*IDN?\n", b"SYST:UNIT CEL\n", b"FETCH?\n"]
+    assert transport.requests == [b"*IDN?\n", b"SYST:UNIT CEL\n"]
     assert adapter.identity_status == "unconfirmed"
     assert adapter.protocol_status == "verified_by_measurement"
     assert reading.temperatures_c[24] == 23.2
@@ -577,8 +592,10 @@ async def test_at4532_identity_timeout_does_not_fallback_without_manual_authoriz
 async def test_at4532_full_probe_reaches_fetch_and_acquisition_after_identity_timeout(
     monkeypatch,
 ):
-    first = _at4532_export_shape_payload([23.2, 23.7, 23.8, 26.5, 25.0, 28.1, 24.4, 21.9])
-    second = _at4532_export_shape_payload([23.2, 23.7, 23.8, 26.5, 27.0, 28.1, 24.4, 21.9])
+    first = _at4532_tcp32_export_payload([23.2, 23.7, 23.8, 26.5, 25.0, 28.1, 24.4, 21.9])
+    second = _at4532_tcp32_export_payload(
+        [23.2, 23.7, 23.8, 26.5, 27.0, 28.1, 24.4, 21.9]
+    ).replace(b"16:35:12", b"16:35:17")
     transport = FakeVendorTransport(
         [
             SerialTransportError("protocol_timeout", "Instrumento não respondeu ao comando."),
@@ -611,7 +628,7 @@ async def test_at4532_full_probe_reaches_fetch_and_acquisition_after_identity_ti
     assert report["identity_status"] == "unconfirmed"
     assert report["protocol_status"] == "verified_by_measurement"
     assert report["identity_fallback_policy"]["allowed"] is True
-    assert transport.requests.count(b"FETCH?\n") == 2
+    assert transport.requests.count(b"SYST:UNIT CEL\n") == 2
     assert report["readings"][0]["temperatures_c"][28] == 25.0
     assert report["readings"][1]["temperatures_c"][28] == 27.0
 
@@ -748,7 +765,7 @@ async def test_at4532_adapter_reconnects_after_documented_read_disconnect(monkey
             b"AT4532,A6,SN123,Applent\n",
             SerialTransportError("disconnected", "cable removed"),
             b"AT4532,A6,SN123,Applent\n",
-            b"21.5\n",
+            _at4532_tcp32_payload([21.5] * 32),
         ]
     )
     adapter = At4532SerialAdapter("COM5", 19200, transport=transport)
@@ -975,7 +992,7 @@ def test_launcher_rejects_second_instance_and_writes_startup_log(tmp_path, monke
     monkeypatch.delenv("THERMOPOWER_DEMO_ADMIN_EMAIL", raising=False)
     monkeypatch.delenv("THERMOPOWER_DEMO_ADMIN_PASSWORD", raising=False)
     _configure_environment(tmp_path, application)
-    assert os.environ["THERMOPOWER_ENVIRONMENT"] == "client-preview"
+    assert os.environ["THERMOPOWER_ENVIRONMENT"] == "engineering"
     first_access = (application / "PRIMEIRO-ACESSO.txt").read_text(encoding="utf-8")
     assert "E-mail: admin@thermopower.com.br" in first_access
     assert os.environ["THERMOPOWER_DEMO_ADMIN_PASSWORD"] in first_access
@@ -1143,7 +1160,7 @@ def test_client_preview_version_is_consistent_in_health_and_frontend(client):
     frontend = json.loads((repository / "frontend" / "package.json").read_text("utf-8"))
     response = client.get("/health")
 
-    assert expected == "0.6.6-client-preview"
+    assert expected == "0.7.0-engineering-AT4532-celsius-trigger"
     assert response.status_code == 200
     assert response.json()["version"] == expected
     assert frontend["version"] == expected
@@ -1256,7 +1273,7 @@ def test_complete_diagnostic_export_contains_required_sanitized_files(
     log_path = runtime / "logs" / "thermopower.log"
     log_path.parent.mkdir(parents=True)
     log_path.write_text(
-        "startup version=0.6.6-client-preview\n"
+        "startup version=0.7.0-engineering-AT4532-celsius-trigger\n"
         "COM open port=COM3\n"
         "protocol TX command=query_headers\n"
         "response classification actual=header_list\n"
@@ -1306,7 +1323,9 @@ def test_complete_diagnostic_export_contains_required_sanitized_files(
             "SHA256SUMS.txt",
         } <= names
         assert archive.read("summary.pdf").startswith(b"%PDF")
-        assert b"0.6.6-client-preview" in archive.read("application-version.txt")
+        assert b"0.7.0-engineering-AT4532-celsius-trigger" in archive.read(
+            "application-version.txt"
+        )
         recent_log = archive.read("recent-log.txt").decode("utf-8")
         assert "COM open port=COM3" in recent_log
         assert "response classification actual=header_list" in recent_log

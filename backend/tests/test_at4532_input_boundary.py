@@ -137,7 +137,7 @@ async def test_pending_frame_is_completed_before_next_tx(monkeypatch, split):
         offset += size
     serial.on_write = lambda _: serial.schedule(0.1, frame_for(1))
     try:
-        response, _ = await transport.query(b"FETCH?\n", b"\n")
+        response, _ = await transport.query(b"SYST:UNIT CEL\n", b"\n")
         assert response == frame_for(1)
         event = transport.input_boundary_diagnostics()["recent_resynchronizations"][-1]
         complete = bytes.fromhex(event["frames"][0]["raw_hex"])
@@ -165,7 +165,7 @@ async def test_incomplete_frame_blocks_tx_and_survives_next_resync(monkeypatch):
     serial.schedule(0, PHYSICAL_FRAME[:6])
     try:
         with pytest.raises(SerialTransportError) as error:
-            await transport.query(b"FETCH?\n", b"\n")
+            await transport.query(b"SYST:UNIT CEL\n", b"\n")
         assert error.value.code == "incomplete_late_frame"
         assert clock.now == pytest.approx(102)
         assert serial.writes == []
@@ -174,7 +174,7 @@ async def test_incomplete_frame_blocks_tx_and_survives_next_resync(monkeypatch):
         assert transport.synchronization_metrics["discarded_partial_bytes"] == 0
         serial.schedule(0.1, PHYSICAL_FRAME[6:])
         serial.on_write = lambda _: serial.schedule(0, frame_for(2))
-        response, _ = await transport.query(b"FETCH?\n", b"\n")
+        response, _ = await transport.query(b"SYST:UNIT CEL\n", b"\n")
         assert response == frame_for(2)
         metrics = transport.synchronization_metrics
         assert metrics["late_frames"] == metrics["completed_late_frames"] == 1
@@ -202,13 +202,13 @@ async def test_timeout_late_response_never_becomes_next_fetch(monkeypatch, parti
 
     serial.on_write = respond
     try:
-        assert (await transport.query(b"FETCH?\n", b"\n"))[0] == frame_for(1)
+        assert (await transport.query(b"SYST:UNIT CEL\n", b"\n"))[0] == frame_for(1)
         with pytest.raises(SerialTransportError) as error:
-            await transport.query(b"FETCH?\n", b"\n")
+            await transport.query(b"SYST:UNIT CEL\n", b"\n")
         assert error.value.code == ("incomplete_frame" if partial else "protocol_timeout")
         if delay == 0.1:
             clock.now += 0.15  # Prefix is already queued before the next query.
-        assert (await transport.query(b"FETCH?\n", b"\n"))[0] == frame_for(3)
+        assert (await transport.query(b"SYST:UNIT CEL\n", b"\n"))[0] == frame_for(3)
         assert bytes(serial.read_bytes) == frame_for(1) + frame_for(2) + frame_for(3)
         metrics = transport.synchronization_metrics
         assert metrics["completed_late_frames"] == 1
@@ -244,7 +244,7 @@ async def test_close_after_timeout_finishes_late_frame_without_input_reset(monke
         serial.schedule(2.3, PHYSICAL_FRAME[6:]),
     )
     with pytest.raises(SerialTransportError):
-        await transport.query(b"FETCH?\n", b"\n")
+        await transport.query(b"SYST:UNIT CEL\n", b"\n")
     await transport.close()
     assert bytes(serial.read_bytes) == PHYSICAL_FRAME
     assert transport.synchronization_metrics["completed_late_frames"] == 1
@@ -285,7 +285,7 @@ async def test_cancelled_resync_finishes_worker_before_close_without_tx(monkeypa
         return original_read(size)
 
     serial.read = read
-    task = asyncio.create_task(transport.query(b"FETCH?\n", b"\n"))
+    task = asyncio.create_task(transport.query(b"SYST:UNIT CEL\n", b"\n"))
     assert await asyncio.to_thread(entered.wait, 5)
     task.cancel()
     closing = asyncio.create_task(transport.close())
@@ -322,7 +322,7 @@ async def test_isolated_timeout_after_long_gap_does_not_reopen_port(monkeypatch)
 
     def respond(payload):
         nonlocal count
-        if payload == b"FETCH?\n":
+        if payload == b"SYST:UNIT CEL\n":
             count += 1
             if count != 2:
                 serial.schedule(0.1, frame_for(count))
@@ -353,11 +353,9 @@ async def test_probe_uses_same_real_transport_boundary(monkeypatch, mode):
     def respond(payload):
         nonlocal fetches
         if payload == b"SYST:UNIT CEL\n":
-            serial.schedule(0, PHYSICAL_FRAME[:6])
-            serial.schedule(0.2, PHYSICAL_FRAME[6:])
-        elif payload == b"FETCH?\n":
+            serial.schedule(2.1 if fetches == 0 else 0.01, frame_for(fetches)[:6])
+            serial.schedule(2.3 if fetches == 0 else 1.5, frame_for(fetches)[6:])
             fetches += 1
-            serial.schedule(0.1, frame_for(fetches))
 
     serial.on_write = respond
     monkeypatch.setattr(
@@ -375,7 +373,7 @@ async def test_probe_uses_same_real_transport_boundary(monkeypatch, mode):
     assert metrics["completed_late_frames"] == 1
     assert metrics["discarded_partial_bytes"] == 0
     assert report["readings"][0]["raw_payload"]["raw_hex"] == PHYSICAL_FRAME.hex(" ").upper()
-    assert fetches == (1 if mode == "full" else 0)
+    assert fetches == (2 if mode == "full" else 1)
     assert serial.input_resets == 0
 
 
@@ -422,7 +420,7 @@ async def test_real_transport_mixed_1000_cycle_soak(monkeypatch, caplog, record_
 
     def respond(payload):
         nonlocal fetches
-        if payload != b"FETCH?\n":
+        if payload != b"SYST:UNIT CEL\n":
             return  # Known IDN timeout, no response to configuration.
         fetches += 1
         frame = frame_for(fetches)

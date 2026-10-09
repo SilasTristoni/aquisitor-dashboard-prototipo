@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { download } from "../api";
 
-export function SupportButton({ sessionId, code, label = "Exportar diagnóstico" }: {
-  sessionId?: number; code?: string; label?: string;
+export function SupportButton({ sessionId, code, physical = false, label = "Exportar diagnóstico" }: {
+  sessionId?: number; code?: string; physical?: boolean; label?: string;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -12,7 +12,7 @@ export function SupportButton({ sessionId, code, label = "Exportar diagnóstico"
     if (sessionId) query.set("session_id", String(sessionId));
     if (code) query.set("correlation_id", code);
     try {
-      await download(`/support/package?${query}`, `ThermoPower-Diagnostico-${new Date().toISOString().replace(/[:.]/g, "-")}.zip`);
+      await download(`/support/${physical ? "physical-package" : "package"}?${query}`, `ThermoPower-Diagnostico-${new Date().toISOString().replace(/[:.]/g, "-")}.zip`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Não foi possível gerar o diagnóstico. Tente novamente.");
     } finally { setBusy(false); }

@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 
 @dataclass
 class FetchDiagnostics:
+    # Historical fetch_* keys are retained for existing diagnostic consumers.
+    trigger_interval_seconds: float = 5.0
     input_boundary_metrics: dict[str, int] = field(default_factory=dict)
     consecutive_fetch_failures: int = 0
     discarded_fetches: int = 0
@@ -26,6 +28,13 @@ class FetchDiagnostics:
 
     def snapshot(self, now: float | None = None) -> dict:
         return {
+            "acquisition_strategy": "celsius_trigger",
+            "trigger_command": "SYST:UNIT CEL",
+            "trigger_interval_seconds": self.trigger_interval_seconds,
+            "frame_timeout_seconds": 4.0,
+            "trigger_attempts": self.fetch_attempts,
+            "successful_triggers": self.successful_fetches,
+            "trigger_timeouts": self.fetch_timeouts,
             **self.input_boundary_metrics,
             "consecutive_fetch_failures": self.consecutive_fetch_failures,
             "discarded_fetches": self.discarded_fetches,

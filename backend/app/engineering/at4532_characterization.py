@@ -116,6 +116,7 @@ class Characterization:
                     parsed = At4532Parser().parse(payload, allow_all_open=True)
                     details.update(
                         valid=True,
+                        device_timestamp_original=parsed.device_timestamp_raw,
                         device_timestamp=(
                             parsed.device_timestamp.isoformat() if parsed.device_timestamp else None
                         ),
@@ -224,7 +225,9 @@ class Characterization:
             return
         self.observe(10)
         self.window = "after_fetch_1"
-        if not self.write(At4532Protocol.temperatures.request):
+        # Historical October 1 experiment only. Never follow the production trigger
+        # alias here: that would silently change this archived experiment's sequence.
+        if not self.write(b"FETCH?\n"):
             return
         self.observe(10)
         eligible = any(
@@ -234,7 +237,7 @@ class Characterization:
             for f in self.frames
         )
         self.window = "after_fetch_2"
-        if eligible and self.write(At4532Protocol.temperatures.request):
+        if eligible and self.write(b"FETCH?\n"):
             self.observe(10)
         elif not eligible:
             self.emit("window_skipped", reason="No healthy valid frame after first FETCH")
