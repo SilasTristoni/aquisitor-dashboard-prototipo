@@ -22,6 +22,7 @@ from app.core.security import hash_password
 from app.models.entities import AlertRule, ChannelConfiguration, Device, User
 from app.services.acquisition import acquisition_service
 from app.services.device_policy import invalidate_stale_at4532_verification
+from app.services.pending_persistence import bounded_pending_writes, pending_sample_persistence
 from app.services.protocol_probe import protocol_probe_service
 from app.services.serial_diagnostic import real_serial_diagnostic_service
 from app.services.usb_discovery import usb_discovery_service
@@ -234,13 +235,15 @@ async def lifespan(_: FastAPI):
     )
     Base.metadata.create_all(engine)
     seed_database()
-    yield
+    async with pending_sample_persistence(acquisition_service):
+        yield
     usb_discovery_service.shutdown()
     await protocol_probe_service.shutdown()
     await real_serial_diagnostic_service.shutdown()
     for device_id in list(acquisition_service.runtimes):
         try:
-            await acquisition_service.disconnect(device_id)
+            with bounded_pending_writes():
+                await acquisition_service.disconnect(device_id)
         except Exception:
             logging.getLogger(__name__).exception(
                 "shutdown failed for acquisition device_id=%s", device_id

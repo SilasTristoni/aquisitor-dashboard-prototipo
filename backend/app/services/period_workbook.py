@@ -665,6 +665,13 @@ def render_period_xlsx(data: dict[str, Any], request: PeriodReportRequest) -> by
     # Reuse the same chart definition in the executive sheet while keeping its source data intact.
     if curves._charts:
         summary.add_chart(copy(curves._charts[0]), "J4")
+    # Report cells contain values, never authored formulas. Keep untrusted titles,
+    # annotations and metadata literal without changing stored text or chart references.
+    for sheet in workbook:
+        for row in sheet:
+            for cell in row:
+                if cell.data_type == "f":
+                    cell.data_type = "s"
     output = io.BytesIO()
     workbook.save(output)
     return output.getvalue()

@@ -152,11 +152,13 @@ def _power_cycle_analysis(electrical: list[dict[str, Any]]) -> dict[str, Any] | 
     cycle_count = 0
     by_session: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for point in electrical:
-        if point["active_power_w"] is not None:
-            by_session[point["session_id"]].append(point)
+        by_session[point["session_id"]].append(point)
     for points in by_session.values():
         ordered = sorted(points, key=lambda item: item["timestamp"])
-        states = [point["active_power_w"] >= threshold for point in ordered]
+        states = [
+            point["active_power_w"] >= threshold if point["active_power_w"] is not None else None
+            for point in ordered
+        ]
         if states[0]:
             cycle_count += 1
         cycle_started = ordered[0]["timestamp"] if states[0] else None
@@ -164,6 +166,15 @@ def _power_cycle_analysis(electrical: list[dict[str, Any]]) -> dict[str, Any] | 
             ordered, ordered[1:], states, states[1:], strict=False
         ):
             seconds = max(0.0, (current["timestamp"] - previous["timestamp"]).total_seconds())
+            if (
+                previous_on is None or current_on is None
+                or seconds > settings.report_energy_max_gap_seconds
+            ):
+                # A new observed segment cannot complete a cycle from before a gap.
+                cycle_started = None
+                if current_on:
+                    cycle_count += 1
+                continue
             if seconds <= settings.report_energy_max_gap_seconds:
                 if previous_on:
                     on_seconds += seconds
@@ -212,10 +223,7 @@ def _interval_quality(
 def _integrate_energy_wh(
     points: list[dict[str, Any]], max_gap_seconds: float
 ) -> tuple[float, int, float]:
-    ordered = sorted(
-        (point for point in points if point.get("active_power_w") is not None),
-        key=lambda point: point["timestamp"],
-    )
+    ordered = sorted(points, key=lambda point: point["timestamp"])
     energy_wh = 0.0
     excluded_intervals = 0
     excluded_seconds = 0.0
@@ -223,7 +231,10 @@ def _integrate_energy_wh(
         interval = (current["timestamp"] - previous["timestamp"]).total_seconds()
         if interval <= 0:
             continue
-        if interval > max_gap_seconds:
+        if (
+            interval > max_gap_seconds or previous.get("active_power_w") is None
+            or current.get("active_power_w") is None
+        ):
             excluded_intervals += 1
             excluded_seconds += interval
             continue

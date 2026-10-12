@@ -137,7 +137,9 @@ def _apply_migrations(runtime: Path) -> None:
 
     configuration = Config(str(runtime / "alembic.ini"))
     configuration.set_main_option("script_location", str(runtime / "alembic"))
-    configuration.set_main_option("sqlalchemy.url", os.environ["THERMOPOWER_DATABASE_URL"])
+    configuration.set_main_option(
+        "sqlalchemy.url", os.environ["THERMOPOWER_DATABASE_URL"].replace("%", "%%")
+    )
     command.upgrade(configuration, "head")
 
 

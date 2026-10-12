@@ -56,6 +56,41 @@ const devices = [
   },
 ];
 
+test.each([false, true])("conexão aberta não afirma leitura recente (histórico=%s)", async (history) => {
+  const old = new Date(Date.now() - 120_000).toISOString();
+  liveState.readings = history
+    ? physicalReadings().map((r) => ({ ...r, timestamp: old, received_timestamp: old })) : [];
+  apiMock.mockImplementation(async (path: string) => {
+    if (path === "/devices") return devices;
+    if (path.startsWith("/sessions")) return { items: [] };
+    if (path.includes("/channels")) return [];
+    return { connected: true, state: "connected", expected_interval_ms: 5000,
+      last_message_at: history ? old : undefined };
+  });
+  render(<DashboardPage />);
+  expect(await screen.findAllByText(/Conectado · sem leitura recente/)).toHaveLength(2);
+  expect(screen.queryByText("Fontes prontas")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Iniciar ensaio/ })).toBeEnabled();
+});
+
+test("energia monitorada não integra através de potência indisponível", async () => {
+  const start = Date.now() - 10_000;
+  liveState.readings = [100, null, 100].map((power, index) => ({
+    ...physicalReadings()[0], power_w: power,
+    timestamp: new Date(start + index * 5000).toISOString(),
+    received_timestamp: new Date(start + index * 5000).toISOString(),
+  }));
+  apiMock.mockImplementation(async (path: string) => {
+    if (path === "/devices") return devices;
+    if (path.startsWith("/sessions")) return { items: [] };
+    if (path.includes("/channels")) return [];
+    return { connected: true, state: "connected", expected_interval_ms: 5000 };
+  });
+  render(<DashboardPage />);
+  expect(await screen.findByText(/Conectado · leitura recente/)).toBeInTheDocument();
+  expect(screen.getByText("0.000 Wh")).toBeInTheDocument();
+});
+
 type FailedRole = "electrical" | "thermal";
 
 function source(deviceId: number, success: boolean, error: string | null) {

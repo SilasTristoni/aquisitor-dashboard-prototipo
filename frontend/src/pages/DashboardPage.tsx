@@ -28,18 +28,30 @@ type ActiveSession = Pick<Session, "id" | "device_id" | "status" | "started_at">
 
 function elapsedLabel(timestamp: string | undefined, now: number) {
   if (!timestamp) return "sem leitura";
-  const seconds = Math.max((now - new Date(timestamp).getTime()) / 1000, 0);
+  const seconds = Math.max((now - parseUtcTimestamp(timestamp)) / 1000, 0);
   return `há ${seconds.toFixed(1)} s`;
 }
 
+function hasRecentReading(status: RuntimeStatus | undefined, reading: Reading | undefined, now: number) {
+  if (!status?.connected || status.reading === false || hasSourceFailure(status)
+    || ["connecting", "recovering", "degraded"].includes(status.state)) return false;
+  const timestamps = [status.last_message_at,
+    status.latest_reading?.received_timestamp ?? status.latest_reading?.timestamp,
+    reading?.received_timestamp ?? reading?.timestamp]
+    .filter((value): value is string => Boolean(value)).map(parseUtcTimestamp).filter(Number.isFinite);
+  if (!timestamps.length) return false;
+  const age = now - Math.max(...timestamps);
+  // Presentation only: never changes scheduling, common-start or available actions.
+  return age >= -1000 && age <= Math.max(10_000, (status.expected_interval_ms ?? 1000) * 3);
+}
+
 function integrateEnergyWh(readings: Reading[]): number {
-  const ordered = readings
-    .filter((reading) => reading.power_w != null)
+  const ordered = [...readings]
     .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
   return ordered.slice(1).reduce((total, current, index) => {
     const previous = ordered[index];
     const seconds = (Date.parse(current.timestamp) - Date.parse(previous.timestamp)) / 1000;
-    if (seconds <= 0 || seconds > 60) return total;
+    if (seconds <= 0 || seconds > 60 || previous.power_w == null || current.power_w == null) return total;
     return total + ((previous.power_w! + current.power_w!) / 2) * seconds / 3600;
   }, 0);
 }
@@ -122,6 +134,9 @@ export default function DashboardPage() {
   const temperatureDevice = devices.find((device) => device.id === temperatureDeviceId);
   const selectedIds = [...new Set([electricalDeviceId, temperatureDeviceId].filter(Boolean))];
   const allConnected = selectedIds.length > 0 && selectedIds.every((id) => statuses[id]?.connected && statuses[id]?.state !== "error");
+  const allReadingRecently = allConnected && selectedIds.every((id) => hasRecentReading(
+    statuses[id], id === electricalDeviceId ? latestElectrical : latestTemperature, now,
+  ));
   const channelLabel = (channel: number) => {
     const configured = channelConfigurations.find((item) => item.channel === channel)?.name?.trim();
     const generic = new Set([`t${channel}`, `ch${channel}`, `canal ${channel}`, `termopar ${channel}`]);
@@ -200,10 +215,11 @@ export default function DashboardPage() {
     const status = device ? statuses[device.id] : undefined;
     const sourceFailed = status?.state === "error" || Boolean(status?.last_error) || Boolean(status?.persistent_failure);
     const values = reading ? validTemperatures(reading) : [];
+    const recent = hasRecentReading(status, reading, now);
     return <div className="source-status">
-      <span className={`device-orb ${status?.connected && !sourceFailed ? "connected" : "disconnected"}`}><Radio /></span>
+      <span className={`device-orb ${recent && !sourceFailed ? "connected" : "disconnected"}`}><Radio /></span>
       <div><span>{label}</span><strong>{device?.name ?? "Não selecionado"}</strong>
-        <small>{status?.persistent_failure ? "Falha persistente - tentando reconectar automaticamente" : sourceFailed ? "Falha nesta fonte" : status?.state === "recovering" ? "Reconectando automaticamente..." : status?.state === "connecting" ? "Conectando..." : status?.connected ? "Conectado" : "Desconectado"} · Última leitura válida {elapsedLabel(reading?.timestamp ?? status?.last_message_at, now)}</small>
+        <small>{status?.persistent_failure ? "Falha persistente - tentando reconectar automaticamente" : sourceFailed ? "Falha nesta fonte" : status?.state === "recovering" ? "Reconectando automaticamente..." : status?.state === "connecting" ? "Conectando..." : status?.state === "degraded" ? "Conectado · leitura degradada" : status?.connected ? recent ? "Conectado · leitura recente" : "Conectado · sem leitura recente" : "Desconectado"} · Última leitura válida {elapsedLabel(status?.last_message_at ?? reading?.received_timestamp ?? reading?.timestamp, now)}</small>
         {label === "AT4532" && <small>{values.length}/32 canais válidos</small>}
         {label === "GPM-8213" && <small>{reading?.power_w == null ? "Potência indisponível" : `${reading.power_w.toFixed(1)} W`}</small>}
         <details className="source-reading-details"><summary>Contagem de leituras</summary><small>{status?.sample_count ?? (label === "AT4532" ? combined.temperatureReadings.length : combined.electricalReadings.length)} leituras nesta conexão</small>
@@ -227,7 +243,7 @@ export default function DashboardPage() {
     {error && <ErrorNotice message={error} retry={allConnected ? start : connectAll} />}
     <CadenceNotice status={statuses[temperatureDeviceId]} />
     <div className="combined-source-status">{statusCard("GPM-8213", electricalDevice, latestElectrical)}{statusCard("AT4532", temperatureDevice, latestTemperature)}
-      <div className="source-status session-source-status"><span className="device-orb connected">{connection === "connected" ? <Wifi /> : <WifiOff />}</span><div><span>ESTADO DO ENSAIO</span><strong>{busy && operation === "start" ? "Sincronizando fontes…" : activeSession?.status === "running" ? "Ensaio em andamento" : activeSession?.status === "paused" ? "Ensaio pausado" : finishedSessionId ? "Ensaio finalizado" : allConnected ? "Fontes prontas" : "Aguardando conexão"}</strong><small>{activeSession ? formatDuration((now - parseUtcTimestamp(activeSession.started_at)) / 1000) : "Inicie um ensaio para gravar as leituras."}</small><small>{connection === "connected" ? "Atualização ao vivo conectada" : "Reconectando atualização ao vivo"}</small></div></div>
+      <div className="source-status session-source-status"><span className="device-orb connected">{connection === "connected" ? <Wifi /> : <WifiOff />}</span><div><span>ESTADO DO ENSAIO</span><strong>{busy && operation === "start" ? "Sincronizando fontes…" : activeSession?.status === "running" ? "Ensaio em andamento" : activeSession?.status === "paused" ? "Ensaio pausado" : finishedSessionId ? "Ensaio finalizado" : allConnected ? (allReadingRecently ? "Fontes prontas" : "Fontes conectadas · aguardando leituras recentes") : "Aguardando conexão"}</strong><small>{activeSession ? formatDuration((now - parseUtcTimestamp(activeSession.started_at)) / 1000) : "Inicie um ensaio para gravar as leituras."}</small><small>{connection === "connected" ? "Atualização ao vivo conectada" : "Reconectando atualização ao vivo"}</small></div></div>
     </div>
     {lastAlert && <div className="notice warning"><AlertTriangle /><div><strong>Novo alerta crítico</strong><span>{lastAlert.metric === "power" ? "Potência" : `Termopar CH${String(lastAlert.channel).padStart(2, "0")}`} atingiu {lastAlert.measured_value.toFixed(1)}.</span></div></div>}
     <div className="metrics-grid six operator-kpis">

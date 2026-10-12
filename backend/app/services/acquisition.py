@@ -43,6 +43,7 @@ from app.services.device_policy import (
     at4532_identity_fallback_policy,
     mark_at4532_verified_by_measurement,
 )
+from app.services.pending_persistence import sample_write_session
 from app.services.reading_identity import reading_identity
 from app.services.session_clock import utc
 from app.services.usb_discovery import usb_discovery_service
@@ -742,7 +743,7 @@ class AcquisitionService:
                 "attempted_at": datetime.now(UTC).isoformat(),
             }
             try:
-                with SessionLocal() as db:
+                with sample_write_session(SessionLocal) as db:
                     db.add(
                         SystemEvent(
                             device_id=device_id,
@@ -790,7 +791,7 @@ class AcquisitionService:
             "attempted_at": datetime.now(UTC).isoformat(),
         }
         try:
-            with SessionLocal() as db:
+            with sample_write_session(SessionLocal) as db:
                 db.add(
                     SystemEvent(
                         device_id=device_id,
@@ -1136,7 +1137,7 @@ class AcquisitionService:
             return
         readings = runtime.buffer[:]
         session_id = runtime.session_id
-        with SessionLocal() as db:
+        with sample_write_session(SessionLocal) as db:
             role = (
                 db.scalar(
                     select(SessionDevice.role).where(
