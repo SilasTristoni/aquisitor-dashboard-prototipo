@@ -22,7 +22,7 @@ test("erro mantém código, permite repetir e exporta diagnóstico contextual", 
   await userEvent.click(screen.getByRole("button", { name: "Tentar novamente" }));
   expect(retry).toHaveBeenCalledOnce();
   await userEvent.click(screen.getByRole("button", { name: "Exportar diagnóstico" }));
-  expect(download).toHaveBeenCalledWith("/support/package?session_id=16&correlation_id=TP-EXP-A82F31", expect.stringContaining("ThermoPower-Diagnostico-"));
+  expect(download).toHaveBeenCalledWith("/support/package?session_id=16&correlation_id=TP-EXP-A82F31", expect.stringContaining("ThermoPower-Diagnostico-"), expect.objectContaining({ signal: expect.any(AbortSignal), maxBytes: 24 * 1024 * 1024 }));
 });
 
 test("download preserva o identificador retornado pelo servidor", async () => {

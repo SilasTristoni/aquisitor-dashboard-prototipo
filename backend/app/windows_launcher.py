@@ -144,6 +144,12 @@ def _apply_migrations(runtime: Path) -> None:
 
 
 def main() -> None:
+    # Offline diagnostic collection must bypass the app mutex, migrations and acquisition.
+    if "--diagnostic-worker" in sys.argv or "--export-local-diagnostic" in sys.argv:
+        from app.engineering.local_diagnostic import entrypoint
+
+        entrypoint([arg for arg in sys.argv[1:] if arg != "--export-local-diagnostic"])
+        return
     mutex_name = os.environ.get("THERMOPOWER_MUTEX_NAME", "ThermoPowerMonitorRunning")
     if not _acquire_single_instance(mutex_name):
         if "--characterize-at4532-repeated-celsius" in sys.argv:

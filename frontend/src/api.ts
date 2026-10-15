@@ -48,15 +48,39 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   return response.json() as Promise<T>;
 }
 
-export async function download(path: string, filename: string): Promise<void> {
+export async function download(path: string, filename: string, options?: { signal: AbortSignal; maxBytes: number }): Promise<void> {
   const token = localStorage.getItem("thermopower.token");
-  const response = await fetch(`${API_BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+  const response = await fetch(`${API_BASE}${path}`, { signal: options?.signal, headers: { Authorization: `Bearer ${token}` } });
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
-    throw new ApiError(payload?.error?.message ?? "Não foi possível gerar o arquivo", response.status,
+    throw new ApiError(payload?.error?.message ?? payload?.detail ?? "Não foi possível gerar o arquivo", response.status,
       payload?.error?.correlation_id ?? response.headers?.get("X-Correlation-ID") ?? undefined);
   }
-  const url = URL.createObjectURL(await response.blob());
+  let blob: Blob;
+  if (options && response.body) {
+    const reader = response.body.getReader();
+    const chunks: BlobPart[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        options.signal.throwIfAborted();
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > options.maxBytes) throw new Error("Diagnóstico excedeu o limite de download. Utilize a coleta local.");
+        chunks.push(new Uint8Array(value));
+      }
+      blob = new Blob(chunks, { type: "application/zip" });
+    } finally {
+      void reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }
+  } else {
+    blob = await response.blob();
+  }
+  options?.signal.throwIfAborted();
+  if (options && blob.size > options.maxBytes) throw new Error("Diagnóstico excedeu o limite de download.");
+  const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;

@@ -1,94 +1,55 @@
 from __future__ import annotations
 
-import asyncio
-import io
-import logging
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 
 from app.api.deps import get_current_user
-from app.core.database import get_db
-from app.models.entities import Device, SystemEvent, User
+from app.models.entities import User
 from app.services.acquisition import acquisition_service
-from app.services.support import support_snapshot
 
 router = APIRouter(prefix="/api/v1")
 
 
+async def _diagnostic(request, session_id=None, correlation_id=None):
+    from app.core.database import engine
+    from app.core.physical_trace import journal
+    from app.services.diagnostic_snapshot import bounded, runtime_snapshot
+    from app.services.protocol_probe import protocol_probe_service
+    from app.services.support_collection import export_diagnostic
+    from app.services.websocket import websocket_hub
+
+    snapshot = runtime_snapshot(acquisition_service, websocket_hub)
+    snapshot["probes"] = bounded(protocol_probe_service.latest_results)
+    snapshot["journal"] = journal.status()
+    return await export_diagnostic(
+        request,
+        snapshot,
+        engine.url.render_as_string(hide_password=False),
+        session_id,
+        correlation_id,
+    )
+
+
 @router.get("/support/physical-package")
 async def download_physical_package(
-    db: Annotated[Session, Depends(get_db)],
+    request: Request,
     _: Annotated[User, Depends(get_current_user)],
-) -> StreamingResponse:
-    from app.services.physical_diagnostic import physical_diagnostic_zip
-    from app.services.protocol_probe import protocol_probe_service
-
-    states, transactions, boundaries = [], {}, {}
-    for device in db.scalars(
-        select(Device).where(Device.protocol.in_(["at4532_serial", "gpm8213_serial"]))
-    ):
-        states.append(await acquisition_service.status(device.id))
-        runtime = acquisition_service.runtimes.get(device.id)
-        if runtime:
-            transactions[device.id] = list(getattr(runtime.adapter, "transactions", []))
-            boundaries[device.id] = getattr(
-                runtime.adapter, "input_boundary_diagnostics", lambda: {}
-            )()
-    content = await asyncio.to_thread(
-        physical_diagnostic_zip,
-        db,
-        states,
-        transactions,
-        boundaries,
-        dict(protocol_probe_service.latest_results),
-    )
-    filename = f"ThermoPower-Diagnostico-Fisico-{datetime.now(UTC):%Y%m%d-%H%M%S}.zip"
-    return StreamingResponse(
-        io.BytesIO(content),
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+) -> FileResponse:
+    return await _diagnostic(request)
 
 
 @router.get("/support/package")
 async def download_support_package(
-    db: Annotated[Session, Depends(get_db)],
+    request: Request,
     _: Annotated[User, Depends(get_current_user)],
     session_id: int | None = Query(None, ge=1),
     correlation_id: str | None = Query(None, pattern=r"^TP-[A-Z]+-[A-F0-9]{6,32}$"),
-) -> StreamingResponse:
-    if correlation_id and not session_id:
-        session_id = db.scalar(
-            select(SystemEvent.session_id)
-            .where(SystemEvent.details["correlation_id"].as_string() == correlation_id)
-            .order_by(SystemEvent.id.desc())
-            .limit(1)
-        )
-    statuses = []
-    for device_id in db.scalars(select(Device.id)):
-        try:
-            statuses.append(await acquisition_service.status(device_id))
-        except Exception:
-            logging.getLogger(__name__).exception(
-                "Runtime status unavailable during support export", extra={"device_id": device_id}
-            )
-            statuses.append({"device_id": device_id, "state": "unavailable"})
-    content = support_snapshot(db, statuses, session_id, correlation_id)
-    filename = f"ThermoPower-Diagnostico-{datetime.now(UTC):%Y%m%d-%H%M%S}.zip"
-    return StreamingResponse(
-        io.BytesIO(content),
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-        },
-    )
+) -> FileResponse:
+    return await _diagnostic(request, session_id, correlation_id)
 
 
 @router.get("/help/user-guide")

@@ -8,6 +8,7 @@ import logging
 import platform
 import zipfile
 from datetime import UTC, datetime
+from time import monotonic
 
 from sqlalchemy import event, func, select
 
@@ -91,7 +92,8 @@ def audit_event(context: dict, message: str, level: str = "info") -> None:
 
 
 def support_snapshot(
-    db, statuses: list[dict], session_id: int | None, correlation_id: str | None
+    db, statuses: list[dict], session_id: int | None, correlation_id: str | None,
+    *, include_logs: bool = True,
 ) -> bytes:
     now = datetime.now(UTC)
     devices = [
@@ -108,7 +110,7 @@ def support_snapshot(
                 if key in {"data_bits", "parity", "stop_bits", "timeout_s", "read_timeout_s"}
             },
         }
-        for d in db.scalars(select(Device).order_by(Device.id))
+        for d in db.scalars(select(Device).order_by(Device.id).limit(128))
     ]
     allowed = {
         "device_id",
@@ -191,6 +193,18 @@ def support_snapshot(
         "hardware/devices.json": devices,
         "hardware/acquisition-summary.json": acquisition,
         "session/session-summary.json": summary,
+        "lifecycle-events.json": [
+            {"timestamp": e.timestamp, "category": e.category, "level": e.level,
+             "device_id": e.device_id, "session_id": e.session_id,
+             "message": e.message, "details": e.details}
+            for e in db.scalars(select(SystemEvent).where(
+                SystemEvent.category.in_([
+                    "connection", "disconnection", "connection_error", "disconnection_error",
+                    "read_error", "session_source_error", "session_start", "session_pause",
+                    "session_resume", "session_stop",
+                ])
+            ).order_by(SystemEvent.id.desc()).limit(100))
+        ],
     }
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -201,7 +215,7 @@ def support_snapshot(
                 "Informe ao suporte o código do erro e o que estava fazendo.\n"
                 "Este pacote contém metadados e logs sanitizados; não inclui banco, séries de "
                 "medições, documentos do cliente ou credenciais.\n"
-                "Os logs incluem até 2 MB recentes por arquivo, inclusive rotações disponíveis.\n"
+                "Os logs incluem até 256 KiB recentes por arquivo; consulte logs/status.json.\n"
             ).encode(),
         )
         for name, data in contents.items():
@@ -211,30 +225,52 @@ def support_snapshot(
                     "utf-8"
                 ),
             )
-        for name in ("thermopower.log", "errors.log"):
+        log_status = []
+        for name in (("errors.log", "thermopower.log") if include_logs else ()):
+            log_deadline = monotonic() + 1.5
             chunks = []
-            remaining = 2_000_000
+            remaining = 256 * 1024
             for suffix in ("", ".1", ".2", ".3", ".4", ".5"):
                 path = log_directory() / (name + suffix)
                 try:
+                    if path.is_symlink() or not path.is_file():
+                        continue
                     with path.open("rb") as source:
                         source.seek(0, 2)
                         size = source.tell()
                         source.seek(max(0, size - remaining))
                         chunk = source.read(remaining)
+                    log_status.append({
+                        "file": name + suffix, "source_bytes": size,
+                        "included_bytes": len(chunk), "truncated": size > len(chunk),
+                    })
+                    if size > len(chunk):
+                        chunk = chunk.partition(b"\n")[2]
                     chunks.insert(0, chunk)
                     remaining -= len(chunk)
                 except OSError:
+                    log_status.append({"file": name + suffix, "unavailable": True})
                     continue
                 if remaining <= 0:
                     break
             value = b"\n".join(chunks).decode("utf-8", errors="replace")
             lines = []
-            for line in value.splitlines():
+            for line in reversed(value.splitlines()):
+                if monotonic() >= log_deadline or len(lines) >= 512:
+                    log_status.append({"file": name, "truncated": True,
+                                       "reason": "processing_budget"})
+                    break
+                if len(line) > 65536:
+                    lines.append("[oversize log record omitted]")
+                    continue
                 try:
                     lines.append(json.dumps(sanitize(json.loads(line)), ensure_ascii=False))
-                except ValueError:
+                except (ValueError, RecursionError):
                     # Preserve legacy text logs and a truncated first line safely.
                     lines.append(sanitize(line))
-            archive.writestr(f"logs/{name}", "\n".join(lines).encode("utf-8"))
+            if not chunks:
+                log_status.append({"file": name, "unavailable": True})
+            archive.writestr(f"logs/{name}", "\n".join(reversed(lines)).encode("utf-8"))
+        if include_logs:
+            archive.writestr("logs/status.json", json.dumps(log_status).encode())
     return stream.getvalue()
