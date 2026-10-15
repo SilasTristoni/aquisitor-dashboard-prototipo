@@ -1166,13 +1166,10 @@ def test_client_preview_version_is_consistent_in_health_and_frontend(client):
     assert frontend["version"] == expected
 
 
-def test_build_info_uses_the_same_demo_credentials_that_authenticate(client):
+def test_build_info_does_not_publish_demo_credentials(client):
     information = client.get("/api/v1/build-info")
     assert information.status_code == 200
-    credentials = information.json()["demo_credentials"]
-    login = client.post("/api/v1/auth/login", json=credentials)
-    assert login.status_code == 200
-    assert login.json()["user"]["email"] == credentials["email"]
+    assert information.json()["demo_credentials"] is None
 
 
 def test_protocol_probe_requires_explicit_operator_confirmation(client, auth_headers, monkeypatch):

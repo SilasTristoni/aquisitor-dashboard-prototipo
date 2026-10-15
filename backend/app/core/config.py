@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.version import APPLICATION_VERSION
@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     debug: bool = False
     database_url: str = "sqlite:///./thermopower.db"
-    jwt_secret: str = "change-this-development-secret-before-production"
+    jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
     access_token_minutes: int = 480
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
@@ -29,6 +29,19 @@ class Settings(BaseSettings):
     report_energy_max_gap_seconds: float = 60.0
     report_output_directory: str = "./reports"
     frontend_dist: str | None = None
+
+    @field_validator("jwt_secret")
+    @classmethod
+    def validate_jwt_secret(cls, value: str) -> str:
+        if len(value.encode()) < 32 or value in {
+            "change-this-development-secret-before-production",
+            "replace-this-before-any-network-exposure",
+            "gere-uma-chave-aleatoria-com-pelo-menos-32-bytes",
+        }:
+            raise ValueError(
+                "Configure THERMOPOWER_JWT_SECRET com uma chave aleatória de pelo menos 32 bytes"
+            )
+        return value
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="THERMOPOWER_", extra="ignore")
 

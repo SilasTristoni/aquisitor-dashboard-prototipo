@@ -16,6 +16,7 @@ from app.api.share_routes import router as share_router
 from app.api.support_routes import router as support_router
 from app.core.config import get_settings
 from app.core.database import Base, SessionLocal, engine
+from app.core.http_security import guard_file_requests
 from app.core.observability import configure_logging
 from app.core.request_logging import observe_request, unexpected_error
 from app.core.security import hash_password
@@ -261,6 +262,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.middleware("http")(observe_request)
+app.middleware("http")(guard_file_requests)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,

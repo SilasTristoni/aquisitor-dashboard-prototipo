@@ -22,18 +22,18 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from sqlalchemy import Float, Integer, cast, delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
+from starlette.concurrency import run_in_threadpool
 
 from app.adapters.simulator import SCENARIOS
 from app.adapters.specific import ProtocolDocumentationRequired
 from app.adapters.transports import SerialTransportConfiguration, SerialTransportError
 from app.api.analysis_routes import analysis_period
-from app.api.deps import get_current_user, require_roles
+from app.api.deps import get_current_user, require_roles, validate_websocket_access
 from app.core.config import get_settings
 from app.core.database import engine, get_db
 from app.core.observability import build_metadata, request_context, sanitize
 from app.core.security import (
     create_access_token,
-    decode_access_token,
     hash_password,
     login_rate_limiter,
     verify_password,
@@ -290,17 +290,10 @@ def login(payload: LoginRequest, request: Request, db: Db) -> TokenResponse:
 
 @router.get("/build-info")
 def build_info() -> dict:
-    demo_environments = {"development", "test", "windows-beta", "physical-alpha"}
-    demo_credentials = None
-    if settings.environment in demo_environments:
-        demo_credentials = {
-            "email": settings.demo_admin_email,
-            "password": settings.demo_admin_password,
-        }
     return {
         **build_metadata(),
         "environment": settings.environment,
-        "demo_credentials": demo_credentials,
+        "demo_credentials": None,
     }
 
 
@@ -2282,9 +2275,9 @@ async def apply_simulator_scenario(
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)) -> None:
     try:
-        decode_access_token(token)
-    except HTTPException:
-        await websocket.close(code=4401)
+        expires_at = await run_in_threadpool(validate_websocket_access, token)
+    except HTTPException as exc:
+        await websocket.close(code=1011 if exc.status_code == 503 else 4401)
         return
     await websocket_hub.connect(websocket)
     try:
@@ -2300,14 +2293,20 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)) -> N
             if not queue:
                 break
             try:
-                message = await asyncio.wait_for(queue.get(), timeout=20)
+                message = await asyncio.wait_for(
+                    queue.get(), timeout=min(20, max(0, expires_at - time.time()))
+                )
             except TimeoutError:
                 message = {
                     "type": "heartbeat",
                     "timestamp": datetime.now(UTC).isoformat(),
                     "payload": {},
                 }
+            # Check again after waiting: queued data must not outlive its authorization.
+            await run_in_threadpool(validate_websocket_access, token)
             await websocket.send_json(message)
+    except HTTPException as exc:
+        await websocket.close(code=1011 if exc.status_code == 503 else 4401)
     except WebSocketDisconnect:
         pass
     finally:

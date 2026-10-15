@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: thermopower
       POSTGRES_USER: thermopower
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-thermopower-local-only}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Configure POSTGRES_PASSWORD}
     volumes:
       - thermopower_data:/var/lib/postgresql/data
     healthcheck:
@@ -18,10 +18,10 @@ services:
     build: ./backend
     environment:
       THERMOPOWER_ENVIRONMENT: production
-      THERMOPOWER_DATABASE_URL: postgresql+psycopg://thermopower:${POSTGRES_PASSWORD:-thermopower-local-only}@database:5432/thermopower
-      THERMOPOWER_JWT_SECRET: ${THERMOPOWER_JWT_SECRET:-replace-this-before-any-network-exposure}
+      THERMOPOWER_DATABASE_URL: postgresql+psycopg://thermopower:${POSTGRES_PASSWORD:?Configure POSTGRES_PASSWORD}@database:5432/thermopower
+      THERMOPOWER_JWT_SECRET: ${THERMOPOWER_JWT_SECRET:?Configure THERMOPOWER_JWT_SECRET}
       THERMOPOWER_CORS_ORIGINS: '["http://localhost:8080"]'
-      THERMOPOWER_DEMO_ADMIN_PASSWORD: ${THERMOPOWER_DEMO_ADMIN_PASSWORD:-ThermoPower@123}
+      THERMOPOWER_DEMO_ADMIN_PASSWORD: ${THERMOPOWER_DEMO_ADMIN_PASSWORD:?Configure THERMOPOWER_DEMO_ADMIN_PASSWORD}
     depends_on:
       database:
         condition: service_healthy

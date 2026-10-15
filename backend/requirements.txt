@@ -5,7 +5,7 @@ pydantic-settings==2.10.1
 email-validator==2.2.0
 PyJWT==2.10.1
 bcrypt==4.3.0
-python-multipart==0.0.20
+python-multipart==0.0.31
 openpyxl==3.1.5
 reportlab==4.4.3
 Pillow==11.3.0
