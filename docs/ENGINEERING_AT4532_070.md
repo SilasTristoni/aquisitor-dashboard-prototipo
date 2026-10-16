@@ -55,7 +55,11 @@ dois timestamps E dois hashes distintos. `Open=null`, fila, dedupe e timestamps
 originais permanecem preservados; os nomes históricos `fetch_*` nos contadores
 agora contam tentativas Celsius, não comandos FETCH transmitidos.
 
-GPM e common-start por prontidão independente (preparação de 15 s) não mudaram.
+Comandos, CRLF e cadência saudável do GPM permanecem iguais; sua recuperação agora
+verifica VID/PID/serial inequívocos no Windows e aplica backoff até 30 s. A COM pode
+mudar sem recriar a sessão. Porta ausente/ambígua exige verificar cabo/alimentação/driver
+ou associação; software não corrige a causa física de desaparecimento USB.
+Common-start por prontidão independente (preparação de 15 s) permanece preservado.
 A ferramenta controlada reutiliza framing/parser do MESMO executável. A bancada de
 06/10 comprovou três medições distintas com Celsius no alvo Britânia; isso não é
 uma afirmação genérica sobre o manual nem homologação de aquisição contínua.
@@ -81,16 +85,33 @@ session_id quando há sessão. A ferramenta de observação não aplica dedupe d
 Timeouts de transporte/transação/tentativa podem representar a mesma ocorrência:
 use `stage`, `reason`, contadores e `fetch_attempt`, não a quantidade de linhas isolada.
 
-O gravador usa fila fora do caminho de I/O serial; mantém o histórico sem rotação
-automática. `evidence-status.json` informa fila, perdas, erros e flush. Qualquer perda,
+O gravador usa fila fora do caminho de I/O serial; preserva arquivos anteriores e
+limita novas escritas quando o diretório de trilhas atinge 256 MiB. Arquive as trilhas
+externamente e reinicie para liberar esse orçamento. Não há exclusão automática.
+`evidence-status.json` informa fila, perdas por orçamento, erros e coleta sem flush.
+A exportação recorta arquivos com limites explícitos de tamanho/tempo. Qualquer perda,
 erro ou captura incompleta limita a evidência e não deve ser tratada como silêncio
 físico. Transações detalhadas do runtime mantêm o limite preexistente de 256;
-o JSONL AT preserva o histórico completo disponível. Checkpoints guardam estado de
+o JSONL exportado é um recorte do histórico disponível. Checkpoints guardam estado de
 probes e desconexões, incluindo GPM. Senhas/tokens/segredos são sanitizados.
 
 O ZIP também contém acquisition-state.json, devices.json, transactions.json,
 input-boundary-metrics.json, runtime-state.json, build-info.json, version.txt,
 commit.txt, session-summary.json, last-errors.json, counters-AT-GPM.json e manifesto.
+`storage-state.json` informa volume, nome do banco, tamanhos DB/WAL/SHM, páginas e
+espaço livre quando disponíveis; espaço livre não mede quota nem prova capacidade.
+
+Se a API não responder, execute `./export-local-diagnostic.ps1` nesta pasta.
+Use `-AppData` se os dados estiverem em diretório personalizado. A coleta local usa
+o mesmo executável, não inicia aquisição nem precisa abrir a aplicação. Seções
+indisponíveis e recortes são informados explicitamente; nenhuma exportação testa hardware.
+
+SQLite FULL ou falha de gravação suspende o consumo de novas leituras, retendo o lote
+pendente em memória. Até oito tentativas automáticas com backoff; após esgotamento,
+libere capacidade e tente Pausar/Continuar. A gravação bem-sucedida inclui um evento de
+interrupção do armazenamento; o período sem amostras continua sendo uma lacuna.
+Fechamento forçado enquanto o disco não aceita escrita pode perder o lote em memória:
+nunca apresentar essa sessão como íntegra. Consulte PHYSICAL_RELIABILITY_070_20261015.md.
 
 ## Rastreabilidade e aceite
 

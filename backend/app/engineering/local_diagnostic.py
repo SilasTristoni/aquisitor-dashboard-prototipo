@@ -46,6 +46,8 @@ def diagnostic_database():
         raise ValueError("unsupported diagnostic database")
     try:
         with Session(engine) as db:
+            if url.get_backend_name() == "sqlite":
+                db.info["diagnostic_database_path"] = str(path)
             yield db
     finally:
         engine.dispose()

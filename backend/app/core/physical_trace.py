@@ -1,7 +1,7 @@
 """AT runtime evidence. Disk I/O and sanitization run outside the serial worker.
 
-No sampling or rotation: retain the entire bench history until explicitly archived.
-Overflow/I/O failures are counted and exported, never hidden or fed into acquisition.
+Existing history is never deleted. A disk budget stops new trace writes explicitly.
+Overflow/I/O/budget failures are counted and exported, never fed into acquisition.
 """
 
 import atexit
@@ -67,6 +67,10 @@ class PhysicalJournal:
         self.sequence = 0
         self.dropped_events = 0
         self.write_errors = 0
+        self.storage_limit_bytes = 256 * 1024 * 1024
+        self.storage_bytes = None
+        self.budget_dropped_events = 0
+        self.retry_after = 0.0
 
     def emit(self, event: str, **fields):
         if (
@@ -109,13 +113,32 @@ class PhysicalJournal:
                 if isinstance(record, Event):
                     record.set()
                 else:
+                    if monotonic() < self.retry_after:
+                        self.dropped_events += 1
+                        continue
                     path.parent.mkdir(parents=True, exist_ok=True)
-                    with path.open("a", encoding="utf-8") as target:
-                        target.write(
-                            json.dumps(sanitize(record), ensure_ascii=False, default=str) + "\n"
-                        )
+                    if self.storage_bytes is None:
+                        # Only direct journal files; no recursive archive traversal/deletion.
+                        self.storage_bytes = 0
+                        with os.scandir(path.parent) as files:
+                            for index, item in enumerate(files):
+                                if index >= 1024:
+                                    self.storage_bytes = self.storage_limit_bytes
+                                    break
+                                if item.is_file(follow_symlinks=False):
+                                    self.storage_bytes += item.stat().st_size
+                    content = (json.dumps(sanitize(record), ensure_ascii=False, default=str)
+                               + "\n").encode("utf-8")
+                    if self.storage_bytes + len(content) > self.storage_limit_bytes:
+                        self.budget_dropped_events += 1
+                        continue
+                    with path.open("ab") as target:
+                        target.write(content)
+                    self.storage_bytes += len(content)
             except Exception:
                 self.write_errors += 1
+                self.storage_bytes = None  # Recount possible partial writes before retry.
+                self.retry_after = monotonic() + 30
             finally:
                 self.queue.task_done()
 
@@ -167,6 +190,11 @@ class PhysicalJournal:
             "queued_events": self.queue.qsize(),
             "dropped_events": self.dropped_events,
             "write_errors": self.write_errors,
+            "storage_limit_bytes": self.storage_limit_bytes,
+            "storage_bytes": self.storage_bytes,
+            "budget_dropped_events": self.budget_dropped_events,
+            "retention_policy": "Existing files preserved; archive to free trace budget. "
+            "Restart after archiving. Budget/I/O loss means incomplete evidence.",
         }
 
 

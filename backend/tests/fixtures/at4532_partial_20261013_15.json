@@ -1,0 +1,192 @@
+[
+  {
+    "event_timestamp": "2026-10-14T20:22:54.647685+00:00",
+    "file": "source\\evidencias\\07-thermopower-20261014-2003-a-2217.jsonl",
+    "line": 2998,
+    "hex": "5443502d33322c543a323032362f31302f31342031373a32383a31302c32392e322c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f7065",
+    "sha256": "dafd76999bff06817689cb2a93d51fcfeb27bd627ed8c616c5828d9d3cb5c6c2",
+    "length": 227,
+    "details": {
+      "command": "SYST:UNIT CEL",
+      "tx": "53 59 53 54 3A 55 4E 49 54 20 43 45 4C 0A",
+      "timestamp_tx": "2026-10-14T20:22:50.472140+00:00",
+      "timestamp_rx": "2026-10-14T20:22:54.516973+00:00",
+      "elapsed_ms": 8807.642700034194,
+      "bytes_received": 227,
+      "error_code": "incomplete_frame",
+      "port_open": true,
+      "attempt": 9838
+    }
+  },
+  {
+    "event_timestamp": "2026-10-15T12:06:58.177247+00:00",
+    "file": "source\\evidencias\\11-thermopower-20261015-1140-a-1211.jsonl",
+    "line": 4381,
+    "hex": "5443502d33322c543a323032362f31302f31352030393a31323a31342c32362e372c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70",
+    "sha256": "8bc685066716e1ce069e65f6a2739723750c78a131616f1f3c46c2e6d7e8f040",
+    "length": 226,
+    "details": {
+      "command": "SYST:UNIT CEL",
+      "tx": "53 59 53 54 3A 55 4E 49 54 20 43 45 4C 0A",
+      "timestamp_tx": "2026-10-15T12:06:53.002122+00:00",
+      "timestamp_rx": "2026-10-15T12:06:57.042921+00:00",
+      "elapsed_ms": 9385.212799999863,
+      "bytes_received": 226,
+      "error_code": "incomplete_frame",
+      "port_open": true,
+      "attempt": 12748
+    }
+  },
+  {
+    "event_timestamp": "2026-10-15T12:07:17.523694+00:00",
+    "file": "source\\evidencias\\11-thermopower-20261015-1140-a-1211.jsonl",
+    "line": 4423,
+    "hex": "5443502d33322c543a323032362f31302f31352030393a31323a33332c32362e372c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c",
+    "sha256": "3a791e1021b7fab16c1b18187c14e5c389901c6c696bcc92d8f63ead7e542870",
+    "length": 229,
+    "details": {
+      "command": "SYST:UNIT CEL",
+      "tx": "53 59 53 54 3A 55 4E 49 54 20 43 45 4C 0A",
+      "timestamp_tx": "2026-10-15T12:07:12.581652+00:00",
+      "timestamp_rx": "2026-10-15T12:07:17.230276+00:00",
+      "elapsed_ms": 7875.601100036874,
+      "bytes_received": 229,
+      "error_code": "incomplete_frame",
+      "port_open": true,
+      "attempt": 12752
+    }
+  },
+  {
+    "event_timestamp": "2026-10-15T12:07:34.588129+00:00",
+    "file": "source\\evidencias\\11-thermopower-20261015-1140-a-1211.jsonl",
+    "line": 4458,
+    "hex": "5443502d33322c543a323032362f31302f31352030393a31323a35312c32362e382c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f7065",
+    "sha256": "836473ac9ef752582628ce4c4c81189b5c2d7d478bde7c4f5c417a4b2412c71d",
+    "length": 87,
+    "details": {
+      "command": "SYST:UNIT CEL",
+      "tx": "53 59 53 54 3A 55 4E 49 54 20 43 45 4C 0A",
+      "timestamp_tx": "2026-10-15T12:07:30.262905+00:00",
+      "timestamp_rx": "2026-10-15T12:07:34.368100+00:00",
+      "elapsed_ms": 6578.821399947628,
+      "bytes_received": 87,
+      "error_code": "incomplete_frame",
+      "port_open": true,
+      "attempt": 12754
+    }
+  },
+  {
+    "event_timestamp": "2026-10-15T12:07:50.176522+00:00",
+    "file": "source\\evidencias\\11-thermopower-20261015-1140-a-1211.jsonl",
+    "line": 4492,
+    "hex": "5443502d33322c543a323032362f31302f31352030393a31333a30372c32362e372c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c3138322e34347c4b7ca1e62c32342e31307c4b7ca1e62c3138312e35397c4b7ca1e62c37342e37387c4b7ca1e62c32342e33357c4b7ca1e62c34312e35307c4b7ca1e62c34352e32387c4b7ca1e62c32352e32337c",
+    "sha256": "2ece946d5374df9c44c24eaae8670997969503c985043336e8adfd464498c69c",
+    "length": 359,
+    "details": {
+      "command": "SYST:UNIT CEL",
+      "tx": "53 59 53 54 3A 55 4E 49 54 20 43 45 4C 0A",
+      "timestamp_tx": "2026-10-15T12:07:46.105434+00:00",
+      "timestamp_rx": "2026-10-15T12:07:50.119580+00:00",
+      "elapsed_ms": 6249.290799954906,
+      "bytes_received": 359,
+      "error_code": "incomplete_frame",
+      "port_open": true,
+      "attempt": 12756
+    }
+  },
+  {
+    "event_timestamp": "2026-10-15T12:08:11.142982+00:00",
+    "file": "source\\evidencias\\11-thermopower-20261015-1140-a-1211.jsonl",
+    "line": 4526,
+    "hex": "5443502d33322c543a323032362f31302f31352030393a31333a32372c32362e382c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e6",
+    "sha256": "bf7df3bc2811797119fb3bf36a46ee772b20f8748d3571125e315118d01afb04",
+    "length": 143,
+    "details": {
+      "command": "SYST:UNIT CEL",
+      "tx": "53 59 53 54 3A 55 4E 49 54 20 43 45 4C 0A",
+      "timestamp_tx": "2026-10-15T12:08:05.907099+00:00",
+      "timestamp_rx": "2026-10-15T12:08:11.074681+00:00",
+      "elapsed_ms": 9655.013400013559,
+      "bytes_received": 143,
+      "error_code": "incomplete_frame",
+      "port_open": true,
+      "attempt": 12758
+    }
+  },
+  {
+    "event_timestamp": "2026-10-15T12:08:47.740411+00:00",
+    "file": "source\\evidencias\\11-thermopower-20261015-1140-a-1211.jsonl",
+    "line": 4604,
+    "hex": "5443502d33322c543a323032362f31302f31352030393a31343a30342c32362e392c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c3230312e38307c4b7ca1e62c32342e32317c4b7ca1e62c3138302e32397c4b7ca1e62c38302e38307c4b7ca1e62c32342e34387c4b7ca1e62c34362e32347c4b7ca1e62c34392e32357c4b7ca1e62c32352e35387c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b",
+    "sha256": "6ae08d1f6ea0a121c70f1bc661fc6e98c897f246cea2b5e5594e7375999e295d",
+    "length": 640,
+    "details": {
+      "command": "SYST:UNIT CEL",
+      "tx": "53 59 53 54 3A 55 4E 49 54 20 43 45 4C 0A",
+      "timestamp_tx": "2026-10-15T12:08:43.227164+00:00",
+      "timestamp_rx": "2026-10-15T12:08:47.354348+00:00",
+      "elapsed_ms": 6037.10149996914,
+      "bytes_received": 640,
+      "error_code": "incomplete_frame",
+      "port_open": true,
+      "attempt": 12763
+    }
+  },
+  {
+    "event_timestamp": "2026-10-13T18:08:22.237093+00:00",
+    "file": "diagnostic-13\\logs\\thermopower.log",
+    "line": 1122,
+    "hex": "5443502d33322c543a323032362f31302f31332031353a31333a33362c32372e342c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c34312e36377c4b7ca1e62c33302e35327c4b7ca1e62c33302e39397c4b7ca1e62c33322e37377c4b7ca1e62c32312e36377c4b7ca1e62c32392e30317c4b7ca1e62c32342e32307c4b7ca1e62c32342e32337c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e30307c4b7ca1e62c302e",
+    "sha256": "1213168ba1c0c72c10adf5df7145e839df954f417e6b29c81da350906f3b9b08",
+    "length": 394,
+    "details": {
+      "command": "SYST:UNIT CEL",
+      "tx": "53 59 53 54 3A 55 4E 49 54 20 43 45 4C 0A",
+      "timestamp_tx": "2026-10-13T18:08:18.059610+00:00",
+      "timestamp_rx": "2026-10-13T18:08:22.177694+00:00",
+      "elapsed_ms": 6903.033699956723,
+      "bytes_received": 394,
+      "error_code": "incomplete_frame",
+      "port_open": true,
+      "attempt": 4144
+    }
+  },
+  {
+    "event_timestamp": "2026-10-13T18:09:40.598812+00:00",
+    "file": "diagnostic-13\\logs\\thermopower.log",
+    "line": 1371,
+    "hex": "5443502d33322c543a323032362f31302f31332031353a31343a35342c32372e352c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1e62c4f70656e7c4b7c",
+    "sha256": "6bd6c41aa313097723058dd76bb82fc19ac23b7c59417dee119ea4170a555468",
+    "length": 111,
+    "details": {
+      "command": "SYST:UNIT CEL",
+      "tx": "53 59 53 54 3A 55 4E 49 54 20 43 45 4C 0A",
+      "timestamp_tx": "2026-10-13T18:09:35.646804+00:00",
+      "timestamp_rx": "2026-10-13T18:09:40.430512+00:00",
+      "elapsed_ms": 9091.324899927713,
+      "bytes_received": 111,
+      "error_code": "incomplete_frame",
+      "port_open": true,
+      "attempt": 4159
+    }
+  },
+  {
+    "event_timestamp": "2026-10-13T18:11:17.594591+00:00",
+    "file": "diagnostic-13\\logs\\thermopower.log",
+    "line": 1860,
+    "hex": "5443502d33322c543a323032362f31302f31332031353a31363a33312c32372e352c4f70656e7c4b7ca1e62c4f70656e7c4b7ca1",
+    "sha256": "59a052e9534af514d951cffb17102ec2f3d7dbb16c6e398986f4d74ebe94353a",
+    "length": 52,
+    "details": {
+      "command": "SYST:UNIT CEL",
+      "tx": "53 59 53 54 3A 55 4E 49 54 20 43 45 4C 0A",
+      "timestamp_tx": "2026-10-13T18:11:12.359752+00:00",
+      "timestamp_rx": "2026-10-13T18:11:17.025271+00:00",
+      "elapsed_ms": 8359.999599982984,
+      "bytes_received": 52,
+      "error_code": "incomplete_frame",
+      "port_open": true,
+      "attempt": 1
+    }
+  }
+]

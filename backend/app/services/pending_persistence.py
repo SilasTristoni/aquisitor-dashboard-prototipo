@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
+from app.services.storage_health import retry_due
+
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
@@ -54,12 +56,14 @@ async def flush_pending_samples(service: "AcquisitionService") -> None:
     # transaction has no suspension points: commit, buffer removal and counters
     # complete together before another task can flush or change the session.
     for device_id, runtime in list(service.runtimes.items()):
-        if not runtime.session_id or not runtime.buffer:
+        if not runtime.session_id or not runtime.buffer or not retry_due(runtime):
             continue
         try:
             with bounded_pending_writes():
                 await service._flush(device_id, runtime)
         except Exception as exc:
+            if runtime.storage_fault:
+                continue  # Structured, bounded logging belongs to storage_health.
             # Keep the buffer and retry on the next persistence tick. A DB error
             # must not stop another source or invoke device recovery.
             logger.error(

@@ -5,6 +5,7 @@ import argparse
 import io
 import json
 import os
+import secrets
 import sys
 import zipfile
 from pathlib import Path
@@ -24,6 +25,8 @@ def main():
     if not data.is_relative_to(ROOT / "build") or not data.name.startswith("smoke-runtime-"):
         raise ValueError("Export smoke requires an isolated build/smoke-runtime-* directory")
     os.environ["THERMOPOWER_DATABASE_URL"] = f"sqlite:///{(data / 'data/thermopower.db').as_posix()}"
+    # This process seeds only the isolated ORM database, never the server's signing key.
+    os.environ["THERMOPOWER_JWT_SECRET"] = secrets.token_urlsafe(48)
     sys.path[:0] = [str(ROOT / "backend"), str(ROOT / "backend/tests")]
     from test_support_exports import seed_source_session
 
@@ -67,11 +70,16 @@ def main():
                     "transactions.json", "input-boundary-metrics.json", "runtime-state.json",
                     "build-info.json", "version.txt", "commit.txt", "session-summary.json",
                     "last-errors.json", "counters-AT-GPM.json", "evidence-status.json",
+                    "storage-state.json",
                 }
                 assert required <= set(archive.namelist())
                 for name in archive.namelist():
                     assert password.encode() not in archive.read(name)
-                assert json.loads(archive.read("evidence-status.json"))["flush_completed"]
+                assert archive.testzip() is None
+                evidence = json.loads(archive.read("evidence-status.json"))
+                assert evidence["flush_completed"] is False
+                assert "Never wait" in evidence["flush_policy"]
+                assert "unavailable" not in json.loads(archive.read("storage-state.json"))
             (data / "physical-diagnostic.zip").write_bytes(diagnostic.content)
             print("Packaged physical diagnostic: passed; no serial operation requested")
     print("Packaged exports: 18 passed; user manual and support ZIP: passed")

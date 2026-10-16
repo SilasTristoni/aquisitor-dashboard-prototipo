@@ -77,6 +77,8 @@ class SerialTransportConfiguration:
 
 def classify_serial_error(exc: BaseException) -> SerialTransportError:
     message = str(exc).casefold()
+    if isinstance(exc, FileNotFoundError) or "filenotfounderror" in message:
+        return SerialTransportError("port_not_found", "Porta não encontrada no Windows.")
     if any(token in message for token in ("access", "permission", "denied", "busy", "used")):
         return SerialTransportError(
             "port_busy",
@@ -769,3 +771,9 @@ class At4532SerialTransport(SerialTransport):
 
 class Gpm8213SerialTransport(SerialTransport):
     """GPM-8213 USB CDC/RS-232 transport boundary."""
+
+    def _observe_response(self, response: bytes, terminator: bytes) -> None:
+        if response and not response.endswith(terminator):
+            raise SerialTransportError(
+                "incomplete_frame", "Resposta parcial: terminador oficial CRLF não recebido."
+            )

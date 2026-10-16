@@ -204,6 +204,9 @@ def physical_diagnostic_zip(
         db.rollback()
         sections["session_counts"] = "unavailable or partial: database deadline/lock"
     # Release the read transaction before compression, including WAL reader snapshots.
+    from app.services.storage_diagnostic import storage_snapshot
+
+    storage = storage_snapshot(db)
     if not isinstance(db, UnavailableDatabase):
         db.rollback()
     with zipfile.ZipFile(
@@ -242,6 +245,7 @@ def physical_diagnostic_zip(
         "input-boundary-metrics.json": {"current": boundaries, "saved_checkpoints": snapshots},
         "counters-AT-GPM.json": {"current": states, "saved_checkpoints": snapshots},
         "session-summary.json": sessions,
+        "storage-state.json": storage,
         "evidence-status.json": {
             "journal": snapshot.get("journal", {"unavailable": "offline process"}),
             "flush_completed": False,

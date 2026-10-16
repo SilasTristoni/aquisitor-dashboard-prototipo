@@ -8,6 +8,12 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $arguments = @('--app-data', $AppData, '--output', $Output)
 if ($Database) { $arguments += @('--database', $Database) }
+if (-not $Executable) {
+    $packagedExecutable = Join-Path $PSScriptRoot 'ThermoPowerMonitor.exe'
+    if (Test-Path -LiteralPath $packagedExecutable -PathType Leaf) {
+        $Executable = $packagedExecutable
+    }
+}
 if ($Executable) {
     & $Executable '--export-local-diagnostic' @arguments
 } else {

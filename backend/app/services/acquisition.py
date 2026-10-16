@@ -43,10 +43,10 @@ from app.services.device_policy import (
     at4532_identity_fallback_policy,
     mark_at4532_verified_by_measurement,
 )
-from app.services.pending_persistence import sample_write_session
+from app.services.pending_persistence import bounded_pending_writes, sample_write_session
 from app.services.reading_identity import reading_identity
 from app.services.session_clock import utc
-from app.services.usb_discovery import usb_discovery_service
+from app.services.storage_health import STORAGE_ERRORS, record_failure
 from app.services.websocket import websocket_hub
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,8 @@ class DeviceRuntime:
     latest: DeviceReading | None = None
     sample_count: int = 0
     last_error: str | None = None
+    storage_fault: dict | None = None
+    storage_interruptions: int = 0
     pending_start: list[DeviceReading] | None = None
     persisted_count: int = 0
     observed_readings: deque[DeviceReading] = field(default_factory=lambda: deque(maxlen=128))
@@ -351,7 +353,11 @@ class AcquisitionService:
             }
             return adapter
         if device.protocol == "gpm8213_serial":
-            return Gpm8213Adapter(device.port, device.baud_rate)
+            usb = (device.metadata_json or {}).get("usb", {})
+            return Gpm8213Adapter(device.port, device.baud_rate, usb_identity={
+                "vid": usb.get("vid"), "pid": usb.get("pid"),
+                "serial_number": usb.get("serial_number") or device.serial_number,
+            })
         raise ValueError(f"Protocolo não suportado: {device.protocol}")
 
     @staticmethod
@@ -420,7 +426,9 @@ class AcquisitionService:
             device = db.get(Device, device_id)
             if not device or not device.active:
                 raise ValueError("Equipamento não encontrado ou inativo")
-            if device.port:
+            if device.port and device.protocol != "gpm8213_serial":
+                # GPM resolves its exact USB identity before claiming the actual COM.
+                # Its saved COM may now legitimately belong to another device.
                 port_key = device.port.casefold()
                 conflicting_runtime = next(
                     (
@@ -437,17 +445,6 @@ class AcquisitionService:
                         f"A porta {device.port} já está sob controle do equipamento "
                         f"#{conflicting_runtime} explicitamente conectado.",
                     )
-            if device.protocol == "gpm8213_serial" and device.serial_number:
-                # The USB serial is stable; Windows may assign a different COM port.
-                usb_discovery_service.discover(
-                    db,
-                    {
-                        port
-                        for runtime in self.runtimes.values()
-                        if (port := getattr(runtime.adapter, "port", None))
-                    },
-                )
-                db.refresh(device)
             adapter = self._adapter_for(device)
             logger.info(
                 "device connect requested device_id=%s protocol=%s port=%s",
@@ -810,16 +807,25 @@ class AcquisitionService:
 
     async def attach_session(self, device_id: int, session_id: int) -> None:
         runtime = self.runtimes.get(device_id)
+        if runtime and runtime.storage_fault:
+            await self._flush(device_id, runtime)
+        recovering = bool(runtime and runtime.task and not runtime.task.done()
+                          and getattr(runtime.adapter, "connection_state", None) == "recovering")
         if (
             runtime is None
             or runtime.last_error is not None
             or (runtime.task is not None and runtime.task.done())
-            or not (await runtime.adapter.get_status()).connected
+            or (not recovering and not (await runtime.adapter.get_status()).connected)
         ):
             await self.connect(device_id)
         runtime = self.runtimes[device_id]
         if runtime.session_id != session_id:
-            runtime.persisted_count = 0
+            with SessionLocal() as db:
+                runtime.persisted_count = max(
+                    db.scalar(select(func.max(model.sequence)).where(
+                        model.session_id == session_id, model.device_id == device_id,
+                    )) or 0 for model in (ElectricalSample, TemperatureSample)
+                )
         runtime.session_id = session_id
         runtime.paused = False
         await websocket_hub.publish(
@@ -894,8 +900,9 @@ class AcquisitionService:
             if runtime.latest
             else 0
         )
-        runtime_failed = runtime.last_error is not None or bool(
-            runtime.task and runtime.task.done() and not runtime.task.cancelled()
+        runtime_failed = bool(
+            runtime.storage_fault or runtime.last_error
+            or (runtime.task and runtime.task.done() and not runtime.task.cancelled())
         )
         intervals = [
             (b - a).total_seconds() * 1000
@@ -905,6 +912,7 @@ class AcquisitionService:
         observed = statistics.median(intervals) if intervals else None
         expected = round(getattr(runtime.adapter, "expected_interval_seconds", 1) * 1000)
         metrics = getattr(runtime.adapter, "fetch_diagnostics", None)
+        recovery = getattr(runtime.adapter, "recovery_status", None)
         return {
             "device_id": device_id,
             **status.model_dump(mode="json"),
@@ -930,7 +938,13 @@ class AcquisitionService:
             "valid_channels": valid_channels,
             "channel_count": len(runtime.latest.temperatures_c) if runtime.latest else 0,
             "latest_reading": latest,
-            "last_error": runtime.last_error,
+            "last_error": (
+                runtime.storage_fault["message"] if runtime.storage_fault
+                else runtime.last_error or (recovery or {}).get("message")
+            ),
+            "storage": runtime.storage_fault,
+            "storage_interruptions": runtime.storage_interruptions,
+            "recovery": recovery,
             "last_connection_result": self.last_connection_results.get(device_id),
             "identity_status": getattr(runtime.adapter, "identity_status", "not_applicable"),
             "protocol_status": getattr(runtime.adapter, "protocol_status", "not_verified"),
@@ -1078,12 +1092,23 @@ class AcquisitionService:
                     self._capture_prepared(device_id, reading)
                 if runtime.session_id and not runtime.paused:
                     runtime.buffer.append(reading)
-                    await self._evaluate_alerts(device_id, runtime, reading)
-                    if (
-                        len(runtime.buffer) >= settings.measurement_batch_size
-                        or monotonic() - runtime.last_flush >= 2
-                    ):
-                        await self._flush(device_id, runtime)
+                    try:
+                        if not runtime.storage_fault:
+                            with bounded_pending_writes():
+                                await self._evaluate_alerts(device_id, runtime, reading)
+                                if (
+                                    len(runtime.buffer) >= settings.measurement_batch_size
+                                    or monotonic() - runtime.last_flush >= 2
+                                ):
+                                    await self._flush(device_id, runtime)
+                    except STORAGE_ERRORS as exc:
+                        if not runtime.storage_fault:
+                            record_failure(runtime, device_id, exc)
+                    # Backpressure at the producer yield: no accumulating samples or
+                    # physical reconnect due to a storage fault. Timer/manual flush
+                    # clears this condition only after a successful commit.
+                    while runtime.storage_fault:
+                        await asyncio.sleep(0.1)
                 if runtime.pending_start is None:
                     await self._publish_reading(device_id, runtime, reading)
         except asyncio.CancelledError:
@@ -1109,28 +1134,39 @@ class AcquisitionService:
                 logger.exception("Failed to close errored adapter for device %s", device_id)
             if cleanup_errors:
                 runtime.last_error = f"{runtime.last_error}; {'; '.join(cleanup_errors)}"
-            with SessionLocal() as db:
-                db.add(
-                    SystemEvent(
-                        device_id=device_id,
-                        session_id=runtime.session_id,
-                        level="error",
-                        category="read_error",
-                        message="Aquisição interrompida",
-                        details={
-                            "error": type(exc).__name__,
-                            "message": str(exc),
-                            "cleanup_errors": cleanup_errors,
-                        },
+            try:
+                with sample_write_session(SessionLocal) as db:
+                    db.add(
+                        SystemEvent(
+                            device_id=device_id,
+                            session_id=runtime.session_id,
+                            level="error",
+                            category="read_error",
+                            message="Aquisição interrompida",
+                            details={
+                                "error": type(exc).__name__,
+                                "message": str(exc)[:512],
+                                "cleanup_errors": cleanup_errors,
+                            },
+                        )
                     )
-                )
-                db.commit()
+                    db.commit()
+            except Exception as event_exc:
+                logger.error("Could not persist acquisition error event device_id=%s error_type=%s",
+                             device_id, type(event_exc).__name__)
             await websocket_hub.publish(
                 "device.status",
                 {"device_id": device_id, "state": "error", "message": "Falha de aquisição"},
             )
 
     async def _flush(self, device_id: int, runtime: DeviceRuntime) -> None:
+        try:
+            await self._commit_samples(device_id, runtime)
+        except STORAGE_ERRORS as exc:
+            record_failure(runtime, device_id, exc)
+            raise
+
+    async def _commit_samples(self, device_id: int, runtime: DeviceRuntime) -> None:
         if not runtime.buffer or not runtime.session_id:
             runtime.buffer.clear()
             runtime.last_flush = monotonic()
@@ -1239,10 +1275,21 @@ class AcquisitionService:
                         for index, corrected in corrected_values
                     ]
                     db.add(measurement)
+            if runtime.storage_fault:
+                db.add(SystemEvent(
+                    device_id=device_id, session_id=session_id, level="warning",
+                    category="storage_recovered",
+                    message="Gravação recuperada após interrupção; verificar lacuna do ensaio",
+                    details={**runtime.storage_fault,
+                             "recovered_at": datetime.now(UTC).isoformat()},
+                ))
             db.commit()
         del runtime.buffer[: len(readings)]
         runtime.persisted_count += len(readings)
         runtime.last_flush = monotonic()
+        if runtime.storage_fault:
+            runtime.storage_interruptions += 1
+            runtime.storage_fault = None
 
     async def _evaluate_alerts(
         self, device_id: int, runtime: DeviceRuntime, reading: DeviceReading
@@ -1251,7 +1298,7 @@ class AcquisitionService:
             return
         now = monotonic()
         created: list[dict] = []
-        with SessionLocal() as db:
+        with sample_write_session(SessionLocal) as db:
             rules = db.scalars(
                 select(AlertRule).where(
                     AlertRule.device_id == device_id, AlertRule.enabled.is_(True)

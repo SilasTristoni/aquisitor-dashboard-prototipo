@@ -1860,14 +1860,117 @@ class Gpm8213UsbSerialAdapter(_DocumentedProtocolAdapter):
     normalizer = Gpm8213Normalizer()
 
     def __init__(
-        self, port: str | None, baud_rate: int | None, transport: SerialTransport | None = None
+        self, port: str | None, baud_rate: int | None, transport: SerialTransport | None = None,
+        *, usb_identity: dict | None = None,
     ) -> None:
         super().__init__(port, baud_rate, transport)
+        from app.adapters.usb_identity import UsbIdentityResolver
+
+        self.usb_resolver = UsbIdentityResolver(usb_identity)
+        self._injected_transport = transport is not None
+        self._stop_requested = False
+        self._reconnecting = False
+        self.connection_state = "disconnected"
+        self.recovery_status = {"attempts": 0, "consecutive_failures": 0, "cause": None,
+                                "port_available": None, "last_valid_at": None}
+        self._last_recovery_log = 0.0
         self.number_requested = 8
         self.number_reported: int | None = None
         self.headers_requested = list(self.protocol.item_functions)
         self.headers_reported: list[str] = []
         self._headers: list[str] = []
+
+    async def connect(self) -> None:
+        if not self._injected_transport:
+            try:
+                port = await self.usb_resolver.resolve(
+                    self.port or "", recovering=self._reconnecting,
+                )
+            finally:
+                self.recovery_status["port_available"] = self.usb_resolver.last_available
+            if port != self.port:
+                if self.transport:
+                    await self.transport.close()
+                self.transport = None
+                self.port = port
+            self.recovery_status["port"] = self.port
+        await super().connect()
+        # Identity/configuration success alone is not a new measurement.
+        self.connection_state = "recovering" if self._reconnecting else "connected"
+
+    async def disconnect(self) -> None:
+        if not self._reconnecting:
+            self._stop_requested = True
+        await super().disconnect()
+        self.connection_state = "disconnected"
+
+    async def stop_reading(self) -> None:
+        self._stop_requested = True
+        await super().stop_reading()
+
+    def _record_recovery_failure(self, exc):
+        metrics = self.recovery_status
+        metrics["consecutive_failures"] += 1
+        code = getattr(exc, "code", "protocol_response_invalid")
+        changed = metrics["cause"] != code
+        metrics.update(cause=code, port=self.port, message=str(exc)[:256])
+        self.connection_state = "recovering"
+        if changed or monotonic() - self._last_recovery_log >= 60:
+            logger.warning("GPM recovery port=%s cause=%s attempts=%s available=%s last_valid=%s",
+                           self.port, code, metrics["attempts"], metrics["port_available"],
+                           metrics["last_valid_at"])
+            self._last_recovery_log = monotonic()
+
+    async def start_reading(self) -> AsyncIterator[DeviceReading]:
+        self._reading = True
+        self._stop_requested = False
+        needs_connect = False
+        try:
+            while not self._stop_requested:
+                started = monotonic()
+                try:
+                    if needs_connect:
+                        delay = min(30, 2 ** min(self.recovery_status["consecutive_failures"], 5))
+                        self.recovery_status["next_attempt_delay_seconds"] = delay
+                        await asyncio.sleep(delay)
+                        if self._stop_requested:
+                            break
+                        self.recovery_status["attempts"] += 1
+                        self._reconnecting = True
+                        try:
+                            await self.connect()
+                        finally:
+                            self._reconnecting = False
+                        self._reading = True
+                    reading = await self._read_once()
+                except (SerialTransportError, ProtocolResponseError) as exc:
+                    self.read_errors += 1
+                    self._record_recovery_failure(exc)
+                    if self.transport:
+                        try:
+                            await self.transport.close()
+                        except SerialTransportError as close_exc:
+                            self._record_recovery_failure(close_exc)
+                    needs_connect = True
+                    continue
+                needs_connect = False
+                self.connection_state = "connected"
+                self.last_message_at = reading.received_timestamp
+                self.recovery_status.update(consecutive_failures=0, cause=None, message=None,
+                    last_valid_at=reading.received_timestamp.isoformat(),
+                    next_attempt_delay_seconds=0)
+                self._read_count += 1
+                yield reading
+                remaining = self.expected_interval_seconds - (monotonic() - started)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+        finally:
+            self._reading = False
+
+    async def get_status(self) -> DeviceStatus:
+        status = await super().get_status()
+        return status.model_copy(update={"state": self.connection_state,
+            "reading": self._reading and self.connection_state == "connected"})
 
     def _configuration(self) -> SerialTransportConfiguration:
         # USB is documented as CDC and does not expose a baud setting in the USB table.

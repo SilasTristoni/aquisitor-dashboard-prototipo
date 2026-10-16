@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,7 @@ def run(command, log, env=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gates", type=Path, required=True)
+    parser.add_argument("--candidate-date", help="YYYYMMDD; preserve previous engineering packages")
     args = parser.parse_args()
     gates = json.loads(args.gates.read_text(encoding="utf-8"))
     required = {
@@ -56,6 +58,12 @@ def main():
         gates["checks"][key] != "passed" for key in required
     ):
         raise RuntimeError("Required gates are not all green")
+    if args.candidate_date:
+        if not re.fullmatch(r"\d{8}", args.candidate_date):
+            raise ValueError("candidate-date must be YYYYMMDD")
+        for gate in ("physical_reliability", "dual_source_soak", "pending_persistence"):
+            if gates["checks"].get(gate) != "passed":
+                raise RuntimeError(f"Reliability gate not green: {gate}")
     sources = gates["source_sha256"]
 
     def verify_sources():
@@ -68,6 +76,8 @@ def main():
     if version != "0.7.0-engineering-AT4532-celsius-trigger":
         raise RuntimeError("Only the AT4532 engineering candidate is authorized")
     name = f"ThermoPower-{version}"
+    if args.candidate_date:
+        name = f"ThermoPower-0.7.0-engineering-AT4532-reliability-{args.candidate_date}"
     destination = ROOT / "engineering" / name
     archive = Path(str(destination) + ".zip")
     if destination.exists() or archive.exists():
@@ -122,6 +132,10 @@ def main():
         "app.core.physical_trace",
         "app.services.physical_diagnostic",
         "app.engineering.at4532_repeated_celsius",
+        "app.engineering.local_diagnostic",
+        "app.services.storage_health",
+        "app.services.storage_diagnostic",
+        "app.adapters.usb_identity",
     ):
         if module not in bundled.toc:
             raise RuntimeError(
@@ -143,6 +157,8 @@ def main():
         json.dumps(gates["validation"], indent=2), encoding="utf-8"
     )
     shutil.copy2(ROOT / "scripts/characterize-at4532-repeated-celsius.ps1", staging)
+    shutil.copy2(ROOT / "scripts/export-local-diagnostic.ps1", staging)
+    shutil.copy2(ROOT / "docs/PHYSICAL_RELIABILITY_070_20261015.md", staging)
     shutil.copy2(
         ROOT / "build/engineering-070/production-070-baseline.json",
         staging / "PRODUCTION-070-BASELINE.json",
@@ -178,6 +194,20 @@ def main():
         ],
         work / "smoke.log",
     )
+    offline_output = work / "offline-diagnostic-smoke.zip"
+    run(
+        [str(staging / "ThermoPowerMonitor.exe"), "--export-local-diagnostic",
+         "--app-data", str(work / "offline-smoke"), "--output", str(offline_output)],
+        work / "offline-smoke.log",
+    )
+    with zipfile.ZipFile(offline_output) as diagnostic:
+        if diagnostic.testzip() is not None:
+            raise RuntimeError("Offline diagnostic ZIP is corrupt")
+        status = json.loads(diagnostic.read("evidence-status.json"))
+        if "offline export" not in status["sections"]["runtime"]:
+            raise RuntimeError("Offline collection did not disclose missing runtime")
+        if "storage-state.json" not in diagnostic.namelist():
+            raise RuntimeError("Storage diagnostic missing")
     for p in staging.rglob("*"):
         if p.is_file() and (
             p.suffix.lower() in {".db", ".csv", ".xlsx"}
