@@ -34,12 +34,22 @@ export function seriesPeak(rows: Array<Record<string, unknown>>, keys: string[])
 }
 
 type ChartPoint = Record<string, unknown> & { timestamp: string };
+export type ChartGap = { source: "electrical" | "thermal"; after: string; before: string; keys?: string[] };
+
+export function observedGaps(points: ChartPoint[], source: ChartGap["source"]): ChartGap[] {
+  const intervals = points.slice(1).map((point, index) => parseUtcTimestamp(point.timestamp) - parseUtcTimestamp(points[index].timestamp)).filter(value => value > 0).sort((a, b) => a - b);
+  if (intervals.length < 3) return [];
+  const middle = Math.floor(intervals.length / 2);
+  const cadence = intervals.length % 2 ? intervals[middle] : (intervals[middle - 1] + intervals[middle]) / 2;
+  return points.slice(1).flatMap((point, index) => parseUtcTimestamp(point.timestamp) - parseUtcTimestamp(points[index].timestamp) > cadence * 2 ? [{ source, after: points[index].timestamp, before: point.timestamp }] : []);
+}
 
 export function mergeIndependentSeries(
   electrical: ChartPoint[],
   thermal: ChartPoint[],
   mode: TimeAxisMode,
   sessionStartedAt?: string,
+  gaps: ChartGap[] = [],
 ): Array<Record<string, unknown>> {
   const sessionOrigin = sessionStartedAt ? parseUtcTimestamp(sessionStartedAt) : Number.NaN;
   const validSessionOrigin = Number.isFinite(sessionOrigin) ? sessionOrigin : Math.min(
@@ -68,6 +78,21 @@ export function mergeIndependentSeries(
 
   add(electrical, "electrical");
   add(thermal, "thermal");
+  // Presentation-only separators derived from raw stream boundaries, before downsampling.
+  // Never feed these rows to statistics or persistence.
+  const streamKeys = {
+    electrical: [...new Set(electrical.flatMap(point => Object.keys(point)))],
+    thermal: [...new Set(thermal.flatMap(point => Object.keys(point)))],
+  };
+  for (const gap of gaps) {
+    const middle = (parseUtcTimestamp(gap.after) + parseUtcTimestamp(gap.before)) / 2;
+    const axisValue = mode === "synchronized" ? (middle - validSessionOrigin) / 1000 : middle;
+    if (!Number.isFinite(axisValue)) continue;
+    const keys = gap.keys ?? streamKeys[gap.source];
+    const row: Record<string, unknown> = { ...(rows.get(axisValue) ?? {}), axisValue, chartGap: true, [`${gap.source}Timestamp`]: gap.after };
+    for (const key of keys) if (["active_power_w", "power", "avgTemp"].includes(key) || key.startsWith("channel_") || /^t\d+$/.test(key)) row[key] = null;
+    rows.set(axisValue, row);
+  }
   return [...rows.values()].sort(
     (left, right) => Number(left.axisValue) - Number(right.axisValue),
   );

@@ -428,6 +428,7 @@ def test_client_preview_outputs_keep_raw_streams_and_professional_workbook(
         "Leituras Térmicas Reais",
         "Dados Sincronizados",
         "Metadados",
+        "Picos térmicos",
     ]
     assert workbook["Leituras Elétricas Reais"].max_row == sample_count + 1
     assert workbook["Leituras Térmicas Reais"].max_row == sample_count + 1

@@ -1,0 +1,6 @@
+.numeric-table .thermal-peak {
+  white-space: normal;
+  min-width: 200px;
+  max-width: 300px;
+  text-align: left;
+}

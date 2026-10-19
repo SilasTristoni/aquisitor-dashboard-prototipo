@@ -16,27 +16,26 @@ from sqlalchemy import func, select, update
 
 from app.api.analysis_routes import Db, Operator, session_or_404, utc
 from app.core.config import get_settings
-from app.core.security import hash_password, verify_password
+from app.core.security import hash_password
 from app.models.entities import SessionShare, User
 from app.schemas.contracts import PeriodReportRequest
 from app.services.period_documents import render_period_pdf
 from app.services.period_reporting import PeriodReportDataService
 from app.services.period_workbook import render_period_csv, render_period_xlsx
+from app.services.result_publication import (
+    encode_document,
+    portal_origin,
+    publish_snapshot,
+    revoke_publication,
+)
+from app.services.share_policy import (
+    PRIVATE_HEADERS,
+    ShareAccess,
+    SharePermissions,
+    enforce_share_access,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["sharing"])
-PRIVATE_HEADERS = {
-    "Cache-Control": "no-store",
-    "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff",
-}
-
-
-class SharePermissions(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    graphs: bool = True
-    pdf: bool = False
-    xlsx: bool = False
-    csv: bool = False
 
 
 class ShareInput(BaseModel):
@@ -44,6 +43,15 @@ class ShareInput(BaseModel):
     password: str | None = Field(default=None, min_length=1, max_length=72)
     expires_in_days: Literal[1, 7, 30] | None = 7
     permissions: SharePermissions = Field(default_factory=SharePermissions)
+    channels: list[int] | None = Field(default=None, max_length=32)
+    include_power: bool = True
+    include_open_channels: bool = False
+    destination: Literal["local", "portal"] = "local"
+
+    @field_validator("channels")
+    @classmethod
+    def valid_channels(cls, value):
+        return PeriodReportRequest.validate_channels(value)
 
     @field_validator("password")
     @classmethod
@@ -51,17 +59,6 @@ class ShareInput(BaseModel):
         if value and len(value.encode()) > 72:
             raise ValueError("A senha deve ter até 72 bytes")
         return value
-
-
-class ShareAccess(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    token: str = Field(min_length=40, max_length=100)
-    password: str | None = Field(default=None, max_length=72)
-
-    @field_validator("password")
-    @classmethod
-    def password_bytes(cls, value):
-        return ShareInput.password_bytes(value)
 
 
 class ShareRateLimiter:
@@ -103,6 +100,7 @@ def share_dict(row: SessionShare, db) -> dict:
     creator = db.get(User, row.created_by)
     token = share_token(row.token_nonce)
     recoverable = hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), row.token_hash)
+    pending = (row.report_options or {}).get("publication_pending", False)
     return {
         "id": row.id,
         "created_by": row.created_by,
@@ -114,22 +112,37 @@ def share_dict(row: SessionShare, db) -> dict:
         "access_count": row.access_count,
         "permissions": row.permissions,
         "has_password": bool(row.password_hash),
-        "path": f"/compartilhado#{token}" if recoverable and not row.revoked_at else None,
+        "path": f"/compartilhado#{token}"
+        if recoverable and not row.revoked_at and not pending
+        else None,
+        "portal_origin": row.portal_origin,
         "status": "revoked"
         if row.revoked_at
         else "expired"
         if row.expires_at and utc(row.expires_at) <= datetime.now(UTC)
+        else "pending"
+        if pending
         else "active",
     }
 
 
 @router.post("/sessions/{session_id}/shares", status_code=201)
 def create_share(session_id: int, payload: ShareInput, db: Db, user: Operator, response: Response):
-    session_or_404(db, session_id)
+    session = session_or_404(db, session_id)
+    if payload.destination == "portal" and (
+        session.status != "finished" or not session.analysis_start
+    ):
+        raise HTTPException(422, "Finalize a sessão e salve o período oficial antes de publicar.")
     nonce = secrets.token_urlsafe(32)
     token = share_token(nonce)
     row = SessionShare(
         session_id=session_id,
+        report_options={
+            "channels": payload.channels,
+            "include_power": payload.include_power,
+            "include_open_channels": payload.include_open_channels,
+        },
+        portal_origin=portal_origin() if payload.destination == "portal" else None,
         token_hash=hashlib.sha256(token.encode()).hexdigest(),
         token_nonce=nonce,
         password_hash=hash_password(payload.password) if payload.password else None,
@@ -139,8 +152,53 @@ def create_share(session_id: int, payload: ShareInput, db: Db, user: Operator, r
         if payload.expires_in_days
         else None,
     )
-    db.add(row)
-    db.commit()
+    if row.portal_origin:
+        period = share_period(row, session)
+        try:
+            service = PeriodReportDataService(db)
+            data = service.collect(period)
+            result = public_result(row, session, service.preview_data(data, period))
+            sanitize_report(data, session)
+            builders = {
+                "pdf": render_period_pdf,
+                "xlsx": render_period_xlsx,
+                "csv": render_period_csv,
+            }
+            documents = {
+                kind: encode_document(builder(data, period))
+                for kind, builder in builders.items()
+                if row.permissions.get(kind)
+            }
+        except ValueError as exc:
+            raise HTTPException(
+                422, "Não há medições disponíveis nos filtros selecionados"
+            ) from exc
+        snapshot = {
+            "schema_version": 1,
+            "created_at": datetime.now(UTC),
+            "token_hash": row.token_hash,
+            "password_hash": row.password_hash,
+            "expires_at": row.expires_at,
+            "permissions": row.permissions,
+            "result": result,
+            "documents": documents,
+        }
+        # Keep a revocable record even if the server accepted the upload but its
+        # response was lost. No database transaction is held across network I/O.
+        row.report_options = {**row.report_options, "publication_pending": True}
+        db.add(row)
+        db.commit()
+        origin = row.portal_origin
+        db.commit()  # release SQLAlchemy's post-commit refresh transaction
+        publish_snapshot(origin, snapshot)
+        db.refresh(row)
+        if row.revoked_at:
+            raise HTTPException(409, "Compartilhamento revogado durante a publicação.")
+        row.report_options = {**row.report_options, "publication_pending": False}
+        db.commit()
+    else:
+        db.add(row)
+        db.commit()
     response.headers.update(PRIVATE_HEADERS)
     return {**share_dict(row, db), "token": token, "path": f"/compartilhado#{token}"}
 
@@ -180,6 +238,8 @@ def revoke_share(session_id: int, share_id: int, db: Db, _: Operator):
     if not row or row.session_id != session_id:
         raise HTTPException(404, "Compartilhamento não encontrado")
     if not row.revoked_at:
+        if row.portal_origin:
+            revoke_publication(row.portal_origin, row.token_hash)
         row.revoked_at = datetime.now(UTC)
         db.commit()
     return Response(status_code=204)
@@ -192,23 +252,28 @@ def authorize_share(payload: ShareAccess, request: Request, db, permission: str 
             SessionShare.token_hash == hashlib.sha256(payload.token.encode()).hexdigest()
         )
     )
-    if not row or row.revoked_at or (row.expires_at and utc(row.expires_at) <= datetime.now(UTC)):
-        raise HTTPException(404, "Compartilhamento indisponível")
-    if row.password_hash and not verify_password(payload.password or "", row.password_hash):
-        raise HTTPException(401, "Informe a senha correta do compartilhamento")
-    if permission and not row.permissions.get(permission, False):
-        raise HTTPException(403, "Download não autorizado neste compartilhamento")
+    enforce_share_access(row, payload, permission)
+    if row.portal_origin:
+        raise HTTPException(409, "Este resultado deve ser consultado no portal publicado.")
     session = session_or_404(db, row.session_id)
-    period = PeriodReportRequest(
+    return row, session, share_period(row, session)
+
+
+def share_period(row, session):
+    options = row.report_options or {}
+    return PeriodReportRequest(
         start=utc(session.analysis_start or session.started_at),
         end=utc(session.analysis_end or session.ended_at or datetime.now(UTC)),
         title=session.name,
         session_ids=[session.id],
         interpolation="none",
+        channels=options.get("channels"),
+        include_open_channels=options.get("include_open_channels", False),
+        include_power=options.get("include_power", True),
+        include_electrical_details=options.get("include_power", True),
         include_alerts=False,
         include_session_list=False,
     )
-    return row, session, period
 
 
 def record_access(db, share_id):
@@ -260,7 +325,14 @@ def access_share(payload: ShareAccess, request: Request, response: Response, db:
         preview = PeriodReportDataService(db).preview(period)
     except ValueError as exc:
         raise HTTPException(422, "Não há medições disponíveis no período compartilhado") from exc
-    result = {
+    result = public_result(row, session, preview)
+    record_access(db, row.id)
+    response.headers.update(PRIVATE_HEADERS)
+    return result
+
+
+def public_result(row, session, preview):
+    return {
         "name": session.name,
         "metadata": public_metadata(session),
         "status": session.status,
@@ -274,9 +346,6 @@ def access_share(payload: ShareAccess, request: Request, response: Response, db:
         "channel_labels": preview["channel_labels"],
         "annotations": public_tree(preview["annotations"]),
     }
-    record_access(db, row.id)
-    response.headers.update(PRIVATE_HEADERS)
-    return result
 
 
 @router.post("/public/shares/download/{file_type}")
@@ -288,11 +357,7 @@ def download_share(
         data = PeriodReportDataService(db).collect(period)
     except ValueError as exc:
         raise HTTPException(422, "Não há medições disponíveis no período compartilhado") from exc
-    # Render only this session's report, with technical equipment/user details removed.
-    for item in data["sessions"]:
-        item["devices"], item["operator"], item["metadata"] = [], None, public_metadata(session)
-    data["statistics"]["general"]["source_quality"] = []
-    data["alerts"] = []
+    sanitize_report(data, session)
     builders = {"pdf": render_period_pdf, "xlsx": render_period_xlsx, "csv": render_period_csv}
     content = builders[file_type](data, period)
     record_access(db, row.id)
@@ -309,3 +374,10 @@ def download_share(
             "Content-Disposition": f'attachment; filename="resultado.{file_type}"',
         },
     )
+
+
+def sanitize_report(data, session):
+    for item in data["sessions"]:
+        item["devices"], item["operator"], item["metadata"] = [], None, public_metadata(session)
+    data["statistics"]["general"]["source_quality"] = []
+    data["alerts"] = []

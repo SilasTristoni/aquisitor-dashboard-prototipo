@@ -1,5 +1,5 @@
 import type { Reading } from "../types";
-import { mergeIndependentSeries, parseUtcTimestamp, type TimeAxisMode } from "./chartPresentation";
+import { mergeIndependentSeries, observedGaps, parseUtcTimestamp, type TimeAxisMode } from "./chartPresentation";
 
 export type NumericStats = { min: number | null; max: number | null; avg: number | null };
 
@@ -58,6 +58,7 @@ export function buildCombinedView(
     latestTemperature: temperatureReadings.at(-1),
     chartData: mergeIndependentSeries(
       electricalPoints, thermalPoints, timeAxisMode, sessionStartedAt,
+      [...observedGaps(electricalPoints, "electrical"), ...observedGaps(thermalPoints, "thermal")],
     ),
   };
 }

@@ -369,3 +369,5 @@ class SessionShare(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     access_count: Mapped[int] = mapped_column(Integer, default=0)
     last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    report_options: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    portal_origin: Mapped[str | None] = mapped_column(String(512))

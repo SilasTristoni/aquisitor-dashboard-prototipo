@@ -1,3 +1,6 @@
+import { ReadingGapMarkers } from "../components/ReadingGapMarkers";
+import "./SessionDetailPage.css";
+import { ThermalPeak } from "../components/ThermalPeak";
 import { EventMarkerLabel, groupChartEvents } from "../components/ResultEvents";
 import { SessionSharing } from "../components/SessionSharing";
 import { useAuth } from "../auth";
@@ -53,6 +56,7 @@ function mergedSeries(preview: any, mode: TimeAxisMode): Array<Record<string, an
     stream?.temperatures ?? [],
     mode,
     stream?.session_started_at,
+    stream?.gaps,
   );
 }
 
@@ -62,7 +66,7 @@ function number(value: number | null | undefined, unit = "", decimals = 1): stri
   })}${unit}`;
 }
 
-export default function SessionDetailPage() {
+function SessionDetailContent() {
   const { id } = useParams();
   const { user } = useAuth();
   const canOperate = user?.role === "admin" || user?.role === "operator";
@@ -72,6 +76,9 @@ export default function SessionDetailPage() {
   const [periodMode, setPeriodMode] = useState("full");
   const [editing, setEditing] = useState(false);
   const [hiddenSeries, setHiddenSeries] = useState<string[]>([]);
+  const [exportChannels, setExportChannels] = useState("selected");
+  const [includePower, setIncludePower] = useState(true);
+  const [selectedAnalysis, setSelectedAnalysis] = useState<any>(null);
   const [appliedPeriod, setAppliedPeriod] = useState<{start: string; end: string} | null>(null);
   const [fullStabilization, setFullStabilization] = useState<any>(null);
   const [session, setSession] = useState<any>(null);
@@ -131,6 +138,7 @@ export default function SessionDetailPage() {
   }
 
   useEffect(() => {
+    setHiddenSeries([]); setExportChannels("selected"); setIncludePower(true); setAnalysis(null); setSelectedAnalysis(null);
     Promise.all([api<any>(`/sessions/${id}`), api<any>("/alerts?page_size=100")])
       .then(([detail, allAlerts]) => {
         const analysisStart = saoPauloInput(detail.analysis_period?.start ?? detail.started_at);
@@ -152,10 +160,23 @@ export default function SessionDetailPage() {
     [analysis, timeAxisMode],
   );
   const channels: number[] = analysis?.selected_channels ?? [];
+  const selectedChannels = channels.filter(channel => !hiddenSeries.includes(`channel_${channel}`));
+  const selectionKey = selectedChannels.join(",");
+  useEffect(() => {
+    let active = true;
+    setSelectedAnalysis(null);
+    if (!analysis || !appliedPeriod || selectedChannels.length === channels.length) return;
+    const timer = window.setTimeout(() => {
+      api<any>("/reports/period/preview", { method: "POST", body: JSON.stringify({ ...reportPayload(), channels: selectedChannels }) })
+        .then(value => { if (active) setSelectedAnalysis(value); })
+        .catch(reason => { if (active) setError(reason.message); });
+    }, 150);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [analysis, selectionKey]);
   const statistics = analysis?.statistics;
   const general = statistics?.general ?? {};
   const electrical = statistics?.electrical ?? {};
-  const temperature = statistics?.temperature ?? {};
+  const temperature = (selectedChannels.length === channels.length ? statistics : selectedAnalysis?.statistics)?.temperature ?? {};
   const stabilization = fullStabilization ?? temperature.stabilization ?? {};
   const chartSeries = [{ key: "active_power_w", label: "Potência ativa", color: POWER_COLOR }, ...channels.map((channel) => ({ key: `channel_${channel}`, label: analysis?.channel_labels?.[String(channel)] ?? `T${channel}`, color: CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length] }))];
   const operator = session?.operator?.name?.toLocaleLowerCase("pt-BR").includes("demo")
@@ -187,7 +208,7 @@ export default function SessionDetailPage() {
     try {
       const endpoint = kind === "png" ? "/reports/period/chart.png" : `/reports/period/${kind}`;
       const extension = kind.split(".").at(-1) ?? kind;
-      await downloadWithBody(endpoint, `sessao-${id}.${extension}`, reportPayload());
+      await downloadWithBody(endpoint, `sessao-${id}.${extension}`, { ...reportPayload(), channels: exportChannels === "selected" ? selectedChannels : null, include_power: includePower, include_electrical_details: includePower });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Falha ao gerar o arquivo");
     } finally { setBusy(""); }
@@ -210,8 +231,11 @@ export default function SessionDetailPage() {
     if (range.startIndex == null || range.endIndex == null || !series.length) return;
     setPeriodMode("custom");
     setSelectionAnchor(null);
-    setStart(saoPauloInput(series[range.startIndex]?.timestamp));
-    setEnd(saoPauloInput(series[range.endIndex]?.timestamp));
+    const first = series.slice(range.startIndex, range.endIndex + 1).find(row => row.timestamp);
+    const last = series.slice(range.startIndex, range.endIndex + 1).filter(row => row.timestamp).at(-1);
+    if (!first || !last) return;
+    setStart(saoPauloInput(first.timestamp));
+    setEnd(saoPauloInput(last.timestamp));
   }
 
   const axisTime = (timestamp: string) => timeAxisMode === "real" ? parseApiDate(timestamp).getTime() : (parseApiDate(timestamp).getTime() - parseApiDate(session?.started_at).getTime()) / 1000;
@@ -271,6 +295,10 @@ export default function SessionDetailPage() {
       </>} />
     {error && <ErrorNotice message={error} retry={retryExport} sessionId={Number(id)} />}
     {busy && <Spinner label={busy} />}
+    <div className="action-bar">
+      <label className="field"><span>Canais nos arquivos</span><select value={exportChannels} onChange={event => setExportChannels(event.target.value)}><option value="selected">Somente canais selecionados</option><option value="all">Todos os canais</option></select></label>
+      <label className="choice-control"><input type="checkbox" checked={includePower} onChange={event => setIncludePower(event.target.checked)} />Incluir potência nos arquivos</label>
+    </div>
 
     <div className="detail-strip">
       <div><span>STATUS</span><Badge tone={session.status === "finished" ? "success" : "warning"}>{session.status === "finished" ? "Finalizada" : session.status}</Badge></div>
@@ -301,13 +329,14 @@ export default function SessionDetailPage() {
     </div>
 
     <QualityDetails sources={general.source_quality} electrical={general.electrical_sample_count} thermal={general.temperature_sample_count} />
+    <ThermalPeak peak={temperature.peak} />
     <details className="secondary-metrics"><summary>Mais detalhes dos indicadores</summary><div className="metrics-grid three">
       <Metric label="Potência média" value={number(electrical.active_power_w?.mean, " W", 2)} hint={`P95 ${number(electrical.active_power_w?.p95, " W", 2)}`} help="P95 indica que 95% das leituras ficaram abaixo desse valor." tone="primary" />
     </div></details>
 
     <div id="analysis-chart"><Panel title="Temperatura + potência" kicker={timeAxisMode === "synchronized" ? "LINHA DO TEMPO COMUM · DOIS EIXOS" : "HORÁRIO REAL · DOIS EIXOS"} actions={<div className="chart-actions"><div className="axis-mode-toggle" aria-label="Modo do eixo de tempo"><button className={timeAxisMode === "synchronized" ? "active" : ""} onClick={() => setTimeAxisMode("synchronized")}>Início da sessão</button><button className={timeAxisMode === "real" ? "active" : ""} onClick={() => setTimeAxisMode("real")}>Horário real</button></div><label><input type="checkbox" checked={showOpen} disabled={Boolean(busy)} onChange={(event) => void updateOpenChannels(event.target.checked)} /> Mostrar canais Open</label><button className="button small ghost" disabled={Boolean(busy)} onClick={() => void exportFile("png")}><FileImage /> Exportar gráfico</button></div>}>
       <SeriesControls series={chartSeries} hidden={hiddenSeries} onChange={setHiddenSeries} />
-      {!series.length ? <Empty title="Nenhuma leitura disponível neste período" text="Ajuste o período ou confirme se as duas fontes registraram dados." /> : <div className="chart-container tall executive-chart"><ResponsiveContainer width="100%" height="100%"><ComposedChart data={series} onClick={selectChartPoint}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="axisValue" type="number" domain={["dataMin", "dataMax"]} minTickGap={35} tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} /><YAxis includeHidden tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="temperature" unit=" °C" width={64} /><YAxis includeHidden tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="power" orientation="right" unit=" W" width={64} /><Tooltip cursor={{ stroke: "#64748b", strokeDasharray: "4 4" }} content={<MeasurementTooltip rows={series} series={chartSeries.filter((item) => !hiddenSeries.includes(item.key))} formatTime={(value) => formatTimeAxis(value, timeAxisMode)} />} /><Line data={series.filter((row) => row.electricalTimestamp)} yAxisId="power" type="linear" hide={hiddenSeries.includes("active_power_w")} dataKey="active_power_w" name="Potência ativa" stroke={POWER_COLOR} strokeWidth={2.7} dot={{ r: 1.5, strokeWidth: 0, fill: POWER_COLOR }} connectNulls={false} isAnimationActive={false} />{channels.map((channel) => <Line data={series.filter((row) => row.thermalTimestamp)} key={channel} yAxisId="temperature" type="linear" hide={hiddenSeries.includes(`channel_${channel}`)} dataKey={`channel_${channel}`} name={analysis.channel_labels?.[String(channel)] ?? `T${channel}`} stroke={CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length]} dot={{ r: 1.5, strokeWidth: 0, fill: CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length] }} connectNulls={false} isAnimationActive={false} />)}{periodMode === "custom" && <Brush dataKey="axisValue" height={34} travellerWidth={12} stroke="var(--primary)" fill="var(--surface-soft)" tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} onChange={updateFromBrush} />}{periodMode === "custom" && start && end && <ReferenceArea yAxisId="temperature" x1={selectionTime(start)} x2={selectionTime(end)} fill="var(--primary)" fillOpacity={0.16} stroke="var(--primary)" strokeOpacity={0.5} />}{eventGroups.map((group, index) => <ReferenceLine key={index} yAxisId="temperature" x={group.x} stroke="var(--muted)" strokeOpacity={0.6} strokeDasharray="3 5" label={<EventMarkerLabel events={group.events} index={index} />} />)}<PeakMarkers rows={series} powerKey="active_power_w" channels={channels.map((channel) => `channel_${channel}`)} /></ComposedChart></ResponsiveContainer></div>}
+      {!series.length ? <Empty title="Nenhuma leitura disponível neste período" text="Ajuste o período ou confirme se as duas fontes registraram dados." /> : <div className="chart-container tall executive-chart"><ResponsiveContainer width="100%" height="100%"><ComposedChart data={series} onClick={selectChartPoint}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="axisValue" type="number" domain={["dataMin", "dataMax"]} minTickGap={35} tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} /><YAxis includeHidden tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="temperature" unit=" °C" width={64} /><YAxis includeHidden tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="power" orientation="right" unit=" W" width={64} /><Tooltip cursor={{ stroke: "#64748b", strokeDasharray: "4 4" }} content={<MeasurementTooltip rows={series} series={chartSeries.filter((item) => !hiddenSeries.includes(item.key))} formatTime={(value) => formatTimeAxis(value, timeAxisMode)} />} /><Line data={series.filter((row) => row.electricalTimestamp)} yAxisId="power" type="linear" hide={hiddenSeries.includes("active_power_w")} dataKey="active_power_w" name="Potência ativa" stroke={POWER_COLOR} strokeWidth={2.7} dot={{ r: 1.5, strokeWidth: 0, fill: POWER_COLOR }} connectNulls={false} isAnimationActive={false} />{channels.map((channel) => <Line data={series.filter((row) => row.thermalTimestamp)} key={channel} yAxisId="temperature" type="linear" hide={hiddenSeries.includes(`channel_${channel}`)} dataKey={`channel_${channel}`} name={analysis.channel_labels?.[String(channel)] ?? `T${channel}`} stroke={CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length]} dot={{ r: 1.5, strokeWidth: 0, fill: CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length] }} connectNulls={false} isAnimationActive={false} />)}{periodMode === "custom" && <Brush dataKey="axisValue" height={34} travellerWidth={12} stroke="var(--primary)" fill="var(--surface-soft)" tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} onChange={updateFromBrush} />}{periodMode === "custom" && start && end && <ReferenceArea yAxisId="temperature" x1={selectionTime(start)} x2={selectionTime(end)} fill="var(--primary)" fillOpacity={0.16} stroke="var(--primary)" strokeOpacity={0.5} />}{eventGroups.map((group, index) => <ReferenceLine key={index} yAxisId="temperature" x={group.x} stroke="var(--muted)" strokeOpacity={0.6} strokeDasharray="3 5" label={<EventMarkerLabel events={group.events} index={index} />} />)}<PeakMarkers rows={series} powerKey="active_power_w" channels={selectedChannels.map((channel) => `channel_${channel}`)} /><ReadingGapMarkers gaps={analysis?.series?.[0]?.gaps ?? []} axisTime={axisTime} /></ComposedChart></ResponsiveContainer></div>}
       {periodMode === "custom" && <div className="selection-toolbar"><div className="form-grid"><label className="field"><span>Início</span><input type="datetime-local" step="0.001" value={start} onChange={(event) => setStart(event.target.value)} /></label><label className="field"><span>Fim</span><input type="datetime-local" step="0.001" value={end} onChange={(event) => setEnd(event.target.value)} /></label></div><div className="action-bar"><span className="grow" role="status">{selectionAnchor !== null ? "Início marcado. Escolha o fim no gráfico." : selectionDuration > 0 ? `Trecho selecionado · ${formatDuration(selectionDuration)}` : "Selecione um início anterior ao fim."}{draftChanged && " · Ainda não aplicado"}</span><button className="button primary" disabled={Boolean(busy) || !(selectionDuration > 0)} onClick={() => void refreshAnalysis()}>Aplicar período</button><button className="button ghost" onClick={cancelSelection}>Cancelar seleção</button>{canOperate && !draftChanged && <button className="button secondary" onClick={() => { setOfficialEditor(true); document.querySelector(".analysis-window-panel")?.scrollIntoView({ behavior: "smooth" }); }}>Salvar trecho como oficial</button>}</div></div>}
       <p className="hint">{periodMode === "custom" ? "A região sombreada marca a seleção. Aplique para atualizar indicadores e exportações." : "Indicadores e exportações correspondem ao período analisado acima."} Eventos próximos são agrupados; posicione o cursor sobre E1, E2 ou o grupo para ver os detalhes.</p>
     </Panel></div>
@@ -319,7 +348,7 @@ export default function SessionDetailPage() {
     </div>
 
     <Panel title="Indicadores por canal" kicker="SOMENTE CANAIS COM LEITURA" actions={<button className="button small ghost" disabled={Boolean(busy)} onClick={() => void updateOpenChannels(!showOpen)}>{showOpen ? "Ocultar Open" : "Mostrar canais Open"}</button>}>
-      <div className="table-scroll" tabIndex={0} role="region" aria-label="Indicadores por canal"><table className="numeric-table"><thead><tr><th>Canal</th><th>Identificação</th><th>Leituras <InfoTip text="Quantidade de medições recebidas do equipamento de temperatura." /></th><th>Média</th><th>Máx</th><th>Mín</th><th>ΔT <InfoTip text="Diferença entre a maior e a menor temperatura deste canal." /></th><th>Desvio</th><th>P95 <InfoTip text="95% das leituras ficaram abaixo deste valor." /></th></tr></thead><tbody>{(statistics?.channels ?? []).filter((item: any) => showOpen || item.count).map((item: any) => <tr key={item.channel}><td><strong style={{ color: CHANNEL_COLORS[(item.channel - 1) % CHANNEL_COLORS.length] }}>T{item.channel}</strong></td><td>{item.friendly_name || `T${item.channel}`}</td><td>{item.count}</td><td>{number(item.mean, " °C", 2)}</td><td>{number(item.max, " °C", 2)}</td><td>{number(item.min, " °C", 2)}</td><td>{number(item.range, " °C", 2)}</td><td>{number(item.standard_deviation, " °C", 2)}</td><td>{number(item.p95, " °C", 2)}</td></tr>)}</tbody></table></div>
+      <div className="table-scroll" tabIndex={0} role="region" aria-label="Indicadores por canal"><table className="numeric-table"><thead><tr><th>Canal</th><th>Identificação</th><th>Leituras <InfoTip text="Quantidade de medições recebidas do equipamento de temperatura." /></th><th>Média</th><th>Máx</th><th>Mín</th><th>ΔT <InfoTip text="Diferença entre a maior e a menor temperatura deste canal." /></th><th>Desvio</th><th>P95 <InfoTip text="95% das leituras ficaram abaixo deste valor." /></th></tr></thead><tbody>{(statistics?.channels ?? []).filter((item: any) => selectedChannels.includes(item.channel) && (showOpen || item.count)).map((item: any) => <tr key={item.channel}><td><strong style={{ color: CHANNEL_COLORS[(item.channel - 1) % CHANNEL_COLORS.length] }}>T{item.channel}</strong></td><td>{item.friendly_name || `T${item.channel}`}</td><td>{item.count}</td><td>{number(item.mean, " °C", 2)}</td><td>{number(item.max, " °C", 2)}<ThermalPeak peak={item.peak} /></td><td>{number(item.min, " °C", 2)}</td><td>{number(item.range, " °C", 2)}</td><td>{number(item.standard_deviation, " °C", 2)}</td><td>{number(item.p95, " °C", 2)}</td></tr>)}</tbody></table></div>
     </Panel>
 
     <div id="session-identification" hidden={!editing || !canOperate}><Panel title="Identificação do ensaio" kicker="CAMPOS OPCIONAIS PARA DOCUMENTOS">
@@ -332,7 +361,12 @@ export default function SessionDetailPage() {
 
     </div>
 
-    {canOperate && <SessionSharing sessionId={Number(id)} />}
+    {canOperate && <SessionSharing sessionId={Number(id)} channels={selectedChannels} includePower={includePower} includeOpen={showOpen} />}
     <Panel title="Alertas da sessão" kicker="QUALIDADE"><div className="alert-list">{alerts.length ? alerts.map((alert) => <div key={alert.id}><AlertTriangle /><div><strong>{alert.metric === "power" ? "Potência" : `Termopar T${alert.channel}`}</strong><span>{number(alert.measured_value, "")} · limite {alert.threshold}</span></div><Badge tone={alert.severity === "critical" ? "danger" : "warning"}>{alert.severity}</Badge><time>{formatDate(alert.timestamp)}</time></div>) : <Empty title="Nenhum alerta nesta sessão" />}</div></Panel>
   </>;
+}
+
+export default function SessionDetailPage() {
+  const { id } = useParams();
+  return <div className="session-results"><SessionDetailContent key={id} /></div>;
 }

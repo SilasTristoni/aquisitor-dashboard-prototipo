@@ -662,6 +662,33 @@ def render_period_xlsx(data: dict[str, Any], request: PeriodReportRequest) -> by
             ]
         )
 
+    peaks_sheet = workbook.create_sheet("Picos térmicos")
+    peaks_sheet.append(
+        [
+            "Canal",
+            "Máxima (°C)",
+            "Ocorrência (UTC)",
+            "Desde início da sessão (s)",
+            "Desde início do período (s)",
+            "Empate",
+        ]
+    )
+    for index, item in enumerate(
+        [{"peak": temperature.get("peak")}, *data["statistics"]["channels"]]
+    ):
+        if peak := item.get("peak"):
+            peaks_sheet.append(
+                [
+                    ("Máxima global · " if index == 0 else "") + peak["label"],
+                    peak["value_c"],
+                    peak["timestamp"],
+                    peak["session_elapsed_seconds"],
+                    peak["period_elapsed_seconds"],
+                    "Primeira ocorrência",
+                ]
+            )
+    _header(peaks_sheet, 1, 6)
+    _finish_sheet(peaks_sheet)
     # Reuse the same chart definition in the executive sheet while keeping its source data intact.
     if curves._charts:
         summary.add_chart(copy(curves._charts[0]), "J4")
@@ -684,6 +711,7 @@ def render_period_csv(
     stream = io.StringIO(newline="")
     writer = csv.writer(stream, delimiter=";", lineterminator="\n")
     channels = data["selected_channels"]
+    labels = {item["channel"]: item["label"] for item in data["statistics"]["channels"]}
     if dataset == "electrical":
         writer.writerow(
             [
@@ -720,7 +748,10 @@ def render_period_csv(
                 "sessao",
                 "timestamp_original",
                 "temperatura_ambiente_c",
-                *[f"temperatura_t{channel}_c" for channel in channels],
+                *[
+                    f"temperatura_t{channel}_c ({labels.get(channel, f'T{channel}')})"
+                    for channel in channels
+                ],
                 "qualidade",
             ]
         )
@@ -742,7 +773,10 @@ def render_period_csv(
                 "timestamp_temperatura",
                 "timestamp_eletrica",
                 "potencia_ativa_w",
-                *[f"temperatura_t{channel}_c" for channel in channels],
+                *[
+                    f"temperatura_t{channel}_c ({labels.get(channel, f'T{channel}')})"
+                    for channel in channels
+                ],
             ]
         )
         for row in synchronized_rows(data):

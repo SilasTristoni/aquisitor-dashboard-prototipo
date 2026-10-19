@@ -1,3 +1,4 @@
+import { sourcePresentation } from "../utils/sourcePresentation";
 import { CadenceNotice, hasSourceFailure } from "../components/CadenceNotice";
 import { AlertTriangle, Pause, Play, Plug, Power, Radio, Square, Wifi, WifiOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -216,12 +217,13 @@ export default function DashboardPage() {
     const sourceFailed = status?.state === "error" || Boolean(status?.last_error) || Boolean(status?.persistent_failure);
     const values = reading ? validTemperatures(reading) : [];
     const recent = hasRecentReading(status, reading, now);
+    const presentation = sourcePresentation(status, reading, activeSession?.status === "paused", now);
     return <div className="source-status">
       <span className={`device-orb ${recent && !sourceFailed ? "connected" : "disconnected"}`}><Radio /></span>
       <div><span>{label}</span><strong>{device?.name ?? "Não selecionado"}</strong>
-        <small>{status?.persistent_failure ? "Falha persistente - tentando reconectar automaticamente" : sourceFailed ? "Falha nesta fonte" : status?.state === "recovering" ? "Reconectando automaticamente..." : status?.state === "connecting" ? "Conectando..." : status?.state === "degraded" ? "Conectado · leitura degradada" : status?.connected ? recent ? "Conectado · leitura recente" : "Conectado · sem leitura recente" : "Desconectado"} · Última leitura válida {elapsedLabel(status?.last_message_at ?? reading?.received_timestamp ?? reading?.timestamp, now)}</small>
+        <small>{status?.persistent_failure ? "Falha persistente - tentando reconectar automaticamente" : sourceFailed ? "Falha nesta fonte" : status?.state === "recovering" ? "Reconectando automaticamente..." : status?.state === "connecting" ? "Conectando..." : status?.state === "degraded" ? "Conectado · leitura degradada" : status?.connected ? recent ? "Conectado · leitura recente" : "Conectado · sem leitura recente" : "Desconectado"} · Última leitura válida {elapsedLabel(presentation.lastValidAt, now)}</small>
         {label === "AT4532" && <small>{values.length}/32 canais válidos</small>}
-        {label === "GPM-8213" && <small>{reading?.power_w == null ? "Potência indisponível" : `${reading.power_w.toFixed(1)} W`}</small>}
+        {label === "GPM-8213" && <small>{presentation.state} · {reading?.power_w == null ? "Potência indisponível" : <>{!presentation.current && "Última potência válida: "}<span>{reading.power_w.toFixed(1)} W</span></>}{presentation.current && reading?.power_w === 0 ? " · zero medido; não indica desconexão" : ""}</small>}
         <details className="source-reading-details"><summary>Contagem de leituras</summary><small>{status?.sample_count ?? (label === "AT4532" ? combined.temperatureReadings.length : combined.electricalReadings.length)} leituras nesta conexão</small>
         {activeSession && <small>{status?.session_sample_count ?? 0} leituras nesta sessão · {status?.persisted_sample_count ?? 0} gravadas</small>}</details>
         {status?.last_error && <small className="danger-text">{status.last_error}</small>}
@@ -255,7 +257,7 @@ export default function DashboardPage() {
       <Metric label="Integridade" value={hasSourceFailure(statuses[temperatureDeviceId]) ? "Atenção" : combined.chartData.length ? "Em acompanhamento" : "Aguardando"} hint={statuses[temperatureDeviceId]?.cadence_degraded ? "Frequência térmica reduzida" : "Detalhes disponíveis no diagnóstico"} help="A integridade distingue frequência reduzida, ausência de leituras e erros de comunicação." />
     </div>
     <details className="secondary-metrics"><summary>Mais detalhes do ensaio</summary><div className="metrics-grid three">
-      <Metric label="Potência atual" value={latestElectrical?.power_w == null ? "—" : `${latestElectrical.power_w.toFixed(1)} W`} hint={latestElectrical?.raw_power == null ? "Grandeza indisponível" : `Recebido: ${latestElectrical.raw_power} ${latestElectrical.raw_power_unit}`} tone="primary" />
+      <Metric label={sourcePresentation(statuses[electricalDeviceId], latestElectrical, activeSession?.status === "paused", now).current ? "Potência atual" : "Última potência válida"} value={latestElectrical?.power_w == null ? "—" : `${latestElectrical.power_w.toFixed(1)} W`} hint={latestElectrical?.raw_power == null ? "Grandeza indisponível" : `Recebido: ${latestElectrical.raw_power} ${latestElectrical.raw_power_unit}`} tone="primary" />
       <Metric label="Potência média" value={powerStats.avg == null ? "—" : `${powerStats.avg.toFixed(1)} W`} hint={powerStats.min == null ? "Sem leitura elétrica" : `Mín ${powerStats.min.toFixed(1)} · Máx ${powerStats.max!.toFixed(1)}`} />
       <Metric label="Temperatura média" value={temperatureStats.avg == null ? "—" : `${temperatureStats.avg.toFixed(1)} °C`} hint={`${temperatures.length} canais com leitura`} />
     </div></details>

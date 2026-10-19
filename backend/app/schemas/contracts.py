@@ -276,7 +276,7 @@ class PeriodReportRequest(BaseModel):
         if value is None:
             return None
         unique = sorted(set(value))
-        if not unique or any(channel < 1 or channel > 32 for channel in unique):
+        if any(channel < 1 or channel > 32 for channel in unique):
             raise ValueError("Canais devem estar entre 1 e 32")
         return unique
 

@@ -167,7 +167,8 @@ def _power_cycle_analysis(electrical: list[dict[str, Any]]) -> dict[str, Any] | 
         ):
             seconds = max(0.0, (current["timestamp"] - previous["timestamp"]).total_seconds())
             if (
-                previous_on is None or current_on is None
+                previous_on is None
+                or current_on is None
                 or seconds > settings.report_energy_max_gap_seconds
             ):
                 # A new observed segment cannot complete a cycle from before a gap.
@@ -232,7 +233,8 @@ def _integrate_energy_wh(
         if interval <= 0:
             continue
         if (
-            interval > max_gap_seconds or previous.get("active_power_w") is None
+            interval > max_gap_seconds
+            or previous.get("active_power_w") is None
             or current.get("active_power_w") is None
         ):
             excluded_intervals += 1
@@ -294,7 +296,11 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
         for channel in data["selected_channels"]:
             channel_expected[channel] += 1
             value = point["channels"].get(channel)
-            if value is not None:
+            if (
+                value is not None
+                and math.isfinite(value)
+                and point["quality"] not in {"invalid", "error", "bad"}
+            ):
                 channel_available[channel] += 1
                 channel_values[channel].append(value)
                 per_session_channels[(point["session_id"], channel)].append(value)
@@ -328,6 +334,7 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
                 heating_rate = (timed[-1][1] - timed[0][1]) / elapsed_minutes
         result.update(
             {
+                "peak": temperature_peak(data, [channel]),
                 "channel": channel,
                 "names": sorted(channel_names[channel]),
                 "friendly_name": friendly_name,
@@ -354,7 +361,11 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
         channel_stats.append(result)
 
     populated_channel_stats = [item for item in channel_stats if item["count"]]
-    critical = max(critical_candidates) if critical_candidates else None
+    critical = (
+        min(critical_candidates, key=lambda item: (-item[0], item[2], item[1]))
+        if critical_candidates
+        else None
+    )
     critical_channel = critical[1] if critical else None
     critical_names = channel_names[critical_channel] if critical_channel is not None else []
     _, critical_label = (
@@ -523,7 +534,9 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
             "current_frequency_hz": _numeric_statistics(
                 point["current_frequency_hz"] for point in electrical
             ),
-            "energy_wh": energy_wh,
+            "energy_wh": energy_wh
+            if any(point["active_power_w"] is not None for point in electrical)
+            else None,
             "energy_gap_limit_seconds": settings.report_energy_max_gap_seconds,
             "excluded_energy_intervals": excluded_energy_intervals,
             "excluded_energy_seconds": excluded_energy_seconds,
@@ -531,6 +544,7 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
         },
         "channels": channel_stats,
         "temperature": {
+            "peak": temperature_peak(data, data["selected_channels"]),
             **overall_temperature,
             "critical_channel": critical_channel,
             "critical_channel_label": critical_label,
@@ -550,6 +564,83 @@ def period_statistics(data: dict[str, Any]) -> dict[str, Any]:
             else None,
             "stabilization": _suggest_stabilization(temperatures),
         },
+    }
+
+
+def stream_gap_limit(points, session, source):
+    role = "temperature" if source == "thermal" else "electrical"
+    cadence = next(
+        (
+            d.get("cadence_ms")
+            for d in session["devices"]
+            if d.get("role") in {role, "combined"} and d.get("cadence_ms")
+        ),
+        None,
+    )
+    intervals = [
+        (b["timestamp"] - a["timestamp"]).total_seconds()
+        for a, b in zip(points, points[1:], strict=False)
+        if b["timestamp"] > a["timestamp"]
+    ]
+    observed = statistics.median(intervals) if intervals else None
+    # A slower, valid source is not an interruption. Never infer DUT state from a gap.
+    interval = max(cadence / 1000 if cadence else 0, observed or 0)
+    return max(2 * interval, 0.1) if interval else settings.report_energy_max_gap_seconds
+
+
+def missing_value_gaps(points, keys, source):
+    gaps = []
+    for key in keys:
+        previous = None
+        missing = False
+        for point in points:
+            value = point.get(key)
+            if value is None or not math.isfinite(value):
+                missing = True
+            else:
+                if missing and previous is not None:
+                    gaps.append(
+                        {
+                            "source": source,
+                            "after": previous.isoformat(),
+                            "before": point["timestamp"].isoformat(),
+                            "keys": [key],
+                        }
+                    )
+                previous, missing = point["timestamp"], False
+    return gaps
+
+
+def temperature_peak(data: dict[str, Any], channels: list[int]) -> dict[str, Any] | None:
+    """First real occurrence, before downsampling; ties use channel then session id."""
+    candidates = [
+        (point, channel, value)
+        for point in data["temperatures"]
+        for channel, value in point["channels"].items()
+        if channel in channels
+        and value is not None
+        and math.isfinite(value)
+        and point["quality"] not in {"invalid", "error", "bad"}
+    ]
+    if not candidates:
+        return None
+    point, channel, value = min(
+        candidates,
+        key=lambda item: (-item[2], item[0]["timestamp"], item[1], item[0]["session_id"]),
+    )
+    origin = next(s["started_at"] for s in data["sessions"] if s["id"] == point["session_id"])
+    _, label = _friendly_channel_name(channel, [point["channel_names"].get(channel, "")])
+    return {
+        "value_c": value,
+        "channel": channel,
+        "label": label,
+        "session_id": point["session_id"],
+        "timestamp": point["timestamp"].isoformat(),
+        "session_elapsed_seconds": (
+            point["timestamp"] - _utc(datetime.fromisoformat(origin))
+        ).total_seconds(),
+        "period_elapsed_seconds": (point["timestamp"] - data["request"].start).total_seconds(),
+        "tie_rule": "first_occurrence",
     }
 
 
@@ -650,10 +741,12 @@ class PeriodReportDataService:
             raise ValueError("Nenhuma sessão corresponde aos equipamentos selecionados")
         session_ids = [session.id for session in sessions]
         snapshots = self._channel_snapshots(session_ids)
-        selected_channels = request.channels or sorted(
-            {channel for (_, channel), config in snapshots.items() if config.enabled}
+        selected_channels = (
+            request.channels
+            if request.channels is not None
+            else sorted({channel for (_, channel), config in snapshots.items() if config.enabled})
         )
-        if not selected_channels:
+        if not selected_channels and request.channels is None:
             selected_channels = list(range(1, 33))
 
         electrical, electrical_sessions = self._electrical(request, session_ids)
@@ -671,6 +764,11 @@ class PeriodReportDataService:
             selected_channels,
         )
         session_starts = {session.id: _utc(session.started_at) for session in sessions}
+        if not request.include_power and not request.include_electrical_details:
+            electrical = []
+        if not request.include_temperatures:
+            temperatures = []
+            selected_channels = []
         session_ends = {
             session.id: _utc(session.ended_at) if session.ended_at else request.end
             for session in sessions
@@ -718,7 +816,10 @@ class PeriodReportDataService:
         )
         if not (
             (selected_electrical and electrical)
-            or (request.include_temperatures and has_temperature_values)
+            or (
+                request.include_temperatures
+                and (has_temperature_values or (request.include_open_channels and temperatures))
+            )
         ):
             raise ValueError("Não existem medições no período e filtros informados")
         alerts = self._alerts(request, session_ids)
@@ -758,7 +859,9 @@ class PeriodReportDataService:
         return data
 
     def preview(self, request: PeriodReportRequest) -> dict[str, Any]:
-        data = self.collect(request)
+        return self.preview_data(self.collect(request), request)
+
+    def preview_data(self, data: dict[str, Any], request: PeriodReportRequest) -> dict[str, Any]:
         session_count = max(1, len(data["sessions"]))
         per_stream_limit = max(50, settings.report_preview_max_points // session_count)
         series = []
@@ -790,11 +893,30 @@ class PeriodReportDataService:
                 downsample_time_buckets(flat_temperatures, temperature_keys, per_stream_limit),
                 session_start,
             )
+            gap_limits = {
+                source: stream_gap_limit(points, session, source)
+                for source, points in [("electrical", electrical), ("thermal", temperatures)]
+            }
             series.append(
                 {
                     "session_id": session_id,
                     "session_name": session["name"],
                     "session_started_at": session["started_at"],
+                    "gaps": [
+                        {
+                            "source": source,
+                            "after": a["timestamp"].isoformat(),
+                            "before": b["timestamp"].isoformat(),
+                        }
+                        for source, points in [
+                            ("electrical", electrical),
+                            ("thermal", temperatures),
+                        ]
+                        for a, b in zip(points, points[1:], strict=False)
+                        if (b["timestamp"] - a["timestamp"]).total_seconds() > gap_limits[source]
+                    ]
+                    + missing_value_gaps(electrical, ["active_power_w"], "electrical")
+                    + missing_value_gaps(flat_temperatures, temperature_keys, "thermal"),
                     "electrical": self._serialize_points(reduced_electrical)
                     if request.include_power or request.include_electrical_details
                     else [],
@@ -953,6 +1075,11 @@ class PeriodReportDataService:
             )
             values = {
                 item.channel: item.temperature_c
+                if item.quality not in {"invalid", "error", "bad", "open"}
+                and row.quality not in {"invalid", "error", "bad"}
+                and item.temperature_c is not None
+                and math.isfinite(item.temperature_c)
+                else None
                 for item in row.channels
                 if item.channel in selected_channels
             }
@@ -1037,6 +1164,11 @@ class PeriodReportDataService:
             if row.session_id not in temperature_sessions and row.temperatures:
                 values = {
                     item.channel: item.temperature_c
+                    if item.quality not in {"invalid", "error", "bad", "open"}
+                    and row.quality not in {"invalid", "error", "bad"}
+                    and item.temperature_c is not None
+                    and math.isfinite(item.temperature_c)
+                    else None
                     for item in row.temperatures
                     if item.channel in selected_channels
                 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import math
 import re
 import unicodedata
 from collections.abc import Mapping
@@ -33,7 +34,7 @@ from reportlab.platypus import (
 )
 
 from app.schemas.contracts import PeriodReportRequest
-from app.services.period_reporting import downsample_time_buckets
+from app.services.period_reporting import downsample_time_buckets, stream_gap_limit
 
 POWER_COLOR = "#2563EB"
 CHANNEL_COLORS = [
@@ -63,17 +64,24 @@ def safe_report_filename(title: str, extension: str) -> str:
 
 
 def _segments(
-    points: list[dict[str, Any]], gap_seconds: float = 60.0
+    points: list[dict[str, Any]], gap_seconds: float = 60.0, value_key: str | None = None
 ) -> list[list[dict[str, Any]]]:
     if not points:
         return []
     ordered = sorted(points, key=lambda item: item["timestamp"])
-    result = [[ordered[0]]]
-    for point in ordered[1:]:
-        if (point["timestamp"] - result[-1][-1]["timestamp"]).total_seconds() > gap_seconds:
+    result = [[]]
+    for point in ordered:
+        if value_key and (point.get(value_key) is None or not math.isfinite(point[value_key])):
+            if result[-1]:
+                result.append([])
+            continue
+        if (
+            result[-1]
+            and (point["timestamp"] - result[-1][-1]["timestamp"]).total_seconds() > gap_seconds
+        ):
             result.append([])
         result[-1].append(point)
-    return result
+    return [segment for segment in result if segment]
 
 
 def presentation_axis_values(
@@ -232,16 +240,16 @@ def render_period_chart(
             session_origin = datetime.fromisoformat(session["started_at"])
             if request.include_power:
                 power_points = [
-                    point
-                    for point in data["electrical"]
-                    if point["session_id"] == session_id and point["active_power_w"] is not None
+                    point for point in data["electrical"] if point["session_id"] == session_id
                 ]
-                power_points = downsample_time_buckets(
-                    power_points, ["active_power_w"], session_limit
-                )
                 for segment_index, segment in enumerate(
-                    _segments(power_points, visual_gap_seconds)
+                    _segments(
+                        power_points,
+                        stream_gap_limit(power_points, session, "electrical"),
+                        "active_power_w",
+                    )
                 ):
+                    segment = downsample_time_buckets(segment, ["active_power_w"], session_limit)
                     power_axis.plot(
                         presentation_axis_values(segment, request.time_axis_mode, session_origin),
                         [point["active_power_w"] / power_scale for point in segment],
@@ -273,15 +281,12 @@ def render_period_chart(
                     }
                     for point in temperature_points
                 ]
-                flat = downsample_time_buckets(
-                    flat, [f"channel_{channel}" for channel in group], session_limit
-                )
                 for channel in group:
                     key = f"channel_{channel}"
-                    channel_points = [point for point in flat if point.get(key) is not None]
                     for segment_index, segment in enumerate(
-                        _segments(channel_points, visual_gap_seconds)
+                        _segments(flat, stream_gap_limit(flat, session, "thermal"), key)
                     ):
+                        segment = downsample_time_buckets(segment, [key], session_limit)
                         name = next(
                             (
                                 point["channel_names"].get(channel)
@@ -778,6 +783,31 @@ def render_period_pdf(data: dict[str, Any], request: PeriodReportRequest) -> byt
             Spacer(1, 4 * mm),
         ]
     )
+    peak_rows = [
+        ["Canal / pico térmico", "Temperatura", "Ocorrência (UTC)", "Desde início / período"]
+    ]
+    for index, item in enumerate(
+        [{"peak": temperature.get("peak")}, *data["statistics"]["channels"]]
+    ):
+        if peak := item.get("peak"):
+            peak_rows.append(
+                [
+                    ("Máxima global · " if index == 0 else "") + peak["label"],
+                    _format_number(peak["value_c"], " °C"),
+                    peak["timestamp"],
+                    f"{peak['session_elapsed_seconds']:g} s / {peak['period_elapsed_seconds']:g} s",
+                ]
+            )
+    if len(peak_rows) > 1:
+        story.extend(
+            [
+                Paragraph(
+                    "Tempo até a temperatura máxima — primeira ocorrência", styles["Heading3"]
+                ),
+                _styled_table(peak_rows),
+                Spacer(1, 4 * mm),
+            ]
+        )
     if request.notes:
         story.extend(
             [

@@ -1,0 +1,15 @@
+/* Keep result-page tooltips within mobile viewports. */
+@media (max-width: 600px) {
+  .session-results .info-tip-content,
+  .session-results .info-tip:hover .info-tip-content,
+  .session-results .info-tip:focus .info-tip-content {
+    position: fixed;
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    width: auto;
+    max-width: none;
+    white-space: normal;
+    transform: none;
+  }
+}

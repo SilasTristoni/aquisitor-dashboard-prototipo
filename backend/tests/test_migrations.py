@@ -34,7 +34,11 @@ def test_analysis_migrations_preserve_sqlite_history_with_foreign_keys(tmp_path)
         )
         connection.execute(text("INSERT INTO historical_samples VALUES (1, 42, 123.456)"))
         with Operations.context(MigrationContext.configure(connection)):
-            for name in ["0009_session_analysis", "0010_session_shares"]:
+            for name in [
+                "0009_session_analysis",
+                "0010_session_shares",
+                "0011_share_result_options",
+            ]:
                 spec = importlib.util.spec_from_file_location(
                     name, BACKEND_ROOT / f"alembic/versions/{name}.py"
                 )
@@ -72,7 +76,7 @@ def test_new_migrations_compile_for_postgresql(monkeypatch):
     inspector.get_table_names.return_value = ["users", "measurement_sessions"]
     monkeypatch.setattr(sa, "inspect", lambda _: inspector)
     with Operations.context(context):
-        for name in ["0009_session_analysis", "0010_session_shares"]:
+        for name in ["0009_session_analysis", "0010_session_shares", "0011_share_result_options"]:
             spec = importlib.util.spec_from_file_location(
                 name, BACKEND_ROOT / f"alembic/versions/{name}.py"
             )
@@ -127,7 +131,7 @@ def test_upgrade_accepts_schema_precreated_by_sqlalchemy(tmp_path):
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            "0010_session_shares"
+            "0011_share_result_options"
         )
         assert "metadata" in {
             column["name"] for column in inspect(connection).get_columns("measurement_sessions")

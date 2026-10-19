@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { vi } from "vitest";
 import SessionDetailPage from "../pages/SessionDetailPage";
 
@@ -237,4 +237,28 @@ test("recalcula a visão executiva da sessão para o período selecionado", asyn
       end: "2026-09-03T10:03:00",
     });
   });
+});
+
+
+test("exports seguem T25/T29/T32, seleção única, todos e potência independente; outra sessão reinicia seleção", async () => {
+  authState.role = "admin";
+  apiMock.mockClear(); downloadMock.mockClear();
+  const selected = { ...analysis, selected_channels: [25, 29, 32], channel_labels: { "25": "T25 — Saída", "29": "T29 — Carcaça", "32": "T32 — Open" } };
+  apiMock.mockImplementation((path: string) => Promise.resolve(path.startsWith("/sessions/") && !path.includes("shares") && !path.includes("annotations") ? session : path === "/reports/period/preview" ? selected : { items: [] }));
+  render(<MemoryRouter initialEntries={["/sessoes/42"]}><Link to="/sessoes/43">Outra sessão</Link><Routes><Route path="/sessoes/:id" element={<SessionDetailPage />} /></Routes></MemoryRouter>);
+  await screen.findByRole("button", { name: "T25 — Saída" });
+  await userEvent.click(screen.getByRole("button", { name: "T29 — Carcaça" }));
+  await userEvent.click(screen.getByRole("button", { name: "T32 — Open" }));
+  await userEvent.click(screen.getByText("Exportar", { exact: true }));
+  await userEvent.click(screen.getByRole("button", { name: "XLSX técnico" }));
+  expect(downloadMock.mock.calls.at(-1)?.[2]).toMatchObject({ channels: [25], include_power: true });
+  await userEvent.click(screen.getByLabelText("Incluir potência nos arquivos"));
+  await userEvent.selectOptions(screen.getByLabelText("Canais nos arquivos"), "all");
+  await userEvent.click(screen.getByText("Exportar", { exact: true }));
+  await userEvent.click(screen.getByRole("button", { name: "PDF técnico" }));
+  expect(downloadMock.mock.calls.at(-1)?.[2]).toMatchObject({ channels: null, include_power: false, include_electrical_details: false });
+  await userEvent.click(screen.getByRole("link", { name: "Outra sessão" }));
+  await screen.findByRole("button", { name: "T29 — Carcaça", pressed: true });
+  expect(screen.getByLabelText("Canais nos arquivos")).toHaveValue("selected");
+  expect(screen.getByLabelText("Incluir potência nos arquivos")).toBeChecked();
 });
