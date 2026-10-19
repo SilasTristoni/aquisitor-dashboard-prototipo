@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const assert = require("node:assert/strict");
 const root = path.resolve(__dirname, "..");
-const output = path.join(root, "build/product-tests/ui");
+const output = process.env.THERMOPOWER_UI_SMOKE_OUTPUT || path.join(root, "build/product-tests/ui");
 const origin = Date.parse("2026-10-16T12:00:00Z");
 const at = seconds => new Date(origin + seconds * 1000).toISOString();
 const labels = { 25: "T25 — Saída de ar", 29: "T29 — Carcaça", 32: "T32 — Open" };
@@ -41,6 +41,7 @@ async function main() {
           const url = new URL(route.request().url());
           let value = { items: [], pages: 1, total: 0 };
           if (url.pathname.endsWith("/public/shares/access")) value = result;
+          else if (url.pathname.endsWith("/results-portal/configuration")) value = { configured: true, can_configure: true, url: "https://api.synthetic.example.test", installation_id: "synthetic-lab", managed_by_environment: false };
           else if (url.pathname.endsWith("/auth/me")) value = { id: 1, name: "Operador de teste", role: "operator" };
           else if (url.pathname.endsWith("/sessions/42")) value = session;
           else if (url.pathname.endsWith("/reports/period/preview")) value = preview;
@@ -62,6 +63,11 @@ async function main() {
           assert.equal(await page.getByRole("button", { name: "Baixar PDF" }).count(), 0);
         } else {
           assert.equal(await page.getByLabel("Canais nos arquivos").inputValue(), "selected");
+          await page.getByText("Configuração administrativa do portal", { exact: true }).click();
+          await page.getByText("Compartilhar resultado", { exact: true }).click();
+          assert.equal(await page.getByRole("button", { name: "Publicar e gerar link", exact: true }).isEnabled(), true);
+          assert.equal(await page.getByLabel("Credencial da instalação", { exact: true }).inputValue(), "");
+          assert.equal(await page.locator("body").evaluate(element => element.scrollWidth <= window.innerWidth + 1), true);
         }
         assert.deepEqual(errors, []);
         const file = `${name}-${shared ? "shared" : "session"}.png`;

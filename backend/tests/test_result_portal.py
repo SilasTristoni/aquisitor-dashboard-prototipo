@@ -28,7 +28,17 @@ def portal(tmp_path):
     engine = create_engine(url, connect_args={"check_same_thread": False, "timeout": 5})
     PortalBase.metadata.create_all(engine)
     factory = sessionmaker(engine)
-    settings = PortalSettings(database_url=url, publish_key="p" * 40, integrity_key="i" * 40)
+    settings = PortalSettings(
+        database_url=url,
+        integrity_key="i" * 40,
+        public_origin="https://results.example.test",
+        installations={
+            "lab-a": {
+                "tenant_id": "company-a",
+                "credential_sha256": hashlib.sha256(b"p" * 40).hexdigest(),
+            }
+        },
+    )
     with TestClient(create_app(settings, factory)) as client:
         yield client, factory, settings
     engine.dispose()
@@ -66,7 +76,7 @@ def snapshot(token="t" * 43, **changes):
 def publish(client, settings, value):
     return client.post(
         "/portal/v1/results",
-        headers={"Authorization": "Bearer " + settings.publish_key},
+        headers={"Authorization": "Bearer " + ("lab-a." + "p" * 40)},
         content=canonical_bytes(value),
     )
 
@@ -107,7 +117,7 @@ def test_independent_portal_auth_integrity_revocation_and_downloads(portal):
         row = db.get(PublishedResult, value["token_hash"])
         row.permissions = value["permissions"]
         db.commit()
-    headers = {"Authorization": "Bearer " + settings.publish_key}
+    headers = {"Authorization": "Bearer " + ("lab-a." + "p" * 40)}
     assert (
         client.delete("/portal/v1/results/" + value["token_hash"], headers=headers).status_code
         == 204
@@ -140,7 +150,7 @@ def test_revocation_before_delayed_upload_cannot_resurrect(portal):
     assert (
         client.delete(
             "/portal/v1/results/" + value["token_hash"],
-            headers={"Authorization": "Bearer " + settings.publish_key},
+            headers={"Authorization": "Bearer " + ("lab-a." + "p" * 40)},
         ).status_code
         == 204
     )
@@ -217,7 +227,7 @@ def test_local_publication_freezes_authorized_period_and_channels(
         assert (
             remote.delete(
                 "/portal/v1/results/" + token_hash,
-                headers={"Authorization": "Bearer " + settings.publish_key},
+                headers={"Authorization": "Bearer " + ("lab-a." + "p" * 40)},
             ).status_code
             == 204
         )
@@ -273,11 +283,14 @@ def test_unconfigured_portal_does_not_block_local_results(client, auth_headers, 
         monkeypatch.delenv(name, raising=False)
     start, end, ids = _seed_period_data()
     base = f"/api/v1/sessions/{ids[0]}"
-    assert client.put(
-        base + "/analysis-period",
-        headers=auth_headers,
-        json={"start": start.isoformat(), "end": end.isoformat(), "label": "Official"},
-    ).status_code == 200
+    assert (
+        client.put(
+            base + "/analysis-period",
+            headers=auth_headers,
+            json={"start": start.isoformat(), "end": end.isoformat(), "label": "Official"},
+        ).status_code
+        == 200
+    )
     unavailable = client.post(
         base + "/shares", headers=auth_headers, json={"destination": "portal"}
     )

@@ -4,8 +4,9 @@ from sqlalchemy import create_engine, pool
 
 from alembic import context
 from app.portal.models import PortalBase
+from app.portal.settings import database_url
 
-url = os.environ["THERMOPOWER_PORTAL_DATABASE_URL"]
+url = database_url(os.environ["THERMOPOWER_PORTAL_DATABASE_URL"])
 if context.is_offline_mode():
     context.configure(url=url, target_metadata=PortalBase.metadata, literal_binds=True)
     with context.begin_transaction():

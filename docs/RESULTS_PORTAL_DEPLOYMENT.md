@@ -1,5 +1,12 @@
 # Portal independente de resultados
 
+> **Atualização 0.7.1 / Render — 19/10/2026:** para novas instalações, seguir
+> [RESULTS_RENDER_DEPLOYMENT_071.md](RESULTS_RENDER_DEPLOYMENT_071.md).
+> O texto abaixo é o registro histórico da primeira implementação. A chave global,
+> a configuração somente por ambiente e a origem única foram substituídas por
+> credenciais por instalação, cofre Windows, políticas sincronizadas e site/API separados.
+> Não usar os comandos e variáveis históricos como receita de implantação no Render.
+
 Estado: implementação local; **nenhum domínio, serviço público ou dado da Britânia foi publicado**.
 Base física: `7059784949250ccf5519bc70b7e25c7f8ea4f384`, preservada no worktree
 `feat/product-experience-071`. Não usar `app.main:app` no servidor público.

@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -355,6 +356,7 @@ class SessionAnnotation(Base):
 
 class SessionShare(Base):
     __tablename__ = "session_shares"
+    __table_args__ = (Index("uq_session_share_publication", "publication_id", unique=True),)
     id: Mapped[int] = mapped_column(primary_key=True)
     session_id: Mapped[int] = mapped_column(
         ForeignKey("measurement_sessions.id", ondelete="CASCADE"), index=True
@@ -371,3 +373,7 @@ class SessionShare(Base):
     last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     report_options: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     portal_origin: Mapped[str | None] = mapped_column(String(512))
+    mutation_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    publication_id: Mapped[str | None] = mapped_column(String(36))
+    publication_payload: Mapped[bytes | None] = mapped_column(LargeBinary)
+    publication_input_hash: Mapped[str | None] = mapped_column(String(64))

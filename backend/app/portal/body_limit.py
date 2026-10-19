@@ -12,7 +12,7 @@ class BoundedBody:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope["method"] != "POST":
+        if scope["type"] != "http" or scope["method"] not in {"POST", "PATCH", "PUT"}:
             return await self.app(scope, receive, send)
         limit = MAX_SNAPSHOT_BYTES if scope["path"] == "/portal/v1/results" else 4096
         body = bytearray()

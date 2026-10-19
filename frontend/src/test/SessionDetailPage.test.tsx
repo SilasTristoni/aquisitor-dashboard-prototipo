@@ -193,6 +193,7 @@ test("cancelar seleção preserva KPIs; oficial fica recolhido e pode ser removi
 test("recalcula a visão executiva da sessão para o período selecionado", async () => {
   apiMock.mockClear();
   apiMock.mockImplementation((path: string) => {
+    if (path === "/results-portal/configuration") return Promise.resolve({ configured: false, can_configure: false });
     if (path === "/sessions/42") return Promise.resolve(session);
     if (path === "/alerts?page_size=100") return Promise.resolve({ items: [] });
     if (path === "/reports/period/preview") return Promise.resolve(analysis);

@@ -13,23 +13,25 @@ test("compartilhamento começa compacto, agrupa permissões e permite copiar e r
   const item = { id: 7, path: "/compartilhado#abc", status: "active", access_count: 0, creator_name: "Operador" };
   let created = false;
   mocks.api.mockImplementation((_path: string, options?: RequestInit) => {
+    if (_path === "/results-portal/configuration") return Promise.resolve({ configured: false, can_configure: false });
     if (options?.method === "POST") { created = true; return Promise.resolve(item); }
     if (options?.method === "DELETE") { item.status = "revoked"; return Promise.resolve(); }
     return Promise.resolve({ items: created ? [item] : [] });
   });
   render(<SessionSharing sessionId={13} />);
   await screen.findByText("Nenhum compartilhamento ativo");
-  expect(screen.getByRole("button", { name: "Gerar link" })).not.toBeVisible();
+  expect(screen.getByRole("button", { name: "Publicar e gerar link" })).not.toBeVisible();
   await userEvent.click(screen.getByText("Compartilhar resultado", { exact: true }));
+  await userEvent.selectOptions(screen.getByLabelText("Destino do resultado"), "local");
   const group = screen.getByRole("group", { name: "Permissões do link" });
   expect(within(group).getAllByRole("checkbox")).toHaveLength(4);
   await userEvent.click(screen.getByRole("checkbox", { name: "PDF" }));
-  await userEvent.click(screen.getByRole("button", { name: "Gerar link" }));
+  await userEvent.click(screen.getByRole("button", { name: "Gerar link local" }));
   await screen.findByText("Link criado", { exact: true });
   const request = mocks.api.mock.calls.find(([, options]) => options?.method === "POST");
   expect(JSON.parse(request?.[1].body).permissions).toEqual({ graphs: true, pdf: true, xlsx: false, csv: false });
   expect(screen.getByRole("button", { name: "Copiar link" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Gerar link" })).not.toBeVisible();
+  expect(screen.getByRole("button", { name: "Gerar link local" })).not.toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "Revogar" }));
   await screen.findByText("Revogado");
 });

@@ -11,6 +11,10 @@ class PortalBase(DeclarativeBase):
 class PublishedResult(PortalBase):
     __tablename__ = "published_results"
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(64))
+    installation_id: Mapped[str | None] = mapped_column(String(64))
+    policy_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    policy_signature: Mapped[str | None] = mapped_column(String(64))
     password_hash: Mapped[str | None] = mapped_column(String(255))
     permissions: Mapped[dict] = mapped_column(JSON)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
