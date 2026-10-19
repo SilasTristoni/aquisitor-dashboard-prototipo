@@ -264,6 +264,42 @@ def test_local_publication_freezes_authorized_period_and_channels(
     assert remote.post(path, json=access).status_code == 404
 
 
+def test_unconfigured_portal_does_not_block_local_results(client, auth_headers, monkeypatch):
+    for name in (
+        "THERMOPOWER_RESULTS_PORTAL_URL",
+        "THERMOPOWER_RESULTS_PORTAL_PUBLISH_KEY",
+        "THERMOPOWER_RESULTS_PORTAL_LOCAL_TEST",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    start, end, ids = _seed_period_data()
+    base = f"/api/v1/sessions/{ids[0]}"
+    assert client.put(
+        base + "/analysis-period",
+        headers=auth_headers,
+        json={"start": start.isoformat(), "end": end.isoformat(), "label": "Official"},
+    ).status_code == 200
+    unavailable = client.post(
+        base + "/shares", headers=auth_headers, json={"destination": "portal"}
+    )
+    assert unavailable.status_code == 503
+    assert "HTTPS" in unavailable.json()["error"]["message"]
+    assert client.get(base + "/shares", headers=auth_headers).json()["items"] == []
+    created = client.post(
+        base + "/shares",
+        headers=auth_headers,
+        json={"channels": [1], "permissions": {"graphs": True, "csv": True}},
+    )
+    assert created.status_code == 201
+    access = {"token": created.json()["token"]}
+    result = client.post("/api/v1/public/shares/access", json=access)
+    assert result.status_code == 200
+    assert result.json()["selected_channels"] == [1]
+    assert result.json()["statistics"]["temperature"]["peak"]["value_c"] == 32
+    exported = client.post("/api/v1/public/shares/download/csv", json=access)
+    assert exported.status_code == 200 and exported.content
+    assert client.get(base, headers=auth_headers).status_code == 200
+
+
 def test_portal_import_does_not_load_acquisition():
     result = subprocess.run(
         [
