@@ -302,6 +302,85 @@ def test_configuration_roles_redaction_and_environment(client, auth_headers, mon
     assert response.json()["can_configure"] is False and secret not in response.text
 
 
+@pytest.mark.parametrize("role", ["operator", "viewer"])
+def test_portal_configuration_and_check_require_admin(client, auth_headers, monkeypatch, role):
+    from app.api import share_routes
+
+    calls = []
+    monkeypatch.setattr(share_routes, "portal_request", lambda *args: calls.append(args))
+    with SessionLocal() as db:
+        user = User(
+            name="Synthetic restricted user",
+            email=f"{role}@example.test",
+            role=role,
+            active=True,
+            password_hash="unused",
+        )
+        db.add(user)
+        db.commit()
+        headers = {"Authorization": "Bearer " + create_access_token(str(user.id), role)}
+    payload = {
+        "url": "https://api.example.test",
+        "installation_id": "synthetic-lab",
+        "credential": "synthetic-credential-for-access-test-only",
+    }
+    for identity, expected in (({}, 401), (headers, 403)):
+        assert (
+            client.put(
+                "/api/v1/results-portal/configuration", headers=identity, json=payload
+            ).status_code
+            == expected
+        )
+        assert client.post("/api/v1/results-portal/check", headers=identity).status_code == expected
+    assert calls == []
+
+
+def test_admin_configures_and_checks_portal_without_sessions(client, auth_headers, monkeypatch):
+    from app.api import share_routes
+
+    vault = {}
+    for key in ["URL", "INSTALLATION_ID", "PUBLISH_KEY"]:
+        monkeypatch.delenv("THERMOPOWER_RESULTS_PORTAL_" + key, raising=False)
+    monkeypatch.setattr(config, "read_vault", lambda: vault.copy())
+
+    def save(value):
+        vault.update(
+            url=value.url,
+            installation_id=value.installation_id,
+            credential=value.credential.get_secret_value(),
+        )
+
+    monkeypatch.setattr(share_routes, "save_configuration", save)
+    requests = []
+
+    def request(*args):
+        requests.append(args)
+        return {"installation_id": "synthetic-lab", "tenant_id": "synthetic-company"}
+
+    monkeypatch.setattr(share_routes, "portal_request", request)
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(MeasurementSession)) == 0
+    path = "/api/v1/results-portal/configuration"
+    assert client.get(path, headers=auth_headers).json()["configured"] is False
+    secret = "synthetic-credential-for-access-test-only"
+    response = client.put(
+        path,
+        headers=auth_headers,
+        json={
+            "url": "https://api.example.test",
+            "installation_id": "synthetic-lab",
+            "credential": secret,
+        },
+    )
+    assert response.status_code == 200 and response.json()["configured"] is True
+    for result in (response, client.get(path, headers=auth_headers)):
+        assert secret not in result.text and "credential" not in result.json()
+        assert result.json()["can_configure"] is True
+        assert result.headers["cache-control"] == "no-store"
+    assert client.post("/api/v1/results-portal/check", headers=auth_headers).status_code == 200
+    assert requests == [("https://api.example.test", "GET", "/portal/v1/installation")]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows Credential Manager")
 def test_real_windows_vault_roundtrip_with_disposable_synthetic_target(monkeypatch):
     # Never touch the production credential slot or any existing user credentials.

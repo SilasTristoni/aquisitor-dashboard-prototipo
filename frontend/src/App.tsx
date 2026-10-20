@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useAuth } from "./auth";
 import Layout from "./components/Layout";
@@ -22,6 +22,7 @@ const UsersPage = lazy(() => management().then((module) => ({ default: module.Us
 const DevicesDiscoveryPage = lazy(() => import("./pages/DevicesDiscoveryPage"));
 const PeriodReportsPage = lazy(() => import("./pages/PeriodReportsPage"));
 const SetupWizardPage = lazy(() => import("./pages/SetupWizardPage"));
+const PortalConfigurationPage = lazy(() => import("./pages/PortalConfigurationPage"));
 
 function ProtectedLayout() {
   const { user, loading } = useAuth();
@@ -31,9 +32,9 @@ function ProtectedLayout() {
   return user ? <Layout /> : <Navigate to="/login" replace />;
 }
 
-function AdminOnly() {
+function AdminOnly({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  return user?.role === "admin" ? <UsersPage /> : <Navigate to="/" replace />;
+  return user?.role === "admin" ? children : <Navigate to="/" replace />;
 }
 
 export default function App() {
@@ -53,7 +54,8 @@ export default function App() {
       <Route path="eventos" element={<EventsPage />} />
       <Route path="relatorios" element={<PeriodReportsPage />} />
       <Route path="comparacao" element={<ComparePage />} />
-      <Route path="usuarios" element={<AdminOnly />} />
+      <Route path="usuarios" element={<AdminOnly><UsersPage /></AdminOnly>} />
+      <Route path="portal-externo" element={<AdminOnly><PortalConfigurationPage /></AdminOnly>} />
       <Route path="diagnostico" element={<DiagnosticsPage />} />
       <Route path="configuracao-inicial" element={<SetupWizardPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />

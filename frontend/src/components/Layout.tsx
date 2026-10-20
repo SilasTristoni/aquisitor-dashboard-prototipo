@@ -17,6 +17,7 @@ const navigation = [
   { to: "/equipamentos", label: "Equipamentos", icon: RadioTower },
   { to: "/canais", label: "Termopares", icon: Thermometer },
   { to: "/alertas", label: "Alertas", icon: Bell },
+  { to: "/portal-externo", label: "Portal externo", icon: Settings2, admin: true },
   { to: "/eventos", label: "Eventos e logs", icon: Boxes },
   { to: "/relatorios", label: "Relatórios", icon: FileBarChart },
   { to: "/comparacao", label: "Comparar sessões", icon: GitCompareArrows },
@@ -26,11 +27,11 @@ const navigation = [
 
 const navigationGroups = [
   { label: "Operação", paths: ["/", "/sessoes", "/relatorios", "/comparacao"] },
-  { label: "Configuração", paths: ["/equipamentos", "/canais", "/alertas"] },
+  { label: "Configuração", paths: ["/equipamentos", "/canais", "/alertas", "/portal-externo"] },
   { label: "Avançado", paths: ["/executivo", "/medicoes", "/eventos", "/diagnostico", "/importar", "/usuarios"], collapsed: true },
 ];
 
-const titles: Record<string, string> = { executivo: "Visão executiva", sessoes: "Sessões", medicoes: "Medições", importar: "Importar arquivos", equipamentos: "Equipamentos", canais: "Termopares", alertas: "Alertas", eventos: "Eventos", relatorios: "Relatórios", comparacao: "Comparação", usuarios: "Usuários", diagnostico: "Diagnóstico", "configuracao-inicial": "Configuração inicial" };
+const titles: Record<string, string> = { "portal-externo": "Portal externo", executivo: "Visão executiva", sessoes: "Sessões", medicoes: "Medições", importar: "Importar arquivos", equipamentos: "Equipamentos", canais: "Termopares", alertas: "Alertas", eventos: "Eventos", relatorios: "Relatórios", comparacao: "Comparação", usuarios: "Usuários", diagnostico: "Diagnóstico", "configuracao-inicial": "Configuração inicial" };
 
 export default function Layout() {
   const { user, logout } = useAuth();
