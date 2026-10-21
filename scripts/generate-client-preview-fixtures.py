@@ -151,6 +151,7 @@ def fixture_data(sample_count: int = 120) -> tuple[dict, PeriodReportRequest]:
         "alerts": [],
         "timestamp_fallback_count": 0,
         "table_rows": [],
+        "annotations": [],
     }
     data["statistics"] = period_statistics(data)
     return data, request

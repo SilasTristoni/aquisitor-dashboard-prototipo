@@ -275,6 +275,7 @@ def test_local_publication_freezes_authorized_period_and_channels(
 
 
 def test_unconfigured_portal_does_not_block_local_results(client, auth_headers, monkeypatch):
+    monkeypatch.setattr("app.services.portal_configuration.read_vault", lambda: {})
     for name in (
         "THERMOPOWER_RESULTS_PORTAL_URL",
         "THERMOPOWER_RESULTS_PORTAL_PUBLISH_KEY",

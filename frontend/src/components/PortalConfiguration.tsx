@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api";
-import { ErrorNotice, Spinner } from "./ui";
+import { Badge, ErrorNotice, Spinner } from "./ui";
 
 export type PortalStatus = { configured: boolean; url: string; installation_id: string; managed_by_environment: boolean; can_configure: boolean };
 
@@ -28,20 +28,20 @@ export function PortalConfiguration({ onStatus, expanded = false }: { onStatus?:
     try { await api("/results-portal/check", { method: "POST", signal: AbortSignal.timeout(35000) }); setValidated(true); setMessage("Conexão HTTPS e credencial da instalação confirmadas."); }
     catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
   }
-  return <div>
+  return <div className={`portal-configuration ${expanded ? "expanded" : "compact"}`}>
     {!status && !error && <Spinner label="Carregando configuração do portal" />}
-    {(status || error) && <p role="status" aria-label="Estado do portal">{error ? "Erro" : validated ? "Conexão validada" : status?.configured ? "Configurado" : "Não configurado"}</p>}
+    {(status || error) && <div className="portal-status" role="status" aria-label="Estado do portal"><strong>Conexão com o portal</strong><Badge tone={validated ? "success" : "neutral"}>{error ? "Erro" : validated ? "Conexão validada" : status?.configured ? "Configurado" : "Não configurado"}</Badge>{status?.configured && <span className="hint">{status.installation_id}</span>}</div>}
     {error && <ErrorNotice message={error} />}
     {message && <p role="status">{message}</p>}
     {status && !status.configured && <p className="notice warning">O compartilhamento externo depende da configuração do portal HTTPS pelo administrador. Os relatórios locais continuam disponíveis.</p>}
-    {status?.can_configure && <details className="disclosure-card" open={expanded || undefined}><summary>Configuração administrativa do portal</summary>
+    {status?.can_configure && <details className="disclosure-card portal-settings" open={expanded || undefined}><summary>Configuração administrativa do portal</summary>
       <p className="hint">Use a URL da API no Render e a credencial exclusiva desta instalação. A credencial é protegida pelo Gerenciador de Credenciais do usuário Windows que executa o ThermoPower.</p>
-      {status.managed_by_environment ? <><p>Configuração gerenciada pelo ambiente: {status.url}</p><p>Identificador da instalação: {status.installation_id}</p></> : <form className="compact-form" onSubmit={event => void save(event)} onChange={() => { setDirty(true); setValidated(false); setMessage(""); }}>
+      {status.managed_by_environment ? <><p>Configuração gerenciada pelo ambiente: {status.url}</p><p>Identificador da instalação: {status.installation_id}</p></> : <form className="compact-form portal-form" onSubmit={event => void save(event)} onChange={() => { setDirty(true); setValidated(false); setMessage(""); }}>
         <label className="field"><span>URL HTTPS da API do portal</span><input name="url" type="url" defaultValue={status.url} disabled={busy} required maxLength={512} placeholder="https://sua-api.onrender.com" /></label>
         <label className="field"><span>Identificador da instalação</span><input name="installation_id" defaultValue={status.installation_id} disabled={busy} pattern="[a-zA-Z0-9_-]{1,64}" required /></label>
         <label className="field"><span>Credencial da instalação</span><input name="credential" type="password" autoComplete="new-password" disabled={busy} required minLength={32} maxLength={256} /></label>
         <p className="hint">Credenciais armazenadas nunca são exibidas. Para salvar, informe a credencial desta instalação novamente.</p>
-        <button className="button secondary" disabled={busy}>Salvar configuração</button>
+        <div className="action-bar"><button className="button primary" disabled={busy}>Salvar configuração</button></div>
       </form>}
       {dirty && <p className="hint">Salve as alterações antes de testar a conexão.</p>}
       <button type="button" className="button secondary" disabled={busy || !status.configured || dirty} onClick={() => void check()}>Testar conexão com o portal</button>

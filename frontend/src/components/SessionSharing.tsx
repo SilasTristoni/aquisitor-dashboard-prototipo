@@ -48,7 +48,7 @@ export function SessionSharing({ sessionId, channels, includePower = true, inclu
     try { await navigator.clipboard.writeText(link); setMessage("Link copiado."); }
     catch { setMessage("Selecione o campo do link e copie com Ctrl+C."); }
   }
-  return <Panel title="Compartilhamentos" kicker="ACESSO AO RESULTADO">
+  return <Panel title="Compartilhamentos" kicker="ACESSO AO RESULTADO" className="sharing-panel">
     {error && <ErrorNotice message={error} />}{message && <p className="feedback-message" role="status">{message}</p>}
     <PortalConfiguration onStatus={setPortal} />
     <details ref={disclosure} className="disclosure-card"><summary className="button secondary">Compartilhar resultado</summary>

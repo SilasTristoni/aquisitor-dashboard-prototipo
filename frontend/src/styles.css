@@ -738,6 +738,39 @@ input[type="checkbox"], input[type="radio"] { width: 17px; height: 17px; min-hei
 .download-bar p { margin: 4px 0 0; }
 .public-footer { margin-top: 24px; font-size: 12px; color: var(--muted); text-align: center; }
 .access-card { max-width: 480px; margin: 32px auto; }
+.portal-admin-panel { max-width: 1040px; }
+.info-tip-content { visibility: hidden; }
+.info-tip:hover .info-tip-content, .info-tip:focus .info-tip-content { visibility: visible; }
+.metric-card .info-tip { position: static; }
+.metric-card .info-tip-content, .metric-card .info-tip:hover .info-tip-content, .metric-card .info-tip:focus .info-tip-content { left: 12px; right: 12px; width: auto; max-width: none; transform: none; }
+.portal-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 12px 0; font-size: 13px; }
+.portal-status strong { margin-right: auto; }
+.portal-settings { margin-bottom: 16px; overflow-wrap: anywhere; }
+.portal-settings > .hint { max-width: 76ch; line-height: 1.6; }
+.portal-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 18px 0; }
+.portal-form > :first-child, .portal-form > .hint, .portal-form > .action-bar { grid-column: 1 / -1; }
+.portal-form .field { margin: 0; }
+.sharing-panel .share-card .metadata-grid { gap: 12px 20px; }
+.sharing-panel .empty { min-height: 100px; padding: 18px 16px; }
+.share-card > details { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; }
+.share-card > details summary { cursor: pointer; font-size: 13px; }
+.share-card .section-heading { flex-wrap: wrap; gap: 8px; }
+.share-card .choice-row { margin: 12px 0; }
+.share-card .badge { white-space: normal; }
+.sharing-panel .form-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (min-width: 761px) and (max-width: 900px) {
+  .login-shell { grid-template-columns: minmax(0, 1fr); }
+  .login-visual { min-height: 280px; padding: 28px; }
+  .login-copy { margin: 30px 0; }
+  .login-form-wrap { padding: 24px; }
+}
+@media (max-width: 760px) {
+  .portal-form, .sharing-panel .form-grid { grid-template-columns: minmax(0, 1fr); }
+  .portal-status > .hint { flex-basis: 100%; }
+  .share-card { padding: 12px; }
+  .share-link input { flex-basis: 100%; }
+  .sharing-panel .metadata-grid { grid-template-columns: minmax(0, 1fr); }
+}
 @media (max-width: 1100px) {
   .result-events li { grid-template-columns: 155px minmax(0, 1fr); }
   .result-events li > .action-bar { grid-column: 2; }
