@@ -73,7 +73,8 @@ def main():
     archive = Path(str(destination) + ".zip")
     if destination.exists() or archive.exists():
         raise FileExistsError("Candidate already exists; preserve previous packages")
-    work = ROOT / "build" / (name + "-" + datetime.now(UTC).strftime("%Y%m%d-%H%M%S"))
+    # Keep dependency-license paths below Windows MAX_PATH during PyInstaller collection.
+    work = ROOT / "build" / ("pkg-" + datetime.now(UTC).strftime("%m%d-%H%M%S"))
     work.mkdir(parents=True, exist_ok=False)
     manifest = json.dumps(sources, sort_keys=True, indent=2)
     metadata = {
@@ -248,7 +249,8 @@ def main():
         if digest(extracted / name) != expected:
             raise RuntimeError(f"Extracted file hash mismatch: {name}")
     verify_sources()
-    shutil.copytree(staging, destination)
+    copy_destination = "\\\\?\\" + str(destination.resolve()) if os.name == "nt" else destination
+    shutil.copytree(staging, copy_destination)
     shutil.copy2(temporary, archive)
     checksum = digest(archive)
     Path(str(archive) + ".sha256").write_text(
