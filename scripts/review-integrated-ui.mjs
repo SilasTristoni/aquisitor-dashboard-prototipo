@@ -10,7 +10,8 @@ import { createRequire } from 'node:module';
 const { chromium } = createRequire(import.meta.url)(process.env.THERMOPOWER_PLAYWRIGHT_MODULE || 'playwright');
 
 const output = resolve(process.env.UX_OUTPUT || 'build/integrated-071/audit');
-const preview = JSON.parse(await readFile(resolve(output, 'reports/preview.json'), 'utf8'));
+await mkdir(output, { recursive: true });
+const preview = JSON.parse(await readFile(resolve(process.env.UX_FIXTURE || resolve(output, 'reports/preview.json')), 'utf8'));
 const root = resolve('frontend/dist');
 const server = createServer(async (request, response) => {
   try {
@@ -41,7 +42,7 @@ const scenarios = [
 const results = [];
 const browser = await chromium.launch({ channel: 'msedge', headless: true });
 try {
-  for (const [physicalWidth, physicalHeight] of [[1440, 1000], [768, 1024], [390, 844]]) {
+  for (const [physicalWidth, physicalHeight] of JSON.parse(process.env.UX_VIEWPORTS || "[[1440,1000],[768,1024],[390,844]]")) {
     if (process.env.UX_WIDTHS && !process.env.UX_WIDTHS.split(',').includes(String(physicalWidth))) continue;
     for (const zoom of [1]) {
       // Reproduce browser zoom's CSS viewport and device pixel ratio deterministically.
@@ -177,6 +178,20 @@ try {
           overflow: [...document.querySelectorAll('.metric-card, .panel, .page-header')].filter(e => e.getBoundingClientRect().right > innerWidth + 2).map(e => e.className),
           curves: document.querySelectorAll('path.recharts-line-curve').length,
         }));
+        if (process.env.UX_LAYOUT_CHECKS) {
+          if (scenario === 'company') {
+            const save = await page.getByRole('button', { name: /^Salvar identifica/ }).boundingBox();
+            assert.ok(save.width < 240, 'Save action must keep natural width');
+            await page.locator('input[type=file]').focus();
+            assert.ok(await page.locator('input[type=file]').evaluate(e => e === document.activeElement), 'Upload remains keyboard accessible');
+          }
+          if (scenario === 'empty') {
+            const boxes = await page.locator('.source-controls select, .source-controls > button').evaluateAll(items => items.map(e => { const r=e.getBoundingClientRect(); return { height:r.height, bottom:r.bottom, right:r.right }; }));
+            assert.equal(boxes.length, 3);
+            assert.ok(boxes.every(r => Math.abs(r.height - 44) < 1), 'Controls must share height');
+            if (physicalWidth > 600) assert.ok(Math.max(...boxes.map(r => r.bottom))-Math.min(...boxes.map(r => r.bottom)) < 1, 'Controls must align at bottom');
+          }
+        }
         const name = `${physicalWidth}-${Math.round(zoom * 100)}-${scenario}`;
         await mkdir(output, { recursive: true });
         await page.screenshot({ path: resolve(output, `${name}.png`), fullPage: true });

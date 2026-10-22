@@ -243,14 +243,14 @@ export default function DashboardPage() {
   };
 
   return <>
-    <PageHeader eyebrow="OPERAÇÃO EM TEMPO REAL" title="Ensaio térmico e elétrico" description="Acompanhe potência e cada ponteira ativa em uma única visão operacional." actions={<>
+    <PageHeader eyebrow="OPERAÇÃO EM TEMPO REAL" title="Ensaio térmico e elétrico" description="Acompanhe potência e cada ponteira ativa em uma única visão operacional." actions={<div className="source-controls">
       <label className="compact-field"><span>Fonte elétrica</span><select value={electricalDeviceId} onChange={(event) => setElectricalDeviceId(Number(event.target.value))} disabled={Boolean(activeSession)}><option value={0}>Não selecionada</option>{devices.filter((device) => device.protocol !== "at4532_serial").map((device) => <option key={device.id} value={device.id}>{device.name}</option>)}</select></label>
       <label className="compact-field"><span>Fonte térmica</span><select value={temperatureDeviceId} onChange={(event) => setTemperatureDeviceId(Number(event.target.value))} disabled={Boolean(activeSession)}><option value={0}>Não selecionada</option>{devices.filter((device) => device.protocol !== "gpm8213_serial").map((device) => <option key={device.id} value={device.id}>{device.name}</option>)}</select></label>
       {!activeSession && !finishedSessionId && !allConnected && <button className="button primary" onClick={connectAll} disabled={!selectedIds.length || busy}><Plug /> {busy ? "Conectando fontes…" : "Conectar fontes"}</button>}
       {!activeSession && !finishedSessionId && allConnected && <button className="button primary" onClick={start} disabled={busy}><Play /> {busy && operation === "start" ? "Sincronizando fontes..." : "Iniciar ensaio"}</button>}
       {activeSession && <><button className="button secondary" disabled={busy} onClick={() => transition(activeSession.status === "paused" ? "resume" : "pause")}>{activeSession.status === "paused" ? <Play /> : <Pause />}{activeSession.status === "paused" ? "Continuar" : "Pausar"}</button><button className="button primary" disabled={busy} onClick={() => transition("finish")}><Square /> Finalizar ensaio</button></>}
       {finishedSessionId && !activeSession && <><a className="button primary" href={`/sessoes/${finishedSessionId}`}>Ver resultados</a><button className="button ghost" onClick={() => setFinishedSessionId(null)}>Novo ensaio</button></>}
-    </>} />
+    </div>} />
     <div className="operator-progress" aria-label="Etapas do ensaio"><span className={!allConnected ? "current" : "complete"}>1 · Conectar fontes</span><span className={allConnected && !activeSession && !finishedSessionId ? "current" : ""}>2 · Iniciar ensaio</span><span className={activeSession ? "current" : ""}>3 · Acompanhar</span><span className={finishedSessionId ? "current" : ""}>4 · Resultados</span></div>
     {error && <ErrorNotice message={error} retry={allConnected ? start : connectAll} />}
     <CadenceNotice status={statuses[temperatureDeviceId]} />
