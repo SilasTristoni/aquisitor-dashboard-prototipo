@@ -77,10 +77,50 @@ class ResultSnapshot(BaseModel):
             "annotations",
         }
         if (
-            set(self.result) != allowed
+            set(self.result) - {"company_identity"} != allowed
             or self.result["permissions"] != self.permissions.model_dump()
         ):
             raise ValueError("Snapshot inválido")
+        if "company_identity" in self.result:
+            identity = self.result["company_identity"]
+            if not isinstance(identity, dict) or set(identity) != {
+                "identity_id",
+                "company_name",
+                "laboratory",
+                "logo",
+            }:
+                raise ValueError("Identidade corporativa inválida")
+            from uuid import UUID
+
+            if identity["identity_id"] is not None:
+                if not isinstance(identity["identity_id"], str):
+                    raise ValueError("Invalid identity ID")
+                UUID(identity["identity_id"])
+            for key in ("company_name", "laboratory"):
+                if not isinstance(identity[key], str) or len(identity[key]) > 120:
+                    raise ValueError("Identidade corporativa inválida")
+            if identity["logo"] is not None:
+                import io
+
+                from PIL import Image
+
+                logo = identity["logo"]
+                if not isinstance(logo, str) or not logo.startswith("data:image/png;base64,"):
+                    raise ValueError("Logotipo inválido")
+                if len(logo) > 1400000:
+                    raise ValueError("Logotipo excede o limite")
+                raw = base64.b64decode(logo.split(",", 1)[1], validate=True)
+                try:
+                    with Image.open(io.BytesIO(raw)) as image:
+                        if (
+                            image.format != "PNG"
+                            or not (16 <= image.width <= 2048 and 16 <= image.height <= 1024)
+                            or getattr(image, "n_frames", 1) != 1
+                        ):
+                            raise ValueError("Logotipo inválido")
+                        image.verify()
+                except (OSError, Image.DecompressionBombError) as exc:
+                    raise ValueError("Invalid logo") from exc
         if not self.permissions.graphs and self.result["series"]:
             raise ValueError("Gráficos não autorizados")
         if self.result["status"] != "finished" or self.result["official"] is not True:

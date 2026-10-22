@@ -2,7 +2,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from uuid import uuid4
 
+import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
@@ -10,6 +12,43 @@ from app.core.database import Base
 from app.models.entities import Device
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_postgresql_replays_long_historical_revision_names():
+    admin_url = os.environ.get("THERMOPOWER_TEST_POSTGRES_URL")
+    if not admin_url:
+        pytest.skip("Requires isolated local PostgreSQL test server")
+    from sqlalchemy.engine import make_url
+
+    url = make_url(admin_url)
+    assert url.host in {"127.0.0.1", "localhost"}
+    name = "synthetic_migrations_" + uuid4().hex
+    admin = create_engine(url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as connection:
+        connection.execute(text("CREATE DATABASE " + name))
+    database = create_engine(url.set(database=name))
+    try:
+        with database.begin() as connection:
+            connection.execute(text(
+                "CREATE TABLE alembic_version (version_num VARCHAR(32) PRIMARY KEY)"
+            ))
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"], cwd=BACKEND_ROOT,
+            env={**os.environ, "THERMOPOWER_DATABASE_URL":
+                 url.set(database=name).render_as_string(hide_password=False)},
+            capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        with database.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                "0013_company_identity"
+            )
+            assert "company_identity" in inspect(connection).get_table_names()
+    finally:
+        database.dispose()
+        with admin.connect() as connection:
+            connection.execute(text("DROP DATABASE " + name + " WITH (FORCE)"))
+        admin.dispose()
 
 
 def test_analysis_migrations_preserve_sqlite_history_with_foreign_keys(tmp_path):
@@ -39,6 +78,7 @@ def test_analysis_migrations_preserve_sqlite_history_with_foreign_keys(tmp_path)
                 "0010_session_shares",
                 "0011_share_result_options",
                 "0012_publication_outbox",
+                "0013_company_identity",
             ]:
                 spec = importlib.util.spec_from_file_location(
                     name, BACKEND_ROOT / f"alembic/versions/{name}.py"
@@ -51,7 +91,7 @@ def test_analysis_migrations_preserve_sqlite_history_with_foreign_keys(tmp_path)
             connection.scalar(text("SELECT analysis_start FROM measurement_sessions WHERE id=42"))
             is None
         )
-        assert {"session_annotations", "session_shares"} <= set(
+        assert {"session_annotations", "session_shares", "company_identity"} <= set(
             inspect(connection).get_table_names()
         )
         assert not connection.execute(text("PRAGMA foreign_key_check")).all()
@@ -78,7 +118,7 @@ def test_new_migrations_compile_for_postgresql(monkeypatch):
     monkeypatch.setattr(sa, "inspect", lambda _: inspector)
     with Operations.context(context):
         for name in ["0009_session_analysis", "0010_session_shares", "0011_share_result_options",
-                     "0012_publication_outbox"]:
+                     "0012_publication_outbox", "0013_company_identity"]:
             spec = importlib.util.spec_from_file_location(
                 name, BACKEND_ROOT / f"alembic/versions/{name}.py"
             )
@@ -89,6 +129,7 @@ def test_new_migrations_compile_for_postgresql(monkeypatch):
     assert "TIMESTAMP WITH TIME ZONE" in sql
     assert "CREATE TABLE session_shares" in sql
     assert "CREATE TABLE session_annotations" in sql
+    assert "CREATE TABLE company_identity" in sql
     assert "FOREIGN KEY(analysis_selected_by) REFERENCES users (id)" in sql
     assert "DROP TABLE" not in sql
 
@@ -133,7 +174,7 @@ def test_upgrade_accepts_schema_precreated_by_sqlalchemy(tmp_path):
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            "0012_publication_outbox"
+            "0013_company_identity"
         )
         assert "metadata" in {
             column["name"] for column in inspect(connection).get_columns("measurement_sessions")

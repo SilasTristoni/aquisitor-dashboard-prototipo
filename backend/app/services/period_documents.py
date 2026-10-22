@@ -426,6 +426,21 @@ def render_executive_summary(
     electrical = data["statistics"]["electrical"]
     temperature = data["statistics"]["temperature"]
     figure.text(0.045, 0.925, "THERMOPOWER", color="#2563EB", fontsize=11, weight="bold")
+    identity = data.get("company_identity") or {}
+    if identity.get("company_name"):
+        import base64
+        import textwrap
+
+        company = " · ".join(filter(None, [identity["company_name"], identity.get("laboratory")]))
+        figure.text(0.78, 0.955, "\n".join(textwrap.wrap(company, 65)),
+                    ha="right", va="top", fontsize=7, color="#64748B")
+        if identity.get("logo"):
+            import matplotlib.image as mpimg
+
+            logo_axis = figure.add_axes((0.82, 0.90, 0.13, 0.07))
+            logo_axis.imshow(mpimg.imread(io.BytesIO(
+                base64.b64decode(identity["logo"].split(",", 1)[1])), format="png"))
+            logo_axis.axis("off")
     figure.text(0.045, 0.875, request.title, color="#17233F", fontsize=20, weight="bold")
     figure.text(
         0.045,
@@ -647,6 +662,18 @@ def render_period_pdf(data: dict[str, Any], request: PeriodReportRequest) -> byt
         Paragraph(escape(request.title), styles["CoverTitle"]),
     ]
     standard_subtitle = "Relatório Técnico de Ensaio Térmico e Elétrico"
+    identity = data.get("company_identity") or {}
+    if identity.get("company_name"):
+        import base64
+
+        story.append(Paragraph(escape(identity["company_name"]), styles["Heading2"]))
+        if identity.get("laboratory"):
+            story.append(Paragraph(escape(identity["laboratory"]), styles["Normal"]))
+        if identity.get("logo"):
+            logo = Image(io.BytesIO(base64.b64decode(identity["logo"].split(",", 1)[1])))
+            ratio = min(45 * mm / logo.imageWidth, 18 * mm / logo.imageHeight)
+            logo.drawWidth, logo.drawHeight = logo.imageWidth * ratio, logo.imageHeight * ratio
+            story.append(logo)
     if request.subtitle and request.subtitle.casefold() != standard_subtitle.casefold():
         story.append(Paragraph(escape(request.subtitle), styles["Heading2"]))
     story.extend(

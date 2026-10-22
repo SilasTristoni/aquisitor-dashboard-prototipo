@@ -17,6 +17,37 @@ from app.core.database import Base, engine
 from app.main import app
 
 
+@pytest.fixture(autouse=True)
+def isolated_network_and_credentials(monkeypatch):
+    """Tests may use loopback servers, but never external services or real credentials."""
+    import ipaddress
+    import socket
+
+    from app.services import portal_configuration
+
+    original_connect = socket.socket.connect
+    original_read = portal_configuration.read_vault
+
+    def connect(sock, address):
+        if isinstance(address, tuple):
+            host = str(address[0])
+            try:
+                allowed = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                allowed = host == "localhost"
+            if not allowed:
+                raise RuntimeError("External network disabled during automated tests")
+        return original_connect(sock, address)
+
+    def read_test_vault():
+        if portal_configuration.TARGET == "ThermoPower/ResultsPortal/v1":
+            return {}
+        return original_read()
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(portal_configuration, "read_vault", read_test_vault)
+
+
 @pytest.fixture
 def client():
     Base.metadata.drop_all(engine)

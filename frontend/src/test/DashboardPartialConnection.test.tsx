@@ -15,6 +15,7 @@ vi.mock("recharts", () => {
     Legend: Primitive,
     Line: Primitive,
     ReferenceDot: Primitive,
+    ReferenceLine: Primitive,
     LineChart: Chart,
     ResponsiveContainer: Container,
     Tooltip: Primitive,

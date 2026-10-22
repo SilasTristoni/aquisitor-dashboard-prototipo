@@ -7,6 +7,7 @@ import {
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../auth";
+import { CurrentCompanyMark } from "./CompanyIdentity";
 
 const navigation = [
   { to: "/", label: "Tempo real", icon: Activity },
@@ -18,6 +19,7 @@ const navigation = [
   { to: "/canais", label: "Termopares", icon: Thermometer },
   { to: "/alertas", label: "Alertas", icon: Bell },
   { to: "/portal-externo", label: "Portal externo", icon: Settings2, admin: true },
+  { to: "/identidade-corporativa", label: "Identidade corporativa", icon: Settings2, admin: true },
   { to: "/eventos", label: "Eventos e logs", icon: Boxes },
   { to: "/relatorios", label: "Relatórios", icon: FileBarChart },
   { to: "/comparacao", label: "Comparar sessões", icon: GitCompareArrows },
@@ -27,11 +29,11 @@ const navigation = [
 
 const navigationGroups = [
   { label: "Operação", paths: ["/", "/sessoes", "/relatorios", "/comparacao"] },
-  { label: "Configuração", paths: ["/equipamentos", "/canais", "/alertas", "/portal-externo"] },
+  { label: "Configuração", paths: ["/equipamentos", "/canais", "/alertas", "/portal-externo", "/identidade-corporativa"] },
   { label: "Avançado", paths: ["/executivo", "/medicoes", "/eventos", "/diagnostico", "/importar", "/usuarios"], collapsed: true },
 ];
 
-const titles: Record<string, string> = { "portal-externo": "Portal externo", executivo: "Visão executiva", sessoes: "Sessões", medicoes: "Medições", importar: "Importar arquivos", equipamentos: "Equipamentos", canais: "Termopares", alertas: "Alertas", eventos: "Eventos", relatorios: "Relatórios", comparacao: "Comparação", usuarios: "Usuários", diagnostico: "Diagnóstico", "configuracao-inicial": "Configuração inicial" };
+const titles: Record<string, string> = { "identidade-corporativa": "Identidade corporativa", "portal-externo": "Portal externo", executivo: "Visão executiva", sessoes: "Sessões", medicoes: "Medições", importar: "Importar arquivos", equipamentos: "Equipamentos", canais: "Termopares", alertas: "Alertas", eventos: "Eventos", relatorios: "Relatórios", comparacao: "Comparação", usuarios: "Usuários", diagnostico: "Diagnóstico", "configuracao-inicial": "Configuração inicial" };
 
 export default function Layout() {
   const { user, logout } = useAuth();
@@ -55,7 +57,7 @@ export default function Layout() {
     {open && <button className="sidebar-backdrop" onClick={() => setOpen(false)} aria-label="Fechar menu" />}
     <main className="main-content">
       <header className="topbar"><button className="menu-button" aria-label="Abrir menu" onClick={() => setOpen(true)}><Menu /></button><div className="breadcrumbs"><span>ThermoPower</span><ChevronRight /><strong>{titles[segment] ?? "Tempo real"}</strong></div><div className="topbar-actions"><HelpMenu allowSupport={user?.role !== "viewer"} /><span className="system-pill"><i /> Online</span><button className="icon-button" onClick={() => setDark(!dark)} aria-label="Alternar tema">{dark ? <Sun /> : <Moon />}</button>{user?.role !== "viewer" && <Link className="icon-button" to="/configuracao-inicial" aria-label="Configuração inicial"><Settings2 /></Link>}{user?.role !== "viewer" && <button className="icon-button warning-dot" aria-label="Alertas"><AlertTriangle /></button>}</div></header>
-      <div className="page">{location.pathname === "/" && <FirstUseHint />}<Outlet /></div>
+      <div className="page"><CurrentCompanyMark />{location.pathname === "/" && <FirstUseHint />}<Outlet /></div>
     </main>
   </div>;
 }

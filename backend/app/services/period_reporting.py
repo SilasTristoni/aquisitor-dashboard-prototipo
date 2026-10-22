@@ -855,6 +855,9 @@ class PeriodReportDataService:
             "timestamp_fallback_count": fallback_count,
         }
         data["statistics"] = period_statistics(data)
+        from app.services.company_identity import identity_data
+
+        data["company_identity"] = identity_data(self.db)
         data["table_rows"] = self._table_rows(data, request.table_max_rows)
         return data
 

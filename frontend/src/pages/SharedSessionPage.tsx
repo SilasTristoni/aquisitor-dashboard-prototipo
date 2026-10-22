@@ -1,3 +1,4 @@
+import { CompanyMark } from "../components/CompanyIdentity";
 import { ReadingGapMarkers } from "../components/ReadingGapMarkers";
 import { ThermalPeak } from "../components/ThermalPeak";
 import { Activity, Moon, Sun } from "lucide-react";
@@ -47,7 +48,7 @@ export default function SharedSessionPage() {
   const downloads = ["pdf", "xlsx", "csv"].filter((kind) => result?.permissions[kind]);
   return <main className="page shared-result">
     <div className="public-brand"><span className="brand-mark"><Activity /></span><div><strong>ThermoPower</strong><span>Resultado compartilhado</span></div><button className="icon-button" aria-label="Alternar tema" onClick={() => setDark(!dark)}>{dark ? <Sun /> : <Moon />}</button></div>
-    <header className="page-header"><div><h1>{result?.name ?? "Resultado do ensaio"}</h1><p className="subtitle">Consulta do resultado · Somente leitura</p></div></header>
+    <CompanyMark identity={result?.company_identity} /><header className="page-header"><div><h1>{result?.name ?? "Resultado do ensaio"}</h1><p className="subtitle">Consulta do resultado · Somente leitura</p></div></header>
     {busy && <Spinner label="Carregando resultado" />}{error && <div role="alert" className="notice warning">{error}<button className="button secondary" disabled={busy} onClick={() => void load(credential)}>Tentar novamente</button></div>}
     {!result && needsPassword && <Panel title="Acesso protegido" className="access-card"><p className="hint">Informe a senha fornecida por quem compartilhou o ensaio.</p><form className="compact-form" onSubmit={(event: FormEvent) => { event.preventDefault(); void load(password); }}><label className="field"><span>Senha do compartilhamento</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required maxLength={72} /></label><div className="action-bar"><button className="button primary" disabled={busy}>Abrir resultado</button></div></form></Panel>}
     {result && <><Panel title="Identificação do ensaio"><dl className="metadata-grid">{Object.entries(result.metadata).map(([key, value]) => <div key={key}><dt>{{ product: "Produto", model: "Modelo", sample: "Amostra", code: "Código", nominal_voltage: "Tensão nominal", setpoint: "Setpoint" }[key]}</dt><dd>{String(value || "—")}</dd></div>)}</dl><p className="applied-period"><strong>{result.official ? "Período oficial analisado" : "Período analisado"}{result.analysis_label && ` · ${result.analysis_label}`}</strong><span>{formatDate(result.period.start)} → {formatDate(result.period.end)} · {formatDuration(result.statistics.general.analyzed_period_seconds)}</span></p></Panel>

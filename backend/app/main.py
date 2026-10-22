@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
 from app.api.analysis_routes import router as analysis_router
+from app.api.company_routes import router as company_router
 from app.api.routes import router
 from app.api.share_routes import router as share_router
 from app.api.support_routes import router as support_router
@@ -275,6 +276,7 @@ app.include_router(share_router)
 app.include_router(analysis_router)
 app.include_router(router)
 app.include_router(support_router)
+app.include_router(company_router)
 
 
 def _frontend_directory() -> Path | None:

@@ -28,7 +28,7 @@ test("administrador abre pelo menu sem consultar ou precisar de sessões", async
   expect(screen.getByLabelText("Credencial da instalação")).toHaveAttribute("type", "password");
   expect(screen.getByLabelText("Credencial da instalação")).toHaveValue("");
   expect(screen.getByRole("status", { name: "Estado do portal" })).toHaveTextContent("Configurado");
-  expect(mockApi.mock.calls.map(([path]) => path)).toEqual(["/results-portal/configuration"]);
+  expect(mockApi.mock.calls.map(([path]) => path)).toEqual(["/company-identity", "/results-portal/configuration"]);
 });
 
 test.each([["operator", "Operação sintética"], ["viewer", "Sessões sintéticas"], [null, "Login sintético"]])("bloqueia acesso direto para %s", async (role, heading) => {
@@ -37,7 +37,7 @@ test.each([["operator", "Operação sintética"], ["viewer", "Sessões sintétic
   expect(await screen.findByRole("heading", { name: heading! })).toBeVisible();
   expect(screen.queryByRole("link", { name: "Portal externo" })).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Credencial da instalação")).not.toBeInTheDocument();
-  expect(mockApi).not.toHaveBeenCalled();
+  expect(mockApi.mock.calls.map(([path]) => path)).toEqual(role ? ["/company-identity"] : []);
 });
 
 test("salva, limpa credencial, testa conexão e invalida confirmação ao editar", async () => {

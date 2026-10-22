@@ -55,6 +55,11 @@ SCENARIOS = (
     ),
 )
 
+DEMO_EXTRA_SCENARIOS = (
+    ("power", "Somente potência", 900, 5, "finished", "electrical"),
+    ("disconnect", "Desconexão e reconexão simuladas", 1200, 5, "finished", "both"),
+)
+
 
 def validate_target(environment: str, database_url: str) -> str:
     """Fail before connecting; a production URL cannot be selected accidentally."""
@@ -284,14 +289,15 @@ def seed_demo(db, user, *, environment: str) -> dict:
     for day, (scenario, title, duration, interval, status, role) in enumerate(
         SCENARIOS
     ):
-        source_cadence = {str(thermal.id): interval * 1000}
-        if role == "both":
+        primary = electrical if role == "electrical" else thermal
+        source_cadence = {str(primary.id): interval * 1000}
+        if role in {"both", "electrical"}:
             source_cadence[str(electrical.id)] = interval * 1000
         name = f"DEMO UX — {title}"
         existing = list(
             db.scalars(
                 select(MeasurementSession).where(
-                    MeasurementSession.device_id == thermal.id,
+                    MeasurementSession.device_id == primary.id,
                     MeasurementSession.name == name,
                 )
             )
@@ -308,7 +314,7 @@ def seed_demo(db, user, *, environment: str) -> dict:
             continue
         start = START + timedelta(days=day)
         session = MeasurementSession(
-            device_id=thermal.id,
+            device_id=primary.id,
             user_id=user.id,
             name=name,
             status=status,
@@ -337,8 +343,8 @@ def seed_demo(db, user, *, environment: str) -> dict:
         db.add(
             SessionDevice(
                 session_id=session.id,
-                device_id=thermal.id,
-                role="temperature",
+                device_id=primary.id,
+                role="electrical" if role == "electrical" else "temperature",
                 created_at=start,
             )
         )
@@ -358,7 +364,9 @@ def seed_demo(db, user, *, environment: str) -> dict:
         thermal_rows, electric_rows, channel_rows = [], [], []
         for index, seconds in enumerate(range(0, duration + 1, interval), 1):
             timestamp = start + timedelta(seconds=seconds)
-            if role == "both":
+            if scenario == "disconnect" and 600 <= seconds < 660:
+                continue
+            if role in {"both", "electrical"}:
                 values = electrical_values(scenario, seconds)
                 original_unit = ("mW", "W", "kW")[(index // 60) % 3]
                 factor = {"mW": 0.001, "W": 1, "kW": 1000}[original_unit]
@@ -381,7 +389,7 @@ def seed_demo(db, user, *, environment: str) -> dict:
                     }
                 )
             # Only the thermal source has a gap; no old values are copied into missing samples.
-            if scenario == "gap" and 600 <= seconds < 630:
+            if role == "electrical" or (scenario == "gap" and 600 <= seconds < 630):
                 continue
             received = timestamp + timedelta(milliseconds=150)
             sample = TemperatureSample(
@@ -429,6 +437,16 @@ def seed_demo(db, user, *, environment: str) -> dict:
                 details={"seed": SEED_KEY, "synthetic": True},
             )
         )
+        if scenario == "disconnect":
+            for seconds, category in ((600, "disconnected"), (660, "reconnected")):
+                for device in devices:
+                    db.add(SystemEvent(
+                        device_id=device.id, session_id=session.id,
+                        timestamp=start + timedelta(seconds=seconds),
+                        category=category, level="warning" if seconds == 600 else "info",
+                        message=f"DEMO: {category}; evento sintético, sem medição artificial.",
+                        details={"seed": SEED_KEY, "synthetic": True},
+                    ))
         if scenario == "analysis":
             for seconds, kind, title in (
                 (600, "stabilization", "Início do regime estável — demonstração"),

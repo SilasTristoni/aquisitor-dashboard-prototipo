@@ -38,6 +38,19 @@ def main():
         login = client.post("/api/v1/auth/login", json={"email": email, "password": password})
         login.raise_for_status()
         client.headers["Authorization"] = f"Bearer {login.json()['access_token']}"
+        identity = client.put("/api/v1/company-identity", json={
+            "company_name": "Empresa DEMO de smoke", "laboratory": "Laboratorio sintetico",
+        })
+        identity.raise_for_status()
+        from PIL import Image
+
+        logo = io.BytesIO()
+        Image.new("RGB", (64, 32), "navy").save(logo, format="PNG")
+        uploaded = client.put("/api/v1/company-identity/logo", content=logo.getvalue(),
+                              headers={"Content-Type": "image/png"})
+        uploaded.raise_for_status()
+        assert uploaded.json()["logo"].startswith("data:image/png;base64,")
+        assert not client.get("/api/v1/results-portal/configuration").json()["configured"]
         for mode in ("electrical", "thermal", "combined"):
             payload = seed_source_session(mode)
             for kind in ("executive.pdf", "executive.png", "pdf", "xlsx", "csv", "chart.png"):

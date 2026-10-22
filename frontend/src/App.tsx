@@ -23,6 +23,7 @@ const DevicesDiscoveryPage = lazy(() => import("./pages/DevicesDiscoveryPage"));
 const PeriodReportsPage = lazy(() => import("./pages/PeriodReportsPage"));
 const SetupWizardPage = lazy(() => import("./pages/SetupWizardPage"));
 const PortalConfigurationPage = lazy(() => import("./pages/PortalConfigurationPage"));
+const CompanyIdentityPage = lazy(() => import("./pages/CompanyIdentityPage"));
 
 function ProtectedLayout() {
   const { user, loading } = useAuth();
@@ -56,6 +57,7 @@ export default function App() {
       <Route path="comparacao" element={<ComparePage />} />
       <Route path="usuarios" element={<AdminOnly><UsersPage /></AdminOnly>} />
       <Route path="portal-externo" element={<AdminOnly><PortalConfigurationPage /></AdminOnly>} />
+      <Route path="identidade-corporativa" element={<AdminOnly><CompanyIdentityPage /></AdminOnly>} />
       <Route path="diagnostico" element={<DiagnosticsPage />} />
       <Route path="configuracao-inicial" element={<SetupWizardPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />

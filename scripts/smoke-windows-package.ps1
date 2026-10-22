@@ -27,7 +27,10 @@ $ManagedEnvironmentVariables = @(
     "THERMOPOWER_JWT_SECRET",
     "THERMOPOWER_MUTEX_NAME",
     "THERMOPOWER_NO_BROWSER",
-    "THERMOPOWER_REPORT_OUTPUT_DIRECTORY"
+    "THERMOPOWER_REPORT_OUTPUT_DIRECTORY",
+    "THERMOPOWER_RESULTS_PORTAL_URL",
+    "THERMOPOWER_RESULTS_PORTAL_INSTALLATION_ID",
+    "THERMOPOWER_RESULTS_PORTAL_PUBLISH_KEY"
 )
 $PreviousEnvironment = @{}
 $Process = $null
@@ -38,6 +41,7 @@ try {
     }
     $env:THERMOPOWER_APP_DATA_DIR = $SmokeData
     $env:THERMOPOWER_NO_BROWSER = "1"
+    $env:THERMOPOWER_RESULTS_PORTAL_URL = "https://smoke-not-configured.invalid"
     $env:THERMOPOWER_ENVIRONMENT = $PackageEnvironment
     $env:THERMOPOWER_MUTEX_NAME = "ThermoPowerMonitorSmoke-" + [guid]::NewGuid().ToString("N")
     $ExpectedDatabase = Join-Path $SmokeData "data\thermopower.db"

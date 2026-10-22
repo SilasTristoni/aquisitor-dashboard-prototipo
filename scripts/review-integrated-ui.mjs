@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 const { chromium } = createRequire(import.meta.url)(process.env.THERMOPOWER_PLAYWRIGHT_MODULE || 'playwright');
 
-const output = resolve('build/integrated-071/audit');
+const output = resolve(process.env.UX_OUTPUT || 'build/integrated-071/audit');
 const preview = JSON.parse(await readFile(resolve(output, 'reports/preview.json'), 'utf8'));
 const root = resolve('frontend/dist');
 const server = createServer(async (request, response) => {
@@ -28,7 +28,7 @@ const devices = preview.sessions[0].devices.map(d => ({ ...d, active: true, prot
 const session = { ...preview.sessions[0], operator: user, device: devices[0], device_id: 2, devices: devices.map(d => ({ role: d.role, device: d })), statistics: { duration_seconds: 300.15 }, channels: preview.statistics.channels.map(c => ({ channel: c.channel, name: c.friendly_name, enabled: true })), sync_tolerance_ms: 1500, sample_count: 600, alert_count: 0, device_name: 'GPM + AT4532', average_power_w: 60, maximum_temperature_c: 81 };
 const paginated = items => ({ items, page: 1, page_size: 100, total: items.length, pages: items.length ? 1 : 0 });
 const scenarios = [
-  ['portal', '/portal-externo'], ['empty', '/'], ['connected', '/'], ['synchronizing', '/'], ['active', '/'],
+  ['lost-sources', '/'], ['paused', '/'], ['company', '/identidade-corporativa'], ['portal', '/portal-externo'], ['empty', '/'], ['connected', '/'], ['synchronizing', '/'], ['active', '/'],
   ['degraded', '/'], ['finished', '/'], ['session', '/sessoes/1'],
   ['exports', '/sessoes/1'], ['period-report', '/relatorios'], ['equipment-error', '/equipamentos'],
   ['sessions', '/sessoes'], ['channels', '/canais'], ['alerts', '/alertas'],
@@ -57,13 +57,14 @@ try {
         if (scenario !== 'login') await page.addInitScript(() => localStorage.setItem('thermopower.token', 'synthetic-local-review'));
         else await page.addInitScript(() => localStorage.removeItem('thermopower.token'));
         let connected = scenario !== 'empty';
-        let active = ['active', 'degraded', 'finished'].includes(scenario);
+        let active = ['active', 'degraded', 'finished', 'lost-sources', 'paused'].includes(scenario);
         let started = session.started_at;
         let releaseStart;
         const startGate = new Promise(done => { releaseStart = done; });
+        const scenarioStarted = Date.now();
         const status = id => ({
           device_id: id, device_name: devices.find(d => d.id === id).name,
-          state: connected ? 'reading' : 'disconnected', connected, reading: connected,
+          state: scenario === 'lost-sources' && Date.now() - scenarioStarted > 1500 ? 'disconnected' : connected ? 'reading' : 'disconnected', connected: connected && !(scenario === 'lost-sources' && Date.now() - scenarioStarted > 1500), reading: connected,
           source_role: id === 1 ? 'temperature' : 'electrical',
           session_id: active ? 1 : null, expected_interval_ms: 1000,
           observed_interval_ms: scenario === 'degraded' && id === 1 ? 6000 : 1000,
@@ -78,6 +79,7 @@ try {
           const apiPath = url.pathname.replace('/api/v1', '');
           let payload;
           if (apiPath === '/auth/me') payload = user;
+          else if (apiPath === '/company-identity') payload = { identity_id: '12345678-1234-1234-1234-123456789abc', company_name: 'Empresa DEMO', laboratory: 'Laboratorio sintetico', logo: null };
           else if (apiPath === '/results-portal/configuration') payload = { configured: true, can_configure: true, url: 'https://api.synthetic.example.test', installation_id: 'synthetic-lab', managed_by_environment: false };
           else if (apiPath.endsWith('/shares') || apiPath.endsWith('/annotations')) payload = paginated([]);
           else if (apiPath === '/build-info') payload = { demo_credentials: null, version: '0.7.1-engineering', environment: 'client-preview', build: 'synthetic-review', build_date: '2026-09-18T14:00:00Z', client_preview: true };
@@ -88,7 +90,7 @@ try {
             if (scenario === 'synchronizing') await startGate;
             active = true; payload = { ...session, started_at: started, status: 'running' };
           } else if (apiPath === '/sessions/1/finish') { active = false; payload = { ...session, status: 'finished' }; }
-          else if (apiPath === '/sessions') payload = paginated(url.searchParams.has('status') && url.searchParams.get('status') !== 'finished' ? (active ? [{ ...session, status: 'running', started_at: started }] : []) : [{ ...session, operator: user.name }]);
+          else if (apiPath === '/sessions') payload = paginated(url.searchParams.has('status') && url.searchParams.get('status') !== 'finished' ? (active ? [{ ...session, status: scenario === 'paused' ? 'paused' : 'running', started_at: started }] : []) : [{ ...session, operator: user.name }]);
           else if (apiPath === '/sessions/1') payload = session;
           else if (apiPath === '/reports/period/preview') payload = preview;
           else if (apiPath === '/reports/period/executive.pdf' && scenario === 'export-error') {
@@ -128,6 +130,8 @@ try {
         await page.goto(base + path);
         await page.locator('h1, .login-card h2').first().waitFor();
         if (path === '/' && connected) await page.waitForFunction(() => document.querySelectorAll('path.recharts-line-curve').length >= 9);
+        if (scenario === 'lost-sources') await page.getByText(/Linha cinza tracejada/).waitFor();
+        if (scenario === 'paused') await page.getByText('Ensaio pausado', { exact: true }).waitFor();
         if (scenario === 'synchronizing') {
           await page.getByRole('button', { name: 'Iniciar ensaio', exact: true }).click();
           await page.getByRole('button', { name: 'Sincronizando fontes...' }).waitFor();

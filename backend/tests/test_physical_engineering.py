@@ -992,7 +992,7 @@ def test_launcher_rejects_second_instance_and_writes_startup_log(tmp_path, monke
     monkeypatch.delenv("THERMOPOWER_DEMO_ADMIN_EMAIL", raising=False)
     monkeypatch.delenv("THERMOPOWER_DEMO_ADMIN_PASSWORD", raising=False)
     _configure_environment(tmp_path, application)
-    assert os.environ["THERMOPOWER_ENVIRONMENT"] == "engineering"
+    assert os.environ["THERMOPOWER_ENVIRONMENT"] == "client-preview"
     first_access = (application / "PRIMEIRO-ACESSO.txt").read_text(encoding="utf-8")
     assert "E-mail: admin@thermopower.com.br" in first_access
     assert os.environ["THERMOPOWER_DEMO_ADMIN_PASSWORD"] in first_access
@@ -1160,7 +1160,7 @@ def test_client_preview_version_is_consistent_in_health_and_frontend(client):
     frontend = json.loads((repository / "frontend" / "package.json").read_text("utf-8"))
     response = client.get("/health")
 
-    assert expected == "0.7.0-engineering-AT4532-celsius-trigger"
+    assert expected == "0.7.1-engineering"
     assert response.status_code == 200
     assert response.json()["version"] == expected
     assert frontend["version"] == expected
@@ -1320,7 +1320,7 @@ def test_complete_diagnostic_export_contains_required_sanitized_files(
             "SHA256SUMS.txt",
         } <= names
         assert archive.read("summary.pdf").startswith(b"%PDF")
-        assert b"0.7.0-engineering-AT4532-celsius-trigger" in archive.read(
+        assert b"0.7.1-engineering" in archive.read(
             "application-version.txt"
         )
         recent_log = archive.read("recent-log.txt").decode("utf-8")

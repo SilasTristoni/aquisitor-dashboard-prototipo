@@ -787,3 +787,12 @@ input[type="checkbox"], input[type="radio"] { width: 17px; height: 17px; min-hei
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+.company-mark { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; min-width: 0; }
+.company-mark img { max-width: 120px; max-height: 42px; object-fit: contain; }
+.company-mark > div { min-width: 0; overflow-wrap: anywhere; }
+.company-mark strong, .company-mark small { display: block; }
+.company-mark small { color: var(--muted); }
+.company-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 16px; align-items: end; }
+.company-settings label { display: grid; gap: 8px; min-width: 0; }
+.company-settings input { width: 100%; min-width: 0; }
+.source-event-list { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 8px; color: var(--muted); }

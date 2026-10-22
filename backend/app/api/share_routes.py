@@ -26,6 +26,7 @@ from app.core.security import hash_password
 from app.models.entities import SessionShare, User
 from app.portal.contracts import MAX_SNAPSHOT_BYTES, ResultSnapshot, canonical_bytes
 from app.schemas.contracts import PeriodReportRequest
+from app.services.company_identity import identity_data
 from app.services.period_documents import render_period_pdf
 from app.services.period_reporting import PeriodReportDataService
 from app.services.period_workbook import render_period_csv, render_period_xlsx
@@ -98,6 +99,7 @@ class ShareInput(BaseModel):
     channels: list[int] | None = Field(default=None, max_length=32)
     include_power: bool = True
     include_open_channels: bool = False
+    include_company_identity: bool = False
     destination: Literal["local", "portal"] = "local"
     publication_id: UUID | None = None
 
@@ -224,6 +226,7 @@ def create_share(session_id: int, payload: ShareInput, db: Db, user: Operator, r
             "channels": payload.channels,
             "include_power": payload.include_power,
             "include_open_channels": payload.include_open_channels,
+            "company_identity": identity_data(db) if payload.include_company_identity else None,
             "installation_id": installation_id() if payload.destination == "portal" else None,
             "allowed_permissions": payload.permissions.model_dump(),
         },
@@ -243,7 +246,7 @@ def create_share(session_id: int, payload: ShareInput, db: Db, user: Operator, r
             service = PeriodReportDataService(db)
             data = service.collect(period)
             result = public_result(row, session, service.preview_data(data, period))
-            sanitize_report(data, session)
+            sanitize_report(data, session, row)
             builders = {
                 "pdf": render_period_pdf,
                 "xlsx": render_period_xlsx,
@@ -535,6 +538,8 @@ def access_share(payload: ShareAccess, request: Request, response: Response, db:
 
 def public_result(row, session, preview):
     return {
+        **({"company_identity": row.report_options["company_identity"]}
+           if (row.report_options or {}).get("company_identity") else {}),
         "name": session.name,
         "metadata": public_metadata(session),
         "status": session.status,
@@ -559,7 +564,7 @@ def download_share(
         data = PeriodReportDataService(db).collect(period)
     except ValueError as exc:
         raise HTTPException(422, "Não há medições disponíveis no período compartilhado") from exc
-    sanitize_report(data, session)
+    sanitize_report(data, session, row)
     builders = {"pdf": render_period_pdf, "xlsx": render_period_xlsx, "csv": render_period_csv}
     content = builders[file_type](data, period)
     record_access(db, row.id)
@@ -578,7 +583,8 @@ def download_share(
     )
 
 
-def sanitize_report(data, session):
+def sanitize_report(data, session, row=None):
+    data["company_identity"] = (row.report_options or {}).get("company_identity") if row else None
     for item in data["sessions"]:
         item["devices"], item["operator"], item["metadata"] = [], None, public_metadata(session)
     data["statistics"]["general"]["source_quality"] = []

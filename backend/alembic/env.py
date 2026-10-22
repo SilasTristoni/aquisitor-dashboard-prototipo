@@ -1,11 +1,12 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, text
 
 from alembic import context
 from app.core.config import get_settings
 from app.core.database import Base
 from app.models import entities  # noqa: F401
+from app.services import company_identity  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
@@ -32,6 +33,17 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
+        if connection.dialect.name == "postgresql":
+            # Historical revision 0006 already exceeds Alembic's default VARCHAR(32).
+            # Widen migration bookkeeping before replaying the existing revision chain.
+            connection.execute(text(
+                "CREATE TABLE IF NOT EXISTS alembic_version "
+                "(version_num VARCHAR(128) NOT NULL PRIMARY KEY)"
+            ))
+            connection.execute(text(
+                "ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(128)"
+            ))
+            connection.commit()
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
             context.run_migrations()

@@ -33,6 +33,7 @@ def run(command, log, env=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gates", type=Path, required=True)
+    parser.add_argument("--revision", choices=["r2"])
     args = parser.parse_args()
     gates = json.loads(args.gates.read_text(encoding="utf-8"))
     required = {
@@ -66,6 +67,8 @@ def main():
     if version != "0.7.1-engineering":
         raise RuntimeError("Only the integrated 0.7.1 candidate is authorized")
     name = f"ThermoPower-{version}-integrated"
+    if args.revision:
+        name += "-" + args.revision
     destination = ROOT / "engineering" / name
     archive = Path(str(destination) + ".zip")
     if destination.exists() or archive.exists():
@@ -142,6 +145,10 @@ def main():
         shutil.rmtree(samples)
     shutil.copy2(info, staging / "build-info.json")
     shutil.copy2(ROOT / "docs/INTEGRATED_CANDIDATE_071.md", staging / "LEIA-ME.md")
+    if args.revision:
+        shutil.copy2(ROOT / "docs/INTEGRATED_R2_071.md", staging / "LEIA-ME-R2.md")
+        shutil.copy2(ROOT / "docs/CORPORATE_IDENTITY_071.md", staging)
+        shutil.copy2(ROOT / "docs/DEMO_INSTANCE_071.md", staging)
     shutil.copy2(ROOT / "build/user-guide.pdf", staging / "Manual do Usuario.pdf")
     (staging / "SOURCE-SHA256.json").write_text(manifest, encoding="utf-8")
     (staging / "VALIDATION.json").write_text(
