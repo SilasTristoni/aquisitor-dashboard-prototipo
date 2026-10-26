@@ -19,7 +19,9 @@ export function groupChartEvents(events: ResultEvent[], axisTime: (timestamp: st
   [...events].sort((a, b) => axisTime(a.timestamp) - axisTime(b.timestamp)).forEach((event) => {
     const x = axisTime(event.timestamp);
     const previous = groups.at(-1);
-    if (previous && x - previous.x <= span * 0.035) previous.events.push(event);
+    if (!Number.isFinite(x)) return;
+    // Reserve space for a 28 px badge even on the narrow mobile plotting area.
+    if (previous && x - previous.x <= span * 0.16) previous.events.push(event);
     else groups.push({ x, events: [event] });
   });
   return groups;

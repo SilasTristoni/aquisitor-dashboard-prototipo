@@ -12,7 +12,7 @@ const { chromium } = createRequire(import.meta.url)(process.env.THERMOPOWER_PLAY
 const output = resolve(process.env.UX_OUTPUT || 'build/integrated-071/audit');
 await mkdir(output, { recursive: true });
 const preview = JSON.parse(await readFile(resolve(process.env.UX_FIXTURE || resolve(output, 'reports/preview.json')), 'utf8'));
-const root = resolve('frontend/dist');
+const root = resolve(process.env.UX_DIST || 'frontend/dist');
 const server = createServer(async (request, response) => {
   try {
     const file = resolve(root, `.${new URL(request.url, 'http://localhost').pathname}`);
@@ -173,6 +173,18 @@ try {
         await page.evaluate(() => document.fonts.ready);
         // Finish Recharts measurements/animations before recording the rendered layout.
         await page.waitForTimeout(400);
+        if (process.env.UX_CHART_CHECKS && scenario === 'lost-sources') {
+          await page.waitForFunction(() => Number(document.querySelector('.xAxis .recharts-cartesian-axis-line')?.getAttribute('x2')) > 0);
+          const geometry = await page.evaluate(() => {
+            const axis = document.querySelector('.xAxis .recharts-cartesian-axis-line');
+            const right = Number(axis?.getAttribute('x2'));
+            const references = [...document.querySelectorAll('.recharts-reference-line-line')];
+            return { right, count: references.length, outside: references.filter(line =>
+              Math.max(Number(line.getAttribute('x1')), Number(line.getAttribute('x2'))) > right + 1).length };
+          });
+          assert.ok(geometry.count >= 2 && geometry.right > 0, JSON.stringify(geometry));
+          assert.equal(geometry.outside, 0, `Outage reference outside time axis: ${JSON.stringify(geometry)}`);
+        }
         const layout = await page.evaluate(() => ({
           width: innerWidth, documentWidth: document.documentElement.scrollWidth,
           overflow: [...document.querySelectorAll('.metric-card, .panel, .page-header')].filter(e => e.getBoundingClientRect().right > innerWidth + 2).map(e => e.className),
@@ -195,6 +207,9 @@ try {
         const name = `${physicalWidth}-${Math.round(zoom * 100)}-${scenario}`;
         await mkdir(output, { recursive: true });
         await page.screenshot({ path: resolve(output, `${name}.png`), fullPage: true });
+        if (process.env.UX_CHART_CHECKS && await page.locator('.chart-container').count()) {
+          await page.locator('.chart-container').first().screenshot({ path: resolve(output, `${name}-chart.png`) });
+        }
         results.push({ name, layout, errors });
         if (layout.documentWidth > layout.width + 1) console.log(await page.evaluate(() => [...document.querySelectorAll('body *')].filter(element => element.getBoundingClientRect().right > innerWidth + 1).slice(0, 18).map(element => ({ tag: element.tagName, class: element.className, text: element.textContent?.slice(0, 50), right: element.getBoundingClientRect().right }))));
         assert.equal(errors.length, 0, `${name}: ${errors.join('; ')}`);

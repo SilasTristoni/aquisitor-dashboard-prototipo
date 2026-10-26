@@ -51,14 +51,16 @@ export function buildCombinedView(
     return row;
   });
 
+  const gaps = [...observedGaps(electricalPoints, "electrical"), ...observedGaps(thermalPoints, "thermal")];
   return {
     electricalReadings,
     temperatureReadings,
     latestElectrical: electricalReadings.at(-1),
     latestTemperature: temperatureReadings.at(-1),
+    gaps,
     chartData: mergeIndependentSeries(
       electricalPoints, thermalPoints, timeAxisMode, sessionStartedAt,
-      [...observedGaps(electricalPoints, "electrical"), ...observedGaps(thermalPoints, "thermal")],
+      gaps,
     ),
   };
 }

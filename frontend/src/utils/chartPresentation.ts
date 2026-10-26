@@ -36,6 +36,11 @@ export function seriesPeak(rows: Array<Record<string, unknown>>, keys: string[])
 type ChartPoint = Record<string, unknown> & { timestamp: string };
 export type ChartGap = { source: "electrical" | "thermal"; after: string; before: string; keys?: string[] };
 
+// Undefined belongs to another independently sampled series. Explicit null is a real gap.
+export function chartSeriesRows(rows: Array<Record<string, unknown>>, key: string) {
+  return rows.filter(row => Object.prototype.hasOwnProperty.call(row, key));
+}
+
 export function observedGaps(points: ChartPoint[], source: ChartGap["source"]): ChartGap[] {
   const intervals = points.slice(1).map((point, index) => parseUtcTimestamp(point.timestamp) - parseUtcTimestamp(points[index].timestamp)).filter(value => value > 0).sort((a, b) => a - b);
   if (intervals.length < 3) return [];

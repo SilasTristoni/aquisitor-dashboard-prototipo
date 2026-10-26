@@ -35,3 +35,12 @@ test("pause is an event and never a zero; thermal source has no visual power", (
   const thermal = observeSource(emptySourceHistory(), { ...online, connected: false }, { ...reading, power_w: null }, false, 15000);
   expect(visualPowerTransitions(thermal.events, 20000, time => time)).toEqual([]);
 });
+
+test("completed outages cannot expand a recent viewing window; ongoing references are clipped", () => {
+  const lost = observeSource(emptySourceHistory(), { ...online, connected: false }, reading, false, 15000);
+  const recovered = observeSource(lost, online, { ...reading, timestamp: new Date(22000).toISOString() }, false, 23000);
+  expect(visualPowerTransitions(recovered.events, 50000, time => time, 30000)).toEqual([]);
+  const ongoing = visualPowerTransitions(lost.events, 50000, time => time, 30000);
+  expect(ongoing.map(row => row.axisValue)).toEqual([30000, 30000, 50000, 50000]);
+  expect(ongoing.map(row => row.visualPower)).toEqual([0, 0, 0, null]);
+});

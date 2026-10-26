@@ -140,6 +140,9 @@ def _apply_migrations(runtime: Path) -> None:
     configuration.set_main_option(
         "sqlalchemy.url", os.environ["THERMOPOWER_DATABASE_URL"].replace("%", "%%")
     )
+    from app.core.migration_backup import prepare_migration_backup
+
+    prepare_migration_backup(configuration, os.environ["THERMOPOWER_DATABASE_URL"])
     command.upgrade(configuration, "head")
 
 

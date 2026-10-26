@@ -32,6 +32,14 @@ def test_postgresql_replays_long_historical_revision_names():
             connection.execute(text(
                 "CREATE TABLE alembic_version (version_num VARCHAR(32) PRIMARY KEY)"
             ))
+        from alembic.config import Config
+        from app.core.migration_backup import prepare_migration_backup
+
+        backup_config = Config()
+        backup_config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+        test_url = url.set(database=name).render_as_string(hide_password=False)
+        with pytest.raises(RuntimeError, match="PostgreSQL bloqueada"):
+            prepare_migration_backup(backup_config, test_url)
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "head"], cwd=BACKEND_ROOT,
             env={**os.environ, "THERMOPOWER_DATABASE_URL":
@@ -39,6 +47,7 @@ def test_postgresql_replays_long_historical_revision_names():
             capture_output=True, text=True, timeout=60,
         )
         assert result.returncode == 0, result.stdout + result.stderr
+        assert prepare_migration_backup(backup_config, test_url) is None
         with database.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
                 "0013_company_identity"

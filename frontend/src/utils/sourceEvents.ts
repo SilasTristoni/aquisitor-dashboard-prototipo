@@ -25,12 +25,14 @@ export function observeSource(previous: SourceHistory, status: RuntimeStatus | u
   return { events: events.slice(-200), unavailable, paused };
 }
 
-export function visualPowerTransitions(events: SourceEvent[], now: number, axis: (time: number) => number) {
+export function visualPowerTransitions(events: SourceEvent[], now: number, axis: (time: number) => number, minimumAxis = -Infinity) {
   return events.flatMap((event, index) => {
     if (event.kind !== "disconnected" || event.lastValue == null) return [];
     const end = events.slice(index + 1).find(item => item.kind === "reconnected" || item.kind === "paused")?.at ?? now;
-    return [{ axisValue: axis(event.at), visualPower: event.lastValue },
-      { axisValue: axis(event.at), visualPower: 0 },
+    if (axis(end) < minimumAxis) return [];
+    const start = Math.max(axis(event.at), minimumAxis);
+    return [{ axisValue: start, visualPower: axis(event.at) < minimumAxis ? 0 : event.lastValue },
+      { axisValue: start, visualPower: 0 },
       { axisValue: axis(Math.max(event.at, end)), visualPower: 0 },
       { axisValue: axis(Math.max(event.at, end)), visualPower: null }];
   });

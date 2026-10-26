@@ -33,7 +33,7 @@ def run(command, log, env=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gates", type=Path, required=True)
-    parser.add_argument("--revision", choices=["r2"])
+    parser.add_argument("--revision", choices=["r2", "r4"])
     args = parser.parse_args()
     gates = json.loads(args.gates.read_text(encoding="utf-8"))
     required = {
@@ -131,6 +131,7 @@ def main():
         "app.services.result_publication",
         "app.services.portal_configuration",
         "app.api.share_routes",
+        "app.core.migration_backup",
     ):
         if module not in bundled.toc:
             raise RuntimeError(
@@ -145,7 +146,8 @@ def main():
             raise RuntimeError("Unexpected sample-data directory")
         shutil.rmtree(samples)
     shutil.copy2(info, staging / "build-info.json")
-    shutil.copy2(ROOT / "docs/INTEGRATED_CANDIDATE_071.md", staging / "LEIA-ME.md")
+    readme = "INTEGRATED_R4_071.md" if args.revision == "r4" else "INTEGRATED_CANDIDATE_071.md"
+    shutil.copy2(ROOT / "docs" / readme, staging / "LEIA-ME.md")
     if args.revision:
         shutil.copy2(ROOT / "docs/INTEGRATED_R2_071.md", staging / "LEIA-ME-R2.md")
         shutil.copy2(ROOT / "docs/CORPORATE_IDENTITY_071.md", staging)

@@ -795,7 +795,10 @@ input[type="checkbox"], input[type="radio"] { width: 17px; height: 17px; min-hei
 .company-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 16px; align-items: end; }
 .company-settings label { display: grid; gap: 8px; min-width: 0; }
 .company-settings input { width: 100%; min-width: 0; }
-.source-event-list { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 8px; color: var(--muted); }
+.source-event-list { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 8px; color: var(--muted); max-height: 180px; overflow-y: auto; }
+.source-event-details, .chart-gap-details { margin: 12px 0; font-size: .85rem; color: var(--muted); }
+.source-event-details summary, .chart-gap-details summary { cursor: pointer; padding: 8px 0; }
+.chart-gap-details ol { max-height: 220px; overflow-y: auto; overflow-wrap: anywhere; }
 
 /* Administrative forms and acquisition controls share a consistent control height. */
 .company-identity-panel { max-width: 880px; }
