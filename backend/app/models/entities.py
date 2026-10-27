@@ -309,6 +309,21 @@ class AlertEvent(Base):
     notes: Mapped[str | None] = mapped_column(Text)
 
 
+class SourceAvailability(Base):
+    __tablename__ = "source_availability"
+    __table_args__ = (Index("ix_source_availability_session_start", "session_id", "started_at"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("measurement_sessions.id", ondelete="CASCADE")
+    )
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    confirmed_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    end_reason: Mapped[str | None] = mapped_column(String(24))
+    cause: Mapped[str] = mapped_column(String(40))
+
+
 class SystemEvent(Base):
     __tablename__ = "system_events"
     __table_args__ = (Index("ix_events_timestamp_category", "timestamp", "category"),)

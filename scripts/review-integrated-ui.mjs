@@ -12,12 +12,22 @@ const { chromium } = createRequire(import.meta.url)(process.env.THERMOPOWER_PLAY
 const output = resolve(process.env.UX_OUTPUT || 'build/integrated-071/audit');
 await mkdir(output, { recursive: true });
 const preview = JSON.parse(await readFile(resolve(process.env.UX_FIXTURE || resolve(output, 'reports/preview.json')), 'utf8'));
+if (process.env.UX_AVAILABILITY) {
+  const offset = Date.now() - 301000 - Date.parse(preview.sessions[0].started_at);
+  const shift = value => {
+    if (typeof value === 'string' && /^\d{4}-\d\d-\d\dT/.test(value) && Number.isFinite(Date.parse(value))) return new Date(Date.parse(value) + offset).toISOString();
+    if (Array.isArray(value)) return value.map(shift);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, shift(item)]));
+    return value;
+  };
+  Object.assign(preview, shift(preview));
+}
 const root = resolve(process.env.UX_DIST || 'frontend/dist');
 const server = createServer(async (request, response) => {
   try {
     const file = resolve(root, `.${new URL(request.url, 'http://localhost').pathname}`);
     if (!file.startsWith(root)) { response.writeHead(403).end(); return; }
-    const path = extname(file) ? file : resolve(root, 'index.html');
+    const path = extname(file) ? file : resolve(root, process.env.UX_ENTRY || 'index.html');
     response.setHeader('Content-Type', ({ '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html' })[extname(path)] ?? 'application/octet-stream');
     response.end(await readFile(path));
   } catch { response.writeHead(404).end(); }
@@ -29,6 +39,7 @@ const devices = preview.sessions[0].devices.map(d => ({ ...d, active: true, prot
 const session = { ...preview.sessions[0], operator: user, device: devices[0], device_id: 2, devices: devices.map(d => ({ role: d.role, device: d })), statistics: { duration_seconds: 300.15 }, channels: preview.statistics.channels.map(c => ({ channel: c.channel, name: c.friendly_name, enabled: true })), sync_tolerance_ms: 1500, sample_count: 600, alert_count: 0, device_name: 'GPM + AT4532', average_power_w: 60, maximum_temperature_c: 81 };
 const paginated = items => ({ items, page: 1, page_size: 100, total: items.length, pages: items.length ? 1 : 0 });
 const scenarios = [
+  ['shared', '/compartilhado#synthetic-review-only'],
   ['lost-sources', '/'], ['paused', '/'], ['company', '/identidade-corporativa'], ['portal', '/portal-externo'], ['empty', '/'], ['connected', '/'], ['synchronizing', '/'], ['active', '/'],
   ['degraded', '/'], ['finished', '/'], ['session', '/sessoes/1'],
   ['exports', '/sessoes/1'], ['period-report', '/relatorios'], ['equipment-error', '/equipamentos'],
@@ -80,6 +91,8 @@ try {
           const apiPath = url.pathname.replace('/api/v1', '');
           let payload;
           if (apiPath === '/auth/me') payload = user;
+          else if (apiPath.endsWith('/availability')) payload = paginated(preview.series[0].availability ?? []);
+          else if (apiPath === '/public/shares/access') payload = { ...preview, name: session.name, metadata: session.metadata, status: 'finished', official: true, permissions: { graphs: true, pdf: false, csv: false, xlsx: false } };
           else if (apiPath === '/company-identity') payload = { identity_id: '12345678-1234-1234-1234-123456789abc', company_name: 'Empresa DEMO', laboratory: 'Laboratorio sintetico', logo: null };
           else if (apiPath === '/results-portal/configuration') payload = { configured: true, can_configure: true, url: 'https://api.synthetic.example.test', installation_id: 'synthetic-lab', managed_by_environment: false };
           else if (apiPath.endsWith('/shares') || apiPath.endsWith('/annotations')) payload = paginated([]);
@@ -111,6 +124,15 @@ try {
         });
         await page.routeWebSocket('**/api/v1/ws*', socket => {
           if (!connected || path !== '/') return;
+          if (process.env.UX_AVAILABILITY) {
+            const stream = [
+              ...preview.series[0].electrical.map(point => ({ timestamp: point.timestamp, received_timestamp: point.timestamp, device_id: 2, session_id: 1, source_role: 'electrical', power_w: point.active_power_w, raw_power: point.active_power_w, raw_power_unit: 'W', temperatures_c: [], quality: 'good' })),
+              ...preview.series[0].temperatures.map(point => ({ timestamp: point.timestamp, received_timestamp: point.timestamp, device_id: 1, session_id: 1, source_role: 'temperature', power_w: null, temperatures_c: Array.from({ length: 32 }, (_, i) => point[`channel_${i + 1}`] ?? null), quality: 'good' })),
+            ].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+            const timer = setTimeout(() => stream.forEach(payload => socket.send(JSON.stringify({ type: 'measurement.created', payload }))), 500);
+            socket.onClose(() => clearTimeout(timer));
+            return;
+          }
           started = new Date(Date.now() - 301_000).toISOString();
           let index = 0;
           const timer = setInterval(() => {
@@ -169,10 +191,17 @@ try {
           await page.getByText('O equipamento está atualmente em aquisição pelo ThermoPower.', { exact: false }).waitFor();
         }
         if (scenario === 'degraded') await page.getByText('Frequência térmica reduzida', { exact: false }).first().waitFor();
-        if (path === '/' && connected) await page.waitForFunction(() => [...document.querySelectorAll('path.recharts-line-curve')].some(p => (p.getAttribute('d')?.match(/L/g) ?? []).length >= 299));
+        if (path === '/' && connected && !process.env.UX_AVAILABILITY) await page.waitForFunction(() => [...document.querySelectorAll('path.recharts-line-curve')].some(p => (p.getAttribute('d')?.match(/L/g) ?? []).length >= 299));
         await page.evaluate(() => document.fonts.ready);
         // Finish Recharts measurements/animations before recording the rendered layout.
         await page.waitForTimeout(400);
+        if (process.env.UX_AVAILABILITY && !process.env.UX_BASELINE) {
+          await page.waitForFunction(() => document.querySelectorAll('.availability-reference line').length === 6);
+          const references = await page.locator('.availability-reference line').evaluateAll(lines => lines.map(line => ({ x1: Number(line.getAttribute('x1')), x2: Number(line.getAttribute('x2')), y1: Number(line.getAttribute('y1')), y2: Number(line.getAttribute('y2')) })));
+          assert.ok(references.every(line => Object.values(line).every(Number.isFinite)));
+          assert.equal(references.filter(line => Math.abs(line.y1 - line.y2) < 0.01 && line.x2 > line.x1).length, 2, 'two horizontal zero references required');
+          assert.equal(references.filter(line => line.y2 < line.y1).length, 2, 'two recoveries to real samples required');
+        }
         if (process.env.UX_CHART_CHECKS && scenario === 'lost-sources') {
           await page.waitForFunction(() => Number(document.querySelector('.xAxis .recharts-cartesian-axis-line')?.getAttribute('x2')) > 0);
           const geometry = await page.evaluate(() => {
@@ -207,8 +236,8 @@ try {
         const name = `${physicalWidth}-${Math.round(zoom * 100)}-${scenario}`;
         await mkdir(output, { recursive: true });
         await page.screenshot({ path: resolve(output, `${name}.png`), fullPage: true });
-        if (process.env.UX_CHART_CHECKS && await page.locator('.chart-container').count()) {
-          await page.locator('.chart-container').first().screenshot({ path: resolve(output, `${name}-chart.png`) });
+        if (process.env.UX_CHART_CHECKS && await page.locator('.chart-container, .preview-chart').count()) {
+          await page.locator('.chart-container, .preview-chart').first().screenshot({ path: resolve(output, `${name}-chart.png`) });
         }
         results.push({ name, layout, errors });
         if (layout.documentWidth > layout.width + 1) console.log(await page.evaluate(() => [...document.querySelectorAll('body *')].filter(element => element.getBoundingClientRect().right > innerWidth + 1).slice(0, 18).map(element => ({ tag: element.tagName, class: element.className, text: element.textContent?.slice(0, 50), right: element.getBoundingClientRect().right }))));

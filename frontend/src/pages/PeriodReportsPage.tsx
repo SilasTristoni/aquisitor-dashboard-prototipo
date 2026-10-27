@@ -1,3 +1,6 @@
+import { AvailabilityOverlay, AvailabilityDetails } from "../components/AvailabilityOverlay";
+import { availabilitySegments, availabilityDomain, availabilityBreaks, availabilityAxis } from "../utils/availability";
+import type { AvailabilityInterval } from "../utils/availability";
 import { chartSeriesRows } from "../utils/chartPresentation";
 import { QualityDetails, type SourceQuality } from "../components/QualityDetails";
 import { PeakMarkers } from "../components/PeakMarkers";
@@ -63,6 +66,8 @@ type Preview = {
     session_id: number;
     session_name: string;
     session_started_at: string;
+    availability?: AvailabilityInterval[];
+    gaps?: import("../utils/chartPresentation").ChartGap[];
     electrical: Array<{ timestamp: string; [key: string]: any }>;
     temperatures: Array<{ timestamp: string; [key: string]: any }>;
   }>;
@@ -78,7 +83,7 @@ function mergedSeries(
   mode: TimeAxisMode,
 ): Array<Record<string, unknown>> {
   return mergeIndependentSeries(
-    series.electrical, series.temperatures, mode, series.session_started_at,
+    series.electrical, series.temperatures, mode, series.session_started_at, series.gaps,
   );
 }
 
@@ -308,7 +313,11 @@ export default function PeriodReportsPage() {
                   <QualityDetails sources={preview.statistics.general.source_quality} electrical={preview.statistics.general.electrical_sample_count} thermal={preview.statistics.general.temperature_sample_count} />
           {preview.series.map((series) => {
                     const points = mergedSeries(series, timeAxisMode);
-                    return <div className="preview-chart" key={series.session_id}><div className="preview-chart-title"><h3>{series.session_name}</h3><Badge tone="neutral">{timeAxisMode === "synchronized" ? "Início comum da sessão" : "Horário real"}</Badge></div><ResponsiveContainer width="100%" height={330}><LineChart data={points}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="axisValue" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} minTickGap={45} /><YAxis tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="temperature" unit=" °C" /><YAxis tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="power" orientation="right" unit=" W" /><Tooltip labelFormatter={(value) => timeAxisMode === "synchronized" ? `Tempo decorrido ${formatTimeAxis(Number(value), timeAxisMode)}` : formatDate(new Date(Number(value)).toISOString())} /><Legend /><Line data={chartSeriesRows(points, "active_power_w")} yAxisId="power" type="linear" dataKey="active_power_w" name="Potência ativa" stroke={POWER_COLOR} strokeWidth={2.5} dot={{ r: 1.5, strokeWidth: 0, fill: POWER_COLOR }} connectNulls={false} />{preview.selected_channels.map((channel) => <Line data={chartSeriesRows(points, `channel_${channel}`)} key={channel} yAxisId="temperature" type="linear" dataKey={`channel_${channel}`} name={preview.channel_labels[String(channel)] ?? `T${channel}`} stroke={CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length]} dot={{ r: 1.5, strokeWidth: 0, fill: CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length] }} connectNulls={false} />)}<PeakMarkers rows={points} powerKey="active_power_w" channels={preview.selected_channels.map((channel) => `channel_${channel}`)} /></LineChart></ResponsiveContainer></div>;
+                    const availability = series.availability ?? [];
+                    const axis = availabilityAxis(timeAxisMode, series.session_started_at);
+                    const overlays = availabilitySegments(availability, points, "active_power_w", axis, axis(preview.period.start), axis(preview.period.end));
+                    const powerRows = availabilityBreaks(points, availability, "active_power_w", axis);
+                    return <div className="preview-chart" key={series.session_id}><div className="preview-chart-title"><h3>{series.session_name}</h3><Badge tone="neutral">{timeAxisMode === "synchronized" ? "Início comum da sessão" : "Horário real"}</Badge></div><ResponsiveContainer width="100%" height={330}><LineChart data={points}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="axisValue" type="number" domain={availabilityDomain(points, overlays)} tickFormatter={(value) => formatTimeAxis(Number(value), timeAxisMode)} minTickGap={45} /><YAxis tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="temperature" unit=" °C" /><YAxis tickFormatter={formatMeasureAxis} domain={paddedDomain} yAxisId="power" orientation="right" unit=" W" /><Tooltip labelFormatter={(value) => timeAxisMode === "synchronized" ? `Tempo decorrido ${formatTimeAxis(Number(value), timeAxisMode)}` : formatDate(new Date(Number(value)).toISOString())} /><Legend /><Line data={chartSeriesRows(powerRows, "active_power_w")} yAxisId="power" type="linear" dataKey="active_power_w" name="Potência ativa" stroke={POWER_COLOR} strokeWidth={2.5} dot={{ r: 1.5, strokeWidth: 0, fill: POWER_COLOR }} connectNulls={false} />{preview.selected_channels.map((channel) => <Line data={chartSeriesRows(points, `channel_${channel}`)} key={channel} yAxisId="temperature" type="linear" dataKey={`channel_${channel}`} name={preview.channel_labels[String(channel)] ?? `T${channel}`} stroke={CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length]} dot={{ r: 1.5, strokeWidth: 0, fill: CHANNEL_COLORS[(channel - 1) % CHANNEL_COLORS.length] }} connectNulls={false} />)}<PeakMarkers rows={points} powerKey="active_power_w" channels={preview.selected_channels.map((channel) => `channel_${channel}`)} /><AvailabilityOverlay segments={overlays} /></LineChart></ResponsiveContainer><AvailabilityDetails intervals={availability} /></div>;
                   })}
                 </div>
               )}

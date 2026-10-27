@@ -64,7 +64,7 @@ def test_low_disk_blocks_before_backup_or_migration(tmp_path):
 
 
 def test_current_database_needs_no_migration_backup(tmp_path):
-    path, connection = database(tmp_path, "0013_company_identity")
+    path, connection = database(tmp_path, "0014_source_availability")
     connection.close()
     assert prepare_migration_backup(configuration(), f"sqlite:///{path.as_posix()}") is None
     assert not (tmp_path / "migration-backups").exists()

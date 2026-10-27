@@ -62,6 +62,37 @@ class ResultSnapshot(BaseModel):
                     validate_tree(item, depth + 1)
 
         validate_tree(self.result)
+        # Optional extension inside a v1 series: old snapshots remain valid.
+        from pydantic import TypeAdapter
+
+        clock = TypeAdapter(AwareDatetime)
+        for stream in self.result.get("series", []):
+            intervals = stream.get("availability", [])
+            if not isinstance(intervals, list) or len(intervals) > 10000:
+                raise ValueError("Intervalos de disponibilidade inválidos")
+            for item in intervals:
+                if (
+                    not isinstance(item, dict)
+                    or set(item)
+                    != {"start", "confirmed_until", "end", "end_reason", "source", "evidence"}
+                    or item["source"] != "electrical"
+                    or item["evidence"] != "backend_observed_v1"
+                ):
+                    raise ValueError("Evidência de disponibilidade inválida")
+                start, until = (
+                    clock.validate_python(item["start"]),
+                    clock.validate_python(item["confirmed_until"]),
+                )
+                finish = clock.validate_python(item["end"]) if item["end"] else None
+                if until < start or (finish and not start <= finish <= until):
+                    raise ValueError("Intervalo de disponibilidade invertido")
+                if item["end_reason"] not in {
+                    None,
+                    "reading_resumed",
+                    "paused",
+                    "observation_ended",
+                }:
+                    raise ValueError("Fim de disponibilidade inválido")
         allowed = {
             "name",
             "metadata",

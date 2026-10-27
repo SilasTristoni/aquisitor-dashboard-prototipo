@@ -64,7 +64,10 @@ def safe_report_filename(title: str, extension: str) -> str:
 
 
 def _segments(
-    points: list[dict[str, Any]], gap_seconds: float = 60.0, value_key: str | None = None
+    points: list[dict[str, Any]],
+    gap_seconds: float = 60.0,
+    value_key: str | None = None,
+    boundaries=(),
 ) -> list[list[dict[str, Any]]]:
     if not points:
         return []
@@ -75,13 +78,46 @@ def _segments(
             if result[-1]:
                 result.append([])
             continue
-        if (
-            result[-1]
-            and (point["timestamp"] - result[-1][-1]["timestamp"]).total_seconds() > gap_seconds
+        if result[-1] and (
+            (point["timestamp"] - result[-1][-1]["timestamp"]).total_seconds() > gap_seconds
+            or any(
+                result[-1][-1]["timestamp"] <= boundary < point["timestamp"]
+                for boundary in boundaries
+            )
         ):
             result.append([])
         result[-1].append(point)
     return [segment for segment in result if segment]
+
+
+def draw_availability(axis, data, request, session, points, power_scale=1):
+    from app.services.source_availability import visual_segments
+
+    intervals = [
+        item for item in data.get("availability", []) if item["session_id"] == session["id"]
+    ]
+    origin = datetime.fromisoformat(session["started_at"])
+    for index, segment in enumerate(visual_segments(intervals, points, request.start, request.end)):
+        x = [
+            at if request.time_axis_mode == "real" else (at - origin).total_seconds()
+            for at, _ in segment
+        ]
+        axis.plot(
+            x,
+            [value / power_scale for _, value in segment],
+            color="#64748b",
+            linewidth=1.8,
+            linestyle="--",
+            label="GPM indisponível · referência 0 W" if index == 0 else None,
+        )
+
+
+def availability_boundaries(data, session_id):
+    return [
+        datetime.fromisoformat(item["start"])
+        for item in data.get("availability", [])
+        if item["session_id"] == session_id
+    ]
 
 
 def presentation_axis_values(
@@ -247,6 +283,7 @@ def render_period_chart(
                         power_points,
                         stream_gap_limit(power_points, session, "electrical"),
                         "active_power_w",
+                        availability_boundaries(data, session_id),
                     )
                 ):
                     segment = downsample_time_buckets(segment, ["active_power_w"], session_limit)
@@ -267,6 +304,7 @@ def render_period_chart(
                         if segment_index == 0
                         else None,
                     )
+                draw_availability(power_axis, data, request, session, power_points, power_scale)
             if temperature_axis is not None:
                 temperature_points = [
                     point for point in data["temperatures"] if point["session_id"] == session_id
@@ -348,11 +386,11 @@ def render_period_chart(
                     ncol=min(4, len(power_handles + handles)),
                 )
                 legend.get_frame().set_alpha(0.85)
-        power_axis.set_title(
-            f"Canais {group[0]}–{group[-1]}" if group else "Potência ativa",
-            color=foreground,
-            fontsize=10,
-        )
+        if len(channel_groups) > 1:
+            power_axis.set_title(
+                f"Canais {group[0]}–{group[-1]}" if group else "Potência ativa",
+                color=foreground, fontsize=10, loc="right",
+            )
 
     if request.include_electrical_details:
         axis = axes[-1]
@@ -432,14 +470,24 @@ def render_executive_summary(
         import textwrap
 
         company = " · ".join(filter(None, [identity["company_name"], identity.get("laboratory")]))
-        figure.text(0.78, 0.955, "\n".join(textwrap.wrap(company, 65)),
-                    ha="right", va="top", fontsize=7, color="#64748B")
+        figure.text(
+            0.78,
+            0.955,
+            "\n".join(textwrap.wrap(company, 65)),
+            ha="right",
+            va="top",
+            fontsize=7,
+            color="#64748B",
+        )
         if identity.get("logo"):
             import matplotlib.image as mpimg
 
             logo_axis = figure.add_axes((0.82, 0.90, 0.13, 0.07))
-            logo_axis.imshow(mpimg.imread(io.BytesIO(
-                base64.b64decode(identity["logo"].split(",", 1)[1])), format="png"))
+            logo_axis.imshow(
+                mpimg.imread(
+                    io.BytesIO(base64.b64decode(identity["logo"].split(",", 1)[1])), format="png"
+                )
+            )
             logo_axis.axis("off")
     figure.text(0.045, 0.875, request.title, color="#17233F", fontsize=20, weight="bold")
     figure.text(
@@ -480,32 +528,47 @@ def render_executive_summary(
     session_origins = {
         session["id"]: datetime.fromisoformat(session["started_at"]) for session in data["sessions"]
     }
-    power_points = downsample_time_buckets(data["electrical"], ["active_power_w"], 600)
-    if power_points:
-        power_axis.plot(
-            presentation_axis_values(power_points, request.time_axis_mode, session_origins),
-            [point["active_power_w"] for point in power_points],
-            color=POWER_COLOR,
-            linewidth=2,
-            label="Potência (W)",
-        )
+    for session in data["sessions"]:
+        points = [p for p in data["electrical"] if p["session_id"] == session["id"]]
+        for index, segment in enumerate(
+            _segments(
+                points,
+                stream_gap_limit(points, session, "electrical"),
+                "active_power_w",
+                availability_boundaries(data, session["id"]),
+            )
+        ):
+            reduced = downsample_time_buckets(segment, ["active_power_w"], 600)
+            power_axis.plot(
+                presentation_axis_values(reduced, request.time_axis_mode, session_origins),
+                [p["active_power_w"] for p in reduced],
+                color=POWER_COLOR,
+                linewidth=2,
+                label="Potencia (W)" if index == 0 else None,
+            )
+        if request.include_power:
+            draw_availability(power_axis, data, request, session, points)
     channel_items = [item for item in data["statistics"]["channels"] if item["count"]][:8]
     for item in channel_items:
         channel = item["channel"]
         value_key = f"channel_{channel}"
-        points = [
-            {**point, value_key: point["channels"].get(channel)}
-            for point in data["temperatures"]
-            if point["channels"].get(channel) is not None
-        ]
-        points = downsample_time_buckets(points, [value_key], 600)
-        axis.plot(
-            presentation_axis_values(points, request.time_axis_mode, session_origins),
-            [point[value_key] for point in points],
-            color=CHANNEL_COLORS[(channel - 1) % len(CHANNEL_COLORS)],
-            linewidth=1.25,
-            label=item["label"],
-        )
+        for session in data["sessions"]:
+            points = [
+                {**point, value_key: point["channels"].get(channel)}
+                for point in data["temperatures"]
+                if point["session_id"] == session["id"]
+            ]
+            for index, segment in enumerate(
+                _segments(points, stream_gap_limit(points, session, "thermal"), value_key)
+            ):
+                reduced = downsample_time_buckets(segment, [value_key], 600)
+                axis.plot(
+                    presentation_axis_values(reduced, request.time_axis_mode, session_origins),
+                    [point[value_key] for point in reduced],
+                    color=CHANNEL_COLORS[(channel - 1) % len(CHANNEL_COLORS)],
+                    linewidth=1.25,
+                    label=item["label"] if index == 0 else None,
+                )
     mark_peaks(data, request, power_axis, axis, [item["channel"] for item in channel_items])
     axis.set_ylabel("Temperatura (°C)", fontsize=8, color="#D97706")
     power_axis.set_ylabel("Potência (W)", fontsize=8, color=POWER_COLOR)
@@ -689,6 +752,13 @@ def render_period_pdf(data: dict[str, Any], request: PeriodReportRequest) -> byt
             Paragraph(
                 escape(
                     request.description or "Relatório consolidado de medições térmicas e elétricas."
+                )
+                + (
+                    " Traço cinza em 0 W: referência visual de indisponibilidade "
+                    "confirmada do GPM; "
+                    "não é medição e não participa de energia, médias ou picos. "
+                    "O retorno liga à primeira leitura real posterior."
+                    if data.get("availability") and request.include_power else ""
                 ),
                 styles["BodyText"],
             ),

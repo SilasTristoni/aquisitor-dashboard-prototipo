@@ -855,6 +855,11 @@ class PeriodReportDataService:
             "timestamp_fallback_count": fallback_count,
         }
         data["statistics"] = period_statistics(data)
+        from app.services.source_availability import collect_availability
+
+        data["availability"] = collect_availability(
+            self.db, session_ids, request.start, request.end
+        )
         from app.services.company_identity import identity_data
 
         data["company_identity"] = identity_data(self.db)
@@ -892,6 +897,21 @@ class PeriodReportDataService:
                 downsample_time_buckets(electrical, ["active_power_w"], per_stream_limit),
                 session_start,
             )
+            # Keep actual boundary samples even when the preview is downsampled.
+            # These are existing measurements, never the visual zero reference.
+            for interval in data.get("availability", []):
+                if interval["session_id"] != session_id:
+                    continue
+                left = datetime.fromisoformat(interval["start"])
+                right = datetime.fromisoformat(interval["end"] or interval["confirmed_until"])
+                before = next((p for p in reversed(electrical) if p["timestamp"] <= left), None)
+                after = next((p for p in electrical if p["timestamp"] == right), None)
+                for point in (before, after):
+                    if point is not None and not any(
+                        p["timestamp"] == point["timestamp"] for p in reduced_electrical
+                    ):
+                        reduced_electrical.extend(with_elapsed_seconds([point], session_start))
+            reduced_electrical.sort(key=lambda point: point["timestamp"])
             reduced_temperatures = with_elapsed_seconds(
                 downsample_time_buckets(flat_temperatures, temperature_keys, per_stream_limit),
                 session_start,
@@ -905,6 +925,13 @@ class PeriodReportDataService:
                     "session_id": session_id,
                     "session_name": session["name"],
                     "session_started_at": session["started_at"],
+                    "availability": [
+                        {key: value for key, value in item.items() if key != "session_id"}
+                        for item in data.get("availability", [])
+                        if item["session_id"] == session_id
+                    ]
+                    if request.include_power
+                    else [],
                     "gaps": [
                         {
                             "source": source,

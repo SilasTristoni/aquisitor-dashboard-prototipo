@@ -50,6 +50,34 @@ class AnalysisInput(BaseModel):
     label: str = Field(default="Período oficial", min_length=1, max_length=120)
 
 
+@router.get("/{session_id}/availability")
+def source_availability(
+    session_id: int,
+    db: Db,
+    user: Reader,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=200),
+):
+    from app.models.entities import SourceAvailability
+    from app.services.source_availability import interval_dict
+
+    session_or_404(db, session_id)
+    statement = select(SourceAvailability).where(SourceAvailability.session_id == session_id)
+    total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
+    rows = db.scalars(
+        statement.order_by(SourceAvailability.started_at.desc(), SourceAvailability.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    return {
+        "items": [interval_dict(row) for row in rows],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "pages": (total + page_size - 1) // page_size,
+    }
+
+
 class AnnotationInput(BaseModel):
     timestamp: AwareDatetime
     kind: Literal["stabilization", "shutdown", "restart", "condition_change", "note"] = "note"

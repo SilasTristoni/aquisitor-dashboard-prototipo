@@ -237,7 +237,12 @@ async def lifespan(_: FastAPI):
     )
     Base.metadata.create_all(engine)
     seed_database()
-    async with pending_sample_persistence(acquisition_service):
+    from app.services.source_availability import observe_source_availability
+
+    async with (
+        pending_sample_persistence(acquisition_service),
+        observe_source_availability(acquisition_service),
+    ):
         yield
     usb_discovery_service.shutdown()
     await protocol_probe_service.shutdown()

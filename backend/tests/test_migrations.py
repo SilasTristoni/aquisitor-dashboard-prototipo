@@ -29,9 +29,9 @@ def test_postgresql_replays_long_historical_revision_names():
     database = create_engine(url.set(database=name))
     try:
         with database.begin() as connection:
-            connection.execute(text(
-                "CREATE TABLE alembic_version (version_num VARCHAR(32) PRIMARY KEY)"
-            ))
+            connection.execute(
+                text("CREATE TABLE alembic_version (version_num VARCHAR(32) PRIMARY KEY)")
+            )
         from alembic.config import Config
         from app.core.migration_backup import prepare_migration_backup
 
@@ -41,16 +41,23 @@ def test_postgresql_replays_long_historical_revision_names():
         with pytest.raises(RuntimeError, match="PostgreSQL bloqueada"):
             prepare_migration_backup(backup_config, test_url)
         result = subprocess.run(
-            [sys.executable, "-m", "alembic", "upgrade", "head"], cwd=BACKEND_ROOT,
-            env={**os.environ, "THERMOPOWER_DATABASE_URL":
-                 url.set(database=name).render_as_string(hide_password=False)},
-            capture_output=True, text=True, timeout=60,
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=BACKEND_ROOT,
+            env={
+                **os.environ,
+                "THERMOPOWER_DATABASE_URL": url.set(database=name).render_as_string(
+                    hide_password=False
+                ),
+            },
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert result.returncode == 0, result.stdout + result.stderr
         assert prepare_migration_backup(backup_config, test_url) is None
         with database.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0013_company_identity"
+                "0014_source_availability"
             )
             assert "company_identity" in inspect(connection).get_table_names()
     finally:
@@ -88,6 +95,7 @@ def test_analysis_migrations_preserve_sqlite_history_with_foreign_keys(tmp_path)
                 "0011_share_result_options",
                 "0012_publication_outbox",
                 "0013_company_identity",
+                "0014_source_availability",
             ]:
                 spec = importlib.util.spec_from_file_location(
                     name, BACKEND_ROOT / f"alembic/versions/{name}.py"
@@ -126,8 +134,14 @@ def test_new_migrations_compile_for_postgresql(monkeypatch):
     inspector.get_table_names.return_value = ["users", "measurement_sessions"]
     monkeypatch.setattr(sa, "inspect", lambda _: inspector)
     with Operations.context(context):
-        for name in ["0009_session_analysis", "0010_session_shares", "0011_share_result_options",
-                     "0012_publication_outbox", "0013_company_identity"]:
+        for name in [
+            "0009_session_analysis",
+            "0010_session_shares",
+            "0011_share_result_options",
+            "0012_publication_outbox",
+            "0013_company_identity",
+            "0014_source_availability",
+        ]:
             spec = importlib.util.spec_from_file_location(
                 name, BACKEND_ROOT / f"alembic/versions/{name}.py"
             )
@@ -183,7 +197,7 @@ def test_upgrade_accepts_schema_precreated_by_sqlalchemy(tmp_path):
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            "0013_company_identity"
+            "0014_source_availability"
         )
         assert "metadata" in {
             column["name"] for column in inspect(connection).get_columns("measurement_sessions")
