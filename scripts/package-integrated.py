@@ -33,7 +33,7 @@ def run(command, log, env=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gates", type=Path, required=True)
-    parser.add_argument("--revision", choices=["r2", "r4", "r5"])
+    parser.add_argument("--revision", choices=["r2", "r4", "r5", "r6"])
     args = parser.parse_args()
     gates = json.loads(args.gates.read_text(encoding="utf-8"))
     required = {
@@ -133,12 +133,18 @@ def main():
         "app.api.share_routes",
         "app.core.migration_backup",
         "app.services.source_availability",
+        "app.services.session_recovery",
+        "app.services.instance_guard",
+        "app.services.recovery_continuity",
+        "app.api.recovery_routes",
     ):
         if module not in bundled.toc:
             raise RuntimeError(
                 f"Required production/engineering module missing: {module}"
             )
     staging = work / "dist/ThermoPowerMonitor"
+    if not (staging / "_internal/alembic/versions/0015_session_recovery.py").is_file():
+        raise RuntimeError("Session recovery migration missing from package")
     samples = staging / "_internal/matplotlib/mpl-data/sample_data"
     if samples.exists():
         if samples.resolve() != (
@@ -147,11 +153,13 @@ def main():
             raise RuntimeError("Unexpected sample-data directory")
         shutil.rmtree(samples)
     shutil.copy2(info, staging / "build-info.json")
-    readme = {"r4": "INTEGRATED_R4_071.md", "r5": "INTEGRATED_R5_071.md"}.get(
-        args.revision, "INTEGRATED_CANDIDATE_071.md"
-    )
+    readme = {
+        "r4": "INTEGRATED_R4_071.md",
+        "r5": "INTEGRATED_R5_071.md",
+        "r6": "INTEGRATED_R6_071.md",
+    }.get(args.revision, "INTEGRATED_CANDIDATE_071.md")
     shutil.copy2(ROOT / "docs" / readme, staging / "LEIA-ME.md")
-    if args.revision == "r5":
+    if args.revision in {"r5", "r6"}:
         shutil.copytree(ROOT / "frontend/dist-portal", staging / "portal-viewer")
         shutil.copy2(
             staging / "portal-viewer/portal.html", staging / "portal-viewer/index.html"
@@ -160,6 +168,9 @@ def main():
         shutil.copy2(ROOT / "docs/INTEGRATED_R2_071.md", staging / "LEIA-ME-R2.md")
         shutil.copy2(ROOT / "docs/CORPORATE_IDENTITY_071.md", staging)
         shutil.copy2(ROOT / "docs/DEMO_INSTANCE_071.md", staging)
+    if args.revision == "r6":
+        shutil.copy2(ROOT / "docs/SESSION_RECOVERY_071.md", staging)
+        shutil.copy2(ROOT / "docs/INTEGRATED_R5_071.md", staging)
     shutil.copy2(ROOT / "build/user-guide.pdf", staging / "Manual do Usuario.pdf")
     (staging / "SOURCE-SHA256.json").write_text(manifest, encoding="utf-8")
     (staging / "VALIDATION.json").write_text(
