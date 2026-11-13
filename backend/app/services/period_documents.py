@@ -80,6 +80,7 @@ def _segments(
             continue
         if result[-1] and (
             (point["timestamp"] - result[-1][-1]["timestamp"]).total_seconds() > gap_seconds
+            or point.get("acquisition_epoch") != result[-1][-1].get("acquisition_epoch")
             or any(
                 result[-1][-1]["timestamp"] <= boundary < point["timestamp"]
                 for boundary in boundaries

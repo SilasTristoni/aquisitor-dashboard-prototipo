@@ -1,7 +1,7 @@
 from bisect import bisect_left
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.entities import ElectricalSample, TemperatureSample
@@ -23,6 +23,24 @@ def _nearest(rows: list, timestamps: list[datetime], target: datetime, tolerance
     return (rows[winner], offset_ms) if offset_ms <= tolerance_ms else (None, None)
 
 
+class _ForwardNearest:
+    """Same tie/tolerance rule, retaining only neighboring rows of an ordered cursor."""
+
+    def __init__(self, rows):
+        self.rows = iter(rows)
+        self.previous = None
+        self.next = next(self.rows, None)
+
+    def at(self, target, tolerance_ms):
+        while self.next is not None and _utc(self.next.received_timestamp) < target:
+            self.previous = self.next
+            self.next = next(self.rows, None)
+        candidates = [row for row in (self.previous, self.next) if row is not None]
+        return _nearest(
+            candidates, [_utc(row.received_timestamp) for row in candidates], target, tolerance_ms
+        )
+
+
 def synchronized_series(
     db: Session,
     session_id: int,
@@ -35,22 +53,28 @@ def synchronized_series(
         raise ValueError("A grade deve estar entre 100 ms e 60 s")
     if not 0 <= tolerance_ms <= 3000:
         raise ValueError("A tolerância deve estar entre 0 e 3000 ms")
-    temperatures = list(
-        db.scalars(
-            select(TemperatureSample)
-            .options(selectinload(TemperatureSample.channels))
-            .where(TemperatureSample.session_id == session_id)
-            .order_by(TemperatureSample.received_timestamp)
-        )
+    temperatures = db.scalars(
+        select(TemperatureSample)
+        .options(selectinload(TemperatureSample.channels))
+        .where(TemperatureSample.session_id == session_id)
+        .order_by(TemperatureSample.received_timestamp)
+        .execution_options(yield_per=256)
     )
-    electrical = list(
-        db.scalars(
-            select(ElectricalSample)
-            .where(ElectricalSample.session_id == session_id)
-            .order_by(ElectricalSample.received_timestamp)
-        )
+    electrical = db.scalars(
+        select(ElectricalSample)
+        .where(ElectricalSample.session_id == session_id)
+        .order_by(ElectricalSample.received_timestamp)
+        .execution_options(yield_per=500)
     )
-    all_timestamps = [_utc(row.received_timestamp) for row in temperatures + electrical]
+    bounds = [
+        db.execute(
+            select(
+                func.min(model.received_timestamp), func.max(model.received_timestamp), func.count()
+            ).where(model.session_id == session_id)
+        ).one()
+        for model in (TemperatureSample, ElectricalSample)
+    ]
+    all_timestamps = [_utc(value) for bound in bounds for value in bound[:2] if value]
     if not all_timestamps:
         return {
             "points": [],
@@ -65,14 +89,13 @@ def synchronized_series(
         if requested_points > max_points
         else grid_ms
     )
-    temp_times = [_utc(row.received_timestamp) for row in temperatures]
-    electrical_times = [_utc(row.received_timestamp) for row in electrical]
+    temp_cursor, power_cursor = _ForwardNearest(temperatures), _ForwardNearest(electrical)
     points, offsets = [], []
     matched = temp_only = electrical_only = 0
     cursor = start
     while cursor <= end and len(points) < max_points:
-        temp, temp_offset = _nearest(temperatures, temp_times, cursor, tolerance_ms)
-        power, power_offset = _nearest(electrical, electrical_times, cursor, tolerance_ms)
+        temp, temp_offset = temp_cursor.at(cursor, tolerance_ms)
+        power, power_offset = power_cursor.at(cursor, tolerance_ms)
         if temp and power:
             matched += 1
             offsets.append(
@@ -123,7 +146,7 @@ def synchronized_series(
         "grid_ms": grid_ms,
         "effective_grid_ms": effective_grid_ms,
         "tolerance_ms": tolerance_ms,
-        "source_counts": {"temperature": len(temperatures), "electrical": len(electrical)},
+        "source_counts": {"temperature": bounds[0][2], "electrical": bounds[1][2]},
     }
 
 

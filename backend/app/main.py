@@ -1,6 +1,7 @@
+import asyncio
 import logging
 import sys
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -12,6 +13,7 @@ from sqlalchemy import select
 
 from app.api.analysis_routes import router as analysis_router
 from app.api.company_routes import router as company_router
+from app.api.recovery_routes import router as recovery_router
 from app.api.routes import router
 from app.api.share_routes import router as share_router
 from app.api.support_routes import router as support_router
@@ -27,6 +29,7 @@ from app.services.device_policy import invalidate_stale_at4532_verification
 from app.services.pending_persistence import bounded_pending_writes, pending_sample_persistence
 from app.services.protocol_probe import protocol_probe_service
 from app.services.serial_diagnostic import real_serial_diagnostic_service
+from app.services.session_recovery import recovery_service
 from app.services.usb_discovery import usb_discovery_service
 
 settings = get_settings()
@@ -235,27 +238,41 @@ async def lifespan(_: FastAPI):
     logging.getLogger(__name__).info(
         "startup version=%s environment=%s", settings.app_version, settings.environment
     )
-    Base.metadata.create_all(engine)
-    seed_database()
     from app.services.source_availability import observe_source_availability
 
-    async with (
-        pending_sample_persistence(acquisition_service),
-        observe_source_availability(acquisition_service),
-    ):
-        yield
-    usb_discovery_service.shutdown()
-    await protocol_probe_service.shutdown()
-    await real_serial_diagnostic_service.shutdown()
-    for device_id in list(acquisition_service.runtimes):
+    recovery_service.guard.acquire()
+    monitor = None
+    try:
+        Base.metadata.create_all(engine)
+        seed_database()
+        recovery_service.start()
+        monitor = asyncio.create_task(recovery_service.monitor(acquisition_service),
+                                      name="session-recovery-supervision")
         try:
-            with bounded_pending_writes():
-                await acquisition_service.disconnect(device_id)
-        except Exception:
-            logging.getLogger(__name__).exception(
-                "shutdown failed for acquisition device_id=%s", device_id
-            )
-    acquisition_service.last_connection_results.clear()
+            async with (
+                pending_sample_persistence(acquisition_service),
+                observe_source_availability(acquisition_service),
+            ):
+                yield
+        finally:
+            monitor.cancel()
+            with suppress(asyncio.CancelledError):
+                await monitor
+            usb_discovery_service.shutdown()
+            await protocol_probe_service.shutdown()
+            await real_serial_diagnostic_service.shutdown()
+            for device_id in list(acquisition_service.runtimes):
+                try:
+                    with bounded_pending_writes():
+                        await acquisition_service.disconnect(device_id)
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "shutdown failed for acquisition device_id=%s", device_id
+                    )
+            recovery_service.shutdown()
+            acquisition_service.last_connection_results.clear()
+    finally:
+        recovery_service.guard.release()
     logging.getLogger(__name__).info("shutdown complete")
     for handler in logging.getLogger().handlers:
         handler.flush()
@@ -282,6 +299,7 @@ app.include_router(analysis_router)
 app.include_router(router)
 app.include_router(support_router)
 app.include_router(company_router)
+app.include_router(recovery_router)
 
 
 def _frontend_directory() -> Path | None:

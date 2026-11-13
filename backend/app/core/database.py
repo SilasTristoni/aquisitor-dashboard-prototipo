@@ -19,6 +19,9 @@ if settings.database_url.startswith("sqlite"):
     ) -> None:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        # Acknowledged commits must request durable synchronization. Keep the
+        # installation's journal mode; changing it during acquisition takes locks.
+        cursor.execute("PRAGMA synchronous=FULL")
         cursor.close()
 
 

@@ -19,7 +19,7 @@ export function useLive(maxPoints = 600) {
       setConnection("connecting");
       const base = import.meta.env.VITE_WS_URL ?? `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/v1/ws`;
       socket = new WebSocket(`${base}?token=${encodeURIComponent(token)}`);
-      socket.onopen = () => { retry.current = 0; setConnection("connected"); };
+      socket.onopen = () => { retry.current = 0; setReadings([]); setConnection("connected"); };
       socket.onmessage = (event) => {
         const message = JSON.parse(event.data);
         if (message.type === "measurement.created") {

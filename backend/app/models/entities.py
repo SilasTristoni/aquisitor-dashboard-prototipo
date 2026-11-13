@@ -95,6 +95,29 @@ class MeasurementSession(Base):
     analysis_selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ApplicationInstance(Base):
+    __tablename__ = "application_instances"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    state: Mapped[str] = mapped_column(String(24))
+
+
+class SessionRecovery(Base):
+    __tablename__ = "session_recovery"
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("measurement_sessions.id", ondelete="CASCADE"), primary_key=True,
+    )
+    instance_id: Mapped[str | None] = mapped_column(ForeignKey("application_instances.id"))
+    state: Mapped[str] = mapped_column(String(24), index=True)
+    reason: Mapped[str | None] = mapped_column(String(40))
+    detected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    checkpoint_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_sample_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Measurement(Base):
     __tablename__ = "measurements"
     __table_args__ = (Index("ix_measurements_session_timestamp", "session_id", "timestamp"),)

@@ -39,6 +39,7 @@ const devices = preview.sessions[0].devices.map(d => ({ ...d, active: true, prot
 const session = { ...preview.sessions[0], operator: user, device: devices[0], device_id: 2, devices: devices.map(d => ({ role: d.role, device: d })), statistics: { duration_seconds: 300.15 }, channels: preview.statistics.channels.map(c => ({ channel: c.channel, name: c.friendly_name, enabled: true })), sync_tolerance_ms: 1500, sample_count: 600, alert_count: 0, device_name: 'GPM + AT4532', average_power_w: 60, maximum_temperature_c: 81 };
 const paginated = items => ({ items, page: 1, page_size: 100, total: items.length, pages: items.length ? 1 : 0 });
 const scenarios = [
+  ['recovery', '/sessoes'],
   ['shared', '/compartilhado#synthetic-review-only'],
   ['lost-sources', '/'], ['paused', '/'], ['company', '/identidade-corporativa'], ['portal', '/portal-externo'], ['empty', '/'], ['connected', '/'], ['synchronizing', '/'], ['active', '/'],
   ['degraded', '/'], ['finished', '/'], ['session', '/sessoes/1'],
@@ -91,6 +92,8 @@ try {
           const apiPath = url.pathname.replace('/api/v1', '');
           let payload;
           if (apiPath === '/auth/me') payload = user;
+          else if (apiPath === '/recovery/sessions') payload = paginated(scenario === 'recovery' ? [{ id: 71, name: 'Ensaio sintético de 24 horas', reason: 'unexpected_shutdown', started_at: '2026-11-10T11:00:00Z', last_sample_at: '2026-11-11T10:59:59Z', counts: { electrical: 86400, thermal: 17280 }, devices: devices.map(d => ({ id: d.id, name: d.name })) }] : []);
+          else if (apiPath === '/recovery/health') payload = { supervision_ready: true, storage: { state: 'ok' }, write_faults: [] };
           else if (apiPath.endsWith('/availability')) payload = paginated(preview.series[0].availability ?? []);
           else if (apiPath === '/public/shares/access') payload = { ...preview, name: session.name, metadata: session.metadata, status: 'finished', official: true, permissions: { graphs: true, pdf: false, csv: false, xlsx: false } };
           else if (apiPath === '/company-identity') payload = { identity_id: '12345678-1234-1234-1234-123456789abc', company_name: 'Empresa DEMO', laboratory: 'Laboratorio sintetico', logo: null };
@@ -104,7 +107,7 @@ try {
             if (scenario === 'synchronizing') await startGate;
             active = true; payload = { ...session, started_at: started, status: 'running' };
           } else if (apiPath === '/sessions/1/finish') { active = false; payload = { ...session, status: 'finished' }; }
-          else if (apiPath === '/sessions') payload = paginated(url.searchParams.has('status') && url.searchParams.get('status') !== 'finished' ? (active ? [{ ...session, status: scenario === 'paused' ? 'paused' : 'running', started_at: started }] : []) : [{ ...session, operator: user.name }]);
+          else if (apiPath === '/sessions') payload = paginated(scenario === 'recovery' ? [{ ...session, id: 71, name: 'Ensaio sintético de 24 horas', status: 'interrupted', sample_count: 103680, operator: user.name }] : url.searchParams.has('status') && url.searchParams.get('status') !== 'finished' ? (active ? [{ ...session, status: scenario === 'paused' ? 'paused' : 'running', started_at: started }] : []) : [{ ...session, operator: user.name }]);
           else if (apiPath === '/sessions/1') payload = session;
           else if (apiPath === '/reports/period/preview') payload = preview;
           else if (apiPath === '/reports/period/executive.pdf' && scenario === 'export-error') {
@@ -185,6 +188,11 @@ try {
         if (scenario === 'period-report') {
           await page.getByRole('button', { name: 'Gerar prévia' }).click();
           await page.locator('.preview-chart').waitFor();
+        }
+        if (scenario === 'recovery') {
+          await page.getByText('Ensaio interrompido encontrado', { exact: true }).waitFor();
+          await page.getByRole('button', { name: 'Retomar ensaio', exact: true }).click();
+          await page.getByRole('alertdialog', { name: 'Confirmar recuperação' }).waitFor();
         }
         if (scenario === 'equipment-error') {
           await page.getByRole('button', { name: 'Testar leitura', exact: true }).first().click();

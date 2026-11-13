@@ -1,0 +1,9 @@
+.recovery-notice { margin-bottom: 1rem; padding: 1rem; border: 1px solid var(--border, #dce3ef); border-radius: 12px; background: var(--surface, #fff); }
+.recovery-notice summary { cursor: pointer; }
+.recovery-session { display: flex; align-items: center; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid var(--border, #dce3ef); }
+.recovery-session > div:first-child { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.recovery-session h3 { margin: 0 0 .5rem; }
+.recovery-session p { font-size: .85rem; margin: .45rem 0; }
+.recovery-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+.recovery-actions .button { width: auto; white-space: normal; }
+@media (max-width: 760px) { .recovery-session { align-items: stretch; flex-direction: column; } }

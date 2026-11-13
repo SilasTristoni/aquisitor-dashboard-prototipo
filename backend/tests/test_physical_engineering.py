@@ -1331,3 +1331,63 @@ def test_complete_diagnostic_export_contains_required_sanitized_files(
         integration = json.loads(archive.read("integration-status.json"))
         assert integration["devices"][0]["sample_count"] == 2
         assert integration["token"] == "[redacted]"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"8\r\n",
+        b":NUM:NORM:NUMB 8\r\n",
+        b"  8  \r\n",
+        b"  :NUM:NORM:NUMB   8  \r\n",
+        b":NUMERIC:NORMAL:NUMBER 8\r\n",
+    ],
+)
+def test_gpm_number_query_accepts_bare_and_semantic_scpi_item_count(payload: bytes):
+    parser = Gpm8213Parser()
+
+    assert parser.classify(payload) == "item_count"
+    assert parser.parse_item_count(payload) == 8
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b":OTHER:NUMBER 8\r\n",
+        b"arbitrary response 8\r\n",
+        b":NUM:NORM:ITEM 8\r\n",
+        b":NUM:NORM:NUMB8\r\n",
+        b":NUM:NORM:NUMB 8\n",
+    ],
+)
+def test_gpm_number_query_rejects_non_semantic_or_malformed_item_count(payload: bytes):
+    parser = Gpm8213Parser()
+
+    with pytest.raises(ProtocolResponseError):
+        parser.parse_item_count(payload)
+
+
+@pytest.mark.asyncio
+async def test_gpm_adapter_accepts_v105_abbreviated_number_response_and_preserves_raw_rx():
+    physical_number_response = b":NUM:NORM:NUMB 8\r\n"
+    transport = FakeVendorTransport(
+        [
+            b"GWInstek,GPM-8213,GES913349,V1.05\r\n",
+            physical_number_response,
+            b"Urms,Irms,P,S,fU,PF,Q,fI\r\n",
+        ]
+    )
+    adapter = Gpm8213UsbSerialAdapter("COM7", None, transport=transport)
+
+    await adapter.connect()
+    await adapter.disconnect()
+
+    number_transaction = adapter.transactions[2]
+    assert len(physical_number_response) == 18
+    assert number_transaction["expected_for_command"] == "item_count"
+    assert number_transaction["actual_response_type"] == "item_count"
+    assert number_transaction["rx_ascii"] == ":NUM:NORM:NUMB 8\\r\\n"
+    assert number_transaction["rx_hex"] == physical_number_response.hex(" ").upper()
+    assert number_transaction["bytes_received"] == 18
+    assert number_transaction["parsed"]["number_reported"] == 8
+    assert transport.requests[-1] == b":NUMERIC:NORMAL:HEADER?\r\n"

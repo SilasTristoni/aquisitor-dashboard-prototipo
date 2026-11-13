@@ -309,7 +309,7 @@ function SessionDetailContent() {
     </div>
 
     <div className="detail-strip">
-      <div><span>STATUS</span><Badge tone={session.status === "finished" ? "success" : "warning"}>{session.status === "finished" ? "Finalizada" : session.status}</Badge></div>
+      <div><span>STATUS</span><Badge tone={session.status === "finished" ? "success" : "warning"}>{({ finished: "Finalizada", interrupted: "Interrompida", suspended: "Suspensa", interrupted_closed: "Encerrada por interrupção" } as Record<string, string>)[session.status] ?? session.status}</Badge></div>
       <div><span>SESSÃO COMPLETA</span><strong>{formatDate(session.started_at)} → {formatDate(session.ended_at)}</strong></div>
       <div><span>DURAÇÃO TOTAL</span><strong>{formatDuration(general.full_session_duration_seconds ?? session.statistics.duration_seconds)}</strong></div>
       <div><span>PERÍODO ANALISADO</span><strong>{formatDuration(general.analyzed_period_seconds)}</strong></div>

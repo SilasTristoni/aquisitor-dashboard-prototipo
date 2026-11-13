@@ -25,3 +25,4 @@ reference-input/
 release/
 *.zip
 *.exe
+*.acquisition.lock

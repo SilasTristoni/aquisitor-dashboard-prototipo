@@ -8,6 +8,8 @@ const auth = vi.hoisted(() => ({ role: "admin" as string | null }));
 vi.mock("../auth", () => ({ useAuth: () => ({ user: auth.role ? { name: "Synthetic user", role: auth.role } : null, loading: false, logout: vi.fn() }) }));
 vi.mock("../api", () => ({ api: vi.fn() }));
 vi.mock("../components/HelpMenu", () => ({ HelpMenu: () => null, FirstUseHint: () => null }));
+// Recovery has dedicated interaction tests; keep portal authorization independent.
+vi.mock("../components/RecoveryNotice", () => ({ default: () => null }));
 vi.mock("../pages/DashboardPage", () => ({ default: () => <h1>Operação sintética</h1> }));
 vi.mock("../pages/SessionsPage", () => ({ default: () => <h1>Sessões sintéticas</h1> }));
 vi.mock("../pages/LoginPage", () => ({ default: () => <h1>Login sintético</h1> }));

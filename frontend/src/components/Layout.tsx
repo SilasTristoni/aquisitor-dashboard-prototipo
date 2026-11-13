@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../auth";
 import { CurrentCompanyMark } from "./CompanyIdentity";
+import RecoveryNotice from "./RecoveryNotice";
 
 const navigation = [
   { to: "/", label: "Tempo real", icon: Activity },
@@ -57,7 +58,7 @@ export default function Layout() {
     {open && <button className="sidebar-backdrop" onClick={() => setOpen(false)} aria-label="Fechar menu" />}
     <main className="main-content">
       <header className="topbar"><button className="menu-button" aria-label="Abrir menu" onClick={() => setOpen(true)}><Menu /></button><div className="breadcrumbs"><span>ThermoPower</span><ChevronRight /><strong>{titles[segment] ?? "Tempo real"}</strong></div><div className="topbar-actions"><HelpMenu allowSupport={user?.role !== "viewer"} /><span className="system-pill"><i /> Online</span><button className="icon-button" onClick={() => setDark(!dark)} aria-label="Alternar tema">{dark ? <Sun /> : <Moon />}</button>{user?.role !== "viewer" && <Link className="icon-button" to="/configuracao-inicial" aria-label="Configuração inicial"><Settings2 /></Link>}{user?.role !== "viewer" && <button className="icon-button warning-dot" aria-label="Alertas"><AlertTriangle /></button>}</div></header>
-      <div className="page"><CurrentCompanyMark />{location.pathname === "/" && <FirstUseHint />}<Outlet /></div>
+      <div className="page"><CurrentCompanyMark />{user?.role !== "viewer" && (location.pathname === "/" || location.pathname.startsWith("/sessoes")) && <RecoveryNotice />}{location.pathname === "/" && <FirstUseHint />}<Outlet /></div>
     </main>
   </div>;
 }

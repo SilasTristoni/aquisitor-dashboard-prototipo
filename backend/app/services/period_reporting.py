@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import math
 import statistics
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import case, func, or_, select
@@ -112,10 +112,10 @@ def _suggest_stabilization(temperatures: list[dict[str, Any]]) -> dict[str, Any]
         "maximum_range_c": 1.0,
         "minimum_points": 5,
     }
+    timestamps = [item[0] for item in aggregate]
     for index, (timestamp, _) in enumerate(aggregate):
-        window = [
-            item for item in aggregate[index:] if (item[0] - timestamp).total_seconds() <= 180
-        ]
+        end = bisect_right(timestamps, timestamp + timedelta(seconds=180), lo=index)
+        window = aggregate[index:end]
         if len(window) < criteria["minimum_points"]:
             continue
         elapsed_minutes = (window[-1][0] - window[0][0]).total_seconds() / 60
@@ -170,6 +170,7 @@ def _power_cycle_analysis(electrical: list[dict[str, Any]]) -> dict[str, Any] | 
                 previous_on is None
                 or current_on is None
                 or seconds > settings.report_energy_max_gap_seconds
+                or previous.get("acquisition_epoch") != current.get("acquisition_epoch")
             ):
                 # A new observed segment cannot complete a cycle from before a gap.
                 cycle_started = None
@@ -217,7 +218,12 @@ def _interval_quality(
         return [], 0, 0.0
     median_interval = statistics.median(intervals)
     gap_threshold = min(max_energy_gap_seconds, max(1.0, median_interval * 5))
-    gaps = [interval for interval in intervals if interval > gap_threshold]
+    gaps = [
+        (current["timestamp"] - previous["timestamp"]).total_seconds()
+        for previous, current in zip(ordered, ordered[1:], strict=False)
+        if (current["timestamp"] - previous["timestamp"]).total_seconds() > gap_threshold
+        or previous.get("acquisition_epoch") != current.get("acquisition_epoch")
+    ]
     return intervals, len(gaps), sum(gaps)
 
 
@@ -236,6 +242,7 @@ def _integrate_energy_wh(
             interval > max_gap_seconds
             or previous.get("active_power_w") is None
             or current.get("active_power_w") is None
+            or previous.get("acquisition_epoch") != current.get("acquisition_epoch")
         ):
             excluded_intervals += 1
             excluded_seconds += interval
@@ -854,6 +861,9 @@ class PeriodReportDataService:
             "selected_channels": selected_channels,
             "timestamp_fallback_count": fallback_count,
         }
+        from app.services.recovery_continuity import mark_recovery_epochs
+
+        mark_recovery_epochs(self.db, session_ids, electrical, temperatures)
         data["statistics"] = period_statistics(data)
         from app.services.source_availability import collect_availability
 
@@ -944,6 +954,7 @@ class PeriodReportDataService:
                         ]
                         for a, b in zip(points, points[1:], strict=False)
                         if (b["timestamp"] - a["timestamp"]).total_seconds() > gap_limits[source]
+                        or a.get("acquisition_epoch") != b.get("acquisition_epoch")
                     ]
                     + missing_value_gaps(electrical, ["active_power_w"], "electrical")
                     + missing_value_gaps(flat_temperatures, temperature_keys, "thermal"),
@@ -1035,7 +1046,8 @@ class PeriodReportDataService:
         )
         if request.device_ids:
             statement = statement.where(ElectricalSample.device_id.in_(request.device_ids))
-        rows = list(self.db.scalars(statement.order_by(ElectricalSample.session_id, timestamp)))
+        rows = self.db.scalars(statement.order_by(ElectricalSample.session_id, timestamp)
+                               .execution_options(yield_per=500))
         points = []
         for row in rows:
             effective, timestamp_source = _effective_timestamp(
@@ -1065,7 +1077,7 @@ class PeriodReportDataService:
                     "current_frequency_hz": row.current_frequency_hz,
                 }
             )
-        return points, {row.session_id for row in rows}
+        return points, {point["session_id"] for point in points}
 
     def _temperatures(
         self,
@@ -1095,7 +1107,8 @@ class PeriodReportDataService:
         )
         if request.device_ids:
             statement = statement.where(TemperatureSample.device_id.in_(request.device_ids))
-        rows = list(self.db.scalars(statement.order_by(TemperatureSample.session_id, timestamp)))
+        rows = self.db.scalars(statement.order_by(TemperatureSample.session_id, timestamp)
+                               .execution_options(yield_per=256))
         points = []
         for row in rows:
             effective, timestamp_source = _effective_timestamp(
@@ -1135,7 +1148,7 @@ class PeriodReportDataService:
                     },
                 }
             )
-        return points, {row.session_id for row in rows}
+        return points, {point["session_id"] for point in points}
 
     def _legacy_fallback(
         self,

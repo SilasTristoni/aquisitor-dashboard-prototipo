@@ -111,6 +111,13 @@ try {
         throw "O launcher nao autenticou o administrador local esperado."
     }
     $Headers = @{ Authorization = "Bearer $($Login.access_token)" }
+    $RecoveryHealth = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/recovery/health" `
+        -Headers $Headers -TimeoutSec 5
+    $RecoverySessions = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/recovery/sessions" `
+        -Headers $Headers -TimeoutSec 5
+    if (-not $RecoveryHealth.supervision_ready -or $RecoverySessions.total -ne 0) {
+        throw "A supervisao de recuperacao do pacote nao iniciou corretamente."
+    }
     $Devices = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/devices" `
         -Headers $Headers -TimeoutSec 10
     $At4532 = $Devices | Where-Object { $_.protocol -eq "at4532_serial" } | Select-Object -First 1

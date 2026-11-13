@@ -555,6 +555,9 @@ def delete_device(device_id: int, db: Db, user: User = Depends(require_roles("ad
 async def connect_device(
     device_id: int, _: User = Depends(require_roles("admin", "operator"))
 ) -> dict:
+    from app.services.session_recovery import recovery_service
+
+    recovery_service.require_ready()
     try:
         return await acquisition_service.connect(device_id)
     except ProtocolDocumentationRequired as exc:
@@ -571,6 +574,9 @@ async def connect_device_sources(
     db: Db,
     _: User = Depends(require_roles("admin", "operator")),
 ) -> SourceConnectionResult:
+    from app.services.session_recovery import recovery_service
+
+    recovery_service.require_ready()
     valid_ids: dict[str, int | None] = {"electrical": None, "thermal": None}
     failures: dict[str, dict] = {}
     requested_ids = {
@@ -1033,6 +1039,9 @@ async def start_session(
 
 
 async def _start_session(payload: SessionCreate, db: Db, user: User) -> SessionStartResult:
+    from app.services.session_recovery import recovery_service
+
+    recovery_service.require_ready()
     roles: list[tuple[str, int]] = []
     if payload.temperature_device_id:
         roles.append(("temperature", payload.temperature_device_id))
@@ -1136,6 +1145,7 @@ async def _start_session(payload: SessionCreate, db: Db, user: User) -> SessionS
     db.flush()
     for role, device in devices:
         db.add(SessionDevice(session_id=session.id, device_id=device.id, role=role))
+    recovery_service.register(db, session.id)
     snapshot_device_id = next(
         (device.id for role, device in devices if role in {"temperature", "combined"}), None
     )
@@ -1398,6 +1408,9 @@ def update_session(
 
 
 async def _transition(session_id: int, target: str, db: Session) -> MeasurementSession:
+    from app.services.session_recovery import recovery_service
+
+    recovery_service.validate_transition(db, session_id)
     session = db.get(MeasurementSession, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Sessão não encontrada")

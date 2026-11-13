@@ -57,9 +57,22 @@ def test_postgresql_replays_long_historical_revision_names():
         assert prepare_migration_backup(backup_config, test_url) is None
         with database.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0014_source_availability"
+                "0015_session_recovery"
             )
             assert "company_identity" in inspect(connection).get_table_names()
+            assert "session_recovery" in inspect(connection).get_table_names()
+        from app.services.instance_guard import InstanceGuard
+
+        first, second = InstanceGuard(database), InstanceGuard(database)
+        first.acquire()
+        try:
+            with pytest.raises(RuntimeError, match="uso exclusivo"):
+                second.acquire()
+            first.check()
+        finally:
+            first.release()
+        second.acquire()
+        second.release()
     finally:
         database.dispose()
         with admin.connect() as connection:
@@ -96,6 +109,7 @@ def test_analysis_migrations_preserve_sqlite_history_with_foreign_keys(tmp_path)
                 "0012_publication_outbox",
                 "0013_company_identity",
                 "0014_source_availability",
+                "0015_session_recovery",
             ]:
                 spec = importlib.util.spec_from_file_location(
                     name, BACKEND_ROOT / f"alembic/versions/{name}.py"
@@ -141,6 +155,7 @@ def test_new_migrations_compile_for_postgresql(monkeypatch):
             "0012_publication_outbox",
             "0013_company_identity",
             "0014_source_availability",
+            "0015_session_recovery",
         ]:
             spec = importlib.util.spec_from_file_location(
                 name, BACKEND_ROOT / f"alembic/versions/{name}.py"
@@ -197,7 +212,7 @@ def test_upgrade_accepts_schema_precreated_by_sqlalchemy(tmp_path):
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            "0014_source_availability"
+            "0015_session_recovery"
         )
         assert "metadata" in {
             column["name"] for column in inspect(connection).get_columns("measurement_sessions")

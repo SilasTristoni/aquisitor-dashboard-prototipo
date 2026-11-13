@@ -139,3 +139,26 @@ Em Avançado → Diagnóstico, clique em Exportar pacote de suporte. A mesma aç
 **Como informo a versão ao suporte?** Abra Ajuda → Sobre o ThermoPower. A tela informa versão, build, ambiente e data da build.
 
 **Preciso reinstalar ao ocorrer um erro de relatório?** Não como primeira medida. Tente novamente, anote o código e gere o pacote de diagnóstico. Preserve seus dados e aguarde a orientação do suporte.
+
+## 32. Recuperar um ensaio após reiniciar
+
+Ao abrir Tempo real ou Sessões, confira o aviso de ensaios aguardando recuperação.
+Ele informa o identificador, início, última leitura confirmada, equipamentos e
+quantidades preservadas. Um fechamento controlado aparece como suspensão;
+uma interrupção inesperada tem identificação própria.
+
+- **Retomar ensaio:** confirme a ação para reconectar as fontes disponíveis. O
+  identificador e o histórico permanecem os mesmos. Se uma fonte não conectar,
+  a outra pode continuar; confira o resultado mostrado na tela.
+- **Encerrar como interrompido:** confirme para encerrar definitivamente com
+  todas as medições já gravadas disponíveis para consulta e exportação.
+
+A aplicação não começa comandos físicos por conta própria durante a recuperação.
+O período sem aquisição continua sendo uma lacuna, incluída na linha temporal do
+ensaio. Dados que estavam somente em memória no momento da queda podem ter sido
+perdidos; a recuperação apresenta apenas o que foi confirmado no banco.
+
+Se aparecer aviso de armazenamento, verifique espaço livre e disponibilidade do
+banco. Preserve a aplicação aberta enquanto houver dados pendentes que possam ser
+gravados após corrigir o problema. Não exclua o banco, o arquivo de lock ou arquivos
+de journal. Use uma única instância de aquisição por banco.
